@@ -1,9 +1,10 @@
 import { watchFile, unwatchFile, readFileSync, mkdirSync } from "node:fs";
-import os from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const DEFAULT_CAPTURE_DB_PATH = resolve(os.homedir(), ".codex-remote-proxy", "traffic.sqlite3");
+import { DEFAULT_CAPTURE_DB_PATH } from "./capture-config.mjs";
+
+export { DEFAULT_CAPTURE_DB_PATH };
 
 const WATCH_INTERVAL_MS = 500;
 const WATCH_DEBOUNCE_MS = 100;
