@@ -7,7 +7,7 @@ import readline from "node:readline/promises";
 import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { DEFAULT_CAPTURE_DB_PATH } from "../src/capture-store.mjs";
+import { DEFAULT_CAPTURE_DB_PATH } from "../src/capture-config.mjs";
 
 const PACKAGE_ROOT = resolve(import.meta.dirname, "..");
 const DEFAULT_CODEX_CONFIG_PATH = resolve(os.homedir(), ".codex", "config.toml");
