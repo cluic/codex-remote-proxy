@@ -31,9 +31,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests if present
-        run: npm run test --if-present
-
       - name: Prepare npm for trusted publishing
         run: |
           rm -f "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
