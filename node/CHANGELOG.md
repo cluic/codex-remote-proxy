@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.2.2
+
+### Patch Changes
+
+- a026305: Avoid loading SQLite capture support when CLI commands only need default capture settings, so interactive `crp init` and `crp start` prompts stay visible instead of being interrupted by experimental SQLite warnings.
+
 ## 0.2.1
 
 ### Patch Changes
