@@ -2,7 +2,7 @@
 
 Date: 2026-07-10
 
-Status: Approved in conversation; written specification pending user review
+Status: Approved by user
 
 Mode: Cluic Harness Builder `iterate`
 

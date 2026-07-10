@@ -4,7 +4,7 @@
 
 | Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- | --- |
-| Harness and design | Primary Codex | Documentation only | `AGENTS.md`, `.codex/`, `docs/` | In review | User design approval | Product code under `node/` |
+| Harness, design, and plan | Primary Codex | Documentation only | `AGENTS.md`, `.codex/`, `docs/` | Ready | User execution-mode selection | Product code under `node/` |
 
 ## Shared Contracts
 

@@ -8,7 +8,7 @@ M1: design and harness for the multi-provider local management experience.
 
 | Slice | User Value | Status | Verification |
 | --- | --- | --- | --- |
-| V0: Harness and approved design | Shared product, architecture, security, UI, and test contracts | In review | Doc self-review and user approval |
+| V0: Harness and approved design | Shared product, architecture, security, UI, and test contracts | Approved | Doc self-review and user approval |
 | V1: Provider lifecycle end to end | Add, test, activate, switch, and restart through local UI without changing Codex provider | Planned | Full acceptance flow in `docs/TESTING.md` |
 | V2: Existing-user migration | Upgrade v0.2.2 flat config without losing provider access | Planned | Migration/rollback fixtures on all platforms |
 | V3: Cross-platform hardening | Reliable macOS/Windows UI and Linux CLI | Planned | Platform CI, E2E, screenshots, accessibility |

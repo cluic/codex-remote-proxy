@@ -6,7 +6,7 @@ CRP preserves ChatGPT login/remote features while routing Codex model traffic to
 
 ## Current Scope
 
-Documentation and harness only. No product implementation from the approved design has landed. Read `docs/PRD.md` and the formal design spec before changing code.
+Documentation, harness, and implementation planning only. No product implementation from the approved design has landed. Read `docs/PRD.md`, the formal design spec, and `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` before changing code.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ One authenticated local OS user. Admin API is loopback-only, origin/host checked
 
 ## Current Progress
 
-Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. Written docs await final user review.
+Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The written specification is approved and the detailed V1 plan awaits execution-mode selection.
 
 ## How To Run Current Code
 
@@ -56,3 +56,4 @@ Credential migration, localhost browser security, worker IPC, port release races
 - Keep Codex provider and proxy URL stable.
 - Use guided utility console UI.
 - Classify future V1 implementation as L3.
+- Execute the approved design through the task sequence in `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md`.

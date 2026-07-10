@@ -6,7 +6,7 @@ M1 design and harness review.
 
 ## In Progress
 
-- User review of the written product and architecture contracts.
+- User selection of the V1 execution mode.
 
 ## Done
 
@@ -15,15 +15,17 @@ M1 design and harness review.
 - Defined stable Codex provider and fixed proxy invariants.
 - Defined provider/credential model, local Admin API, guided utility UI, security boundary, and verification path.
 - Created the project harness and living docs.
+- Received written specification approval.
+- Created and self-reviewed the detailed V1 implementation plan.
 
 ## Blocked
 
-- Product implementation is blocked until the written specification is approved and an implementation plan is reviewed.
+- Product implementation is blocked until the detailed implementation plan is reviewed and an execution mode is selected.
 
 ## Next
 
-1. Approve or revise `docs/superpowers/specs/2026-07-10-crp-product-evolution-design.md`.
-2. Produce the detailed implementation plan.
+1. Review `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md`.
+2. Select subagent-driven or inline execution.
 3. Begin V1 with tests for supervisor/worker lifecycle and stable provider behavior.
 
 ## Risks
