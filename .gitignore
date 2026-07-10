@@ -40,3 +40,4 @@ coverage/
 /python/
 /__pycache__/
 .superpowers/
+.worktrees/
