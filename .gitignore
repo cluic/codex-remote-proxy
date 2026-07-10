@@ -39,3 +39,4 @@ coverage/
 /local_docs
 /python/
 /__pycache__/
+.superpowers/
