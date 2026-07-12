@@ -19,13 +19,15 @@
 - Portable syntax check: `cd node && npm run lint`
 - Existing full suite: `cd node && npm test`
 - Top-level unit suite: `cd node && npm run test:unit`
+- Task 2 focused suite: `cd node && node --test test/codex-config.test.mjs`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
-`npm run lint` recursively checks `.mjs` and `.js` files under `bin`, `src`, `scripts`, and `ui`, skipping source roots that have not landed. `npm run test:unit` runs only top-level `test/*.test.mjs` files. The `test:integration` runner is present and recursively discovers `test/integration/**/*.test.mjs`, but no integration tests exist yet, so it intentionally fails with an explicit no-files error and is not part of the current runnable gate. `test:e2e` and the combined `test:all` command are also not current gates until the UI, Playwright configuration, and E2E specs land.
+`npm run lint` recursively checks `.mjs` and `.js` files under `bin`, `src`, `scripts`, and `ui`, skipping source roots that have not landed. On Node 22.19, the Task 2 focused suite passes 15/15 tests and the current full suite passes 27/27 tests. The focused coverage verifies OpenAI provider creation and update, custom-provider and CRLF preservation, byte idempotency, one-time adjacent backup, exclusive same-timestamp backup collision handling, CRP lock contention, external source-change rejection, atomic mode-preserving replacement, deterministic rename-failure cleanup and original preservation, all nine injected-home paths, safe public error serialization, `start`/`install`/`setup` JSON and managed-state backup propagation, and accurate guide backup semantics. `npm run test:unit` runs only top-level `test/*.test.mjs` files. The `test:integration` runner is present and recursively discovers `test/integration/**/*.test.mjs`, but no integration tests exist yet, so it intentionally fails with an explicit no-files error and is not part of the current runnable gate. `test:e2e` and the combined `test:all` command are also not current gates until the UI, Playwright configuration, and E2E specs land.
 
 ## Test Authoring Rules
 
 - File-watcher tests must wait for observable state and register cleanup before assertions.
+- Configuration persistence tests must verify no-op writes, exclusive backup collisions, lock cleanup, external source changes, and source permission preservation.
 
 ## Test Matrix
 
@@ -57,3 +59,5 @@
 ## Verification Gate
 
 Credential, config migration, lifecycle, and browser-security tests must all pass before L3 expert review. Passing unit tests alone is insufficient.
+
+Task 2 does not remove the L3 requirement, and atomic rename and permission behavior remain unverified on real Windows and Linux hosts.

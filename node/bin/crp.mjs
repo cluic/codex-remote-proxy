@@ -1,22 +1,25 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import net from "node:net";
 import readline from "node:readline/promises";
-import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { DEFAULT_CAPTURE_DB_PATH } from "../src/capture-config.mjs";
+import { bootstrapCodexConfig } from "../src/codex/codex-config.mjs";
+import { getPaths } from "../src/shared/paths.mjs";
 
 const PACKAGE_ROOT = resolve(import.meta.dirname, "..");
-const DEFAULT_CODEX_CONFIG_PATH = resolve(os.homedir(), ".codex", "config.toml");
-const DEFAULT_AUTH_PATH = resolve(os.homedir(), ".codex", "auth.json");
-const GLOBAL_HOME = resolve(os.homedir(), ".codex-remote-proxy");
+const {
+  codexConfigPath: DEFAULT_CODEX_CONFIG_PATH,
+  authPath: DEFAULT_AUTH_PATH,
+  globalHome: GLOBAL_HOME,
+  statePath: STATE_FILE,
+  logPath: LOG_FILE
+} = getPaths();
 const BIN_DIR = resolve(GLOBAL_HOME, "bin");
 const CRP_SHIM_PATH = resolve(BIN_DIR, "crp");
-const STATE_FILE = resolve(GLOBAL_HOME, "state.json");
-const LOG_FILE = resolve(GLOBAL_HOME, "proxy.log");
 const USER_CONFIG_FILE = resolve(GLOBAL_HOME, "config.json");
 const NODE_RUNTIME_CONFIG_PATH = resolve(GLOBAL_HOME, "node", "proxy-config.json");
 const OPENAI_SECTION_HEADER = "[model_providers.OpenAI]";
@@ -493,7 +496,7 @@ function buildGuideData() {
       "Use status --json to confirm the proxy is healthy."
     ],
     notes: [
-      "The start command modifies ~/.codex/config.toml and creates a backup.",
+      "The start command creates a backup only when it changes ~/.codex/config.toml.",
       "The proxy configuration and state are stored under ~/.codex-remote-proxy/.",
       "Use CRP_UPSTREAM_BASE_URL and CRP_UPSTREAM_API_KEY when you want non-interactive start without exposing secrets in later AI interactions.",
       "The optional ~/.codex/config.toml [codex_remote_proxy] section supports upstream_base_url, upstream_api_key, capture_enabled, and capture_db_path as non-interactive sources."
@@ -598,75 +601,6 @@ function printHumanCheck(data) {
 function writeProxyConfig(path, config) {
   ensureStateDirs();
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-}
-
-function backupFile(path) {
-  const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
-  const backupPath = `${path}.${timestamp}.bak`;
-  copyFileSync(path, backupPath);
-  return backupPath;
-}
-
-function renderTomlString(value) {
-  return JSON.stringify(value);
-}
-
-function upsertKey(lines, startIndex, endIndex, key, value) {
-  const rendered = typeof value === "boolean" ? (value ? "true" : "false") : renderTomlString(String(value));
-  for (let index = startIndex; index < endIndex; index += 1) {
-    const stripped = lines[index].trim();
-    if (!stripped || stripped.startsWith("#") || !stripped.includes("=")) {
-      continue;
-    }
-    const currentKey = stripped.split("=", 1)[0].trim();
-    if (currentKey === key) {
-      lines[index] = `${key} = ${rendered}`;
-      return lines;
-    }
-  }
-  lines.splice(endIndex, 0, `${key} = ${rendered}`);
-  return lines;
-}
-
-function firstSectionIndex(lines) {
-  for (let index = 0; index < lines.length; index += 1) {
-    const stripped = lines[index].trim();
-    if (stripped.startsWith("[") && stripped.endsWith("]")) {
-      return index;
-    }
-  }
-  return lines.length;
-}
-
-function patchCodexConfigText(text, proxyUrl) {
-  const lines = splitLines(text);
-  const topEnd = firstSectionIndex(lines);
-  upsertKey(lines, 0, topEnd, "model_provider", "OpenAI");
-  let sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-
-  if (!sectionRange) {
-    if (lines.length && lines[lines.length - 1].trim()) {
-      lines.push("");
-    }
-    lines.push(
-      OPENAI_SECTION_HEADER,
-      'name = "OpenAI"',
-      `base_url = ${renderTomlString(proxyUrl)}`,
-      'wire_api = "responses"',
-      "requires_openai_auth = true"
-    );
-    return `${lines.join("\n")}\n`;
-  }
-
-  const [sectionStart] = sectionRange;
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "name", "OpenAI");
-  sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "base_url", proxyUrl);
-  sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "wire_api", "responses");
-  sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "requires_openai_auth", true);
-  return `${lines.join("\n")}\n`;
 }
 
 function resolveConfigValue({ cliValue, envKey, savedValues = [], defaultValue = "" }) {
@@ -811,9 +745,7 @@ async function installCommand(options) {
   if (!existsSync(codexConfigPath)) {
     throw new Error(`Codex config not found: ${codexConfigPath}`);
   }
-  const codexBackup = backupFile(codexConfigPath);
-  const patchedText = patchCodexConfigText(readFileSync(codexConfigPath, "utf8"), proxyUrl);
-  writeFileSync(codexConfigPath, patchedText, "utf8");
+  const { backupPath } = bootstrapCodexConfig({ configPath: codexConfigPath, proxyUrl });
 
   const existingState = loadManagedState();
   if (existingState?.pid && isProcessAlive(existingState.pid)) {
@@ -834,7 +766,7 @@ async function installCommand(options) {
     proxyConfigPath,
     logFile: startResult.logFile || null,
     upstreamBaseUrl,
-    codexConfigBackup: codexBackup,
+    codexConfigBackup: backupPath,
     startedAt: new Date().toISOString()
   };
   saveManagedState(managedState);
@@ -864,6 +796,7 @@ async function installCommand(options) {
     upstreamBaseUrl,
     codexConfigPath,
     proxyConfigPath,
+    codexConfigBackup: backupPath,
     configSource: {
       upstreamBaseUrl: resolved.upstreamBaseUrl.source,
       apiKey: resolved.apiKey.source,

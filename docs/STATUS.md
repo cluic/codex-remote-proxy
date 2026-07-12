@@ -6,7 +6,7 @@ V1 implementation: provider lifecycle end to end.
 
 ## In Progress
 
-- Sequential execution of the approved V1 plan; Task 1 is complete and Task 2 is next.
+- Sequential execution of the approved V1 plan; Tasks 1 and 2 are complete and Task 3 is next.
 
 ## Done
 
@@ -19,14 +19,15 @@ V1 implementation: provider lifecycle end to end.
 - Created and self-reviewed the detailed V1 implementation plan.
 - Completed Task 1 portable syntax, unit-test, E2E script, packaging, and dependency gates.
 - Stabilized capture watcher tests with condition-based waits and assertion-safe cleanup on Node 22.19 and Node 24.2.
+- Completed Task 2 shared path and public-error contracts plus line-ending-preserving, lock-serialized, idempotent and atomic Codex bootstrap behavior, covered by 15/15 focused and 27/27 full Node 22.19 tests.
 
 ## Blocked
 
-- No current blocker is recorded for Task 2.
+- No current blocker is recorded for Task 3.
 
 ## Next
 
-1. Execute Task 2: extract stable paths and errors, then add idempotent Codex bootstrap behavior.
+1. Execute Task 3: add the atomic provider registry.
 2. Keep product implementation within the approved V1 task order and fixed provider/proxy invariants.
 
 ## Risks

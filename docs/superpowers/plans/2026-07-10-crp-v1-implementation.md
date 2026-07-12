@@ -205,7 +205,7 @@ git commit -m "build: add CRP quality gates"
 - Modify: `node/bin/crp.mjs:14-27,603-669`
 - Create: `node/test/codex-config.test.mjs`
 
-- [ ] **Step 1: Write failing idempotency and preservation tests**
+- [x] **Step 1: Write failing idempotency and preservation tests**
 
 Create `node/test/codex-config.test.mjs` with tests that import `patchCodexConfigText` and assert:
 
@@ -223,7 +223,7 @@ assert.equal(twice, once);
 
 Add a temporary-file test asserting `bootstrapCodexConfig()` creates one backup, writes mode-preserving content, and returns `{ changed: true, backupPath }`; a second call returns `{ changed: false, backupPath: null }`.
 
-- [ ] **Step 2: Run the test and confirm the missing-module failure**
+- [x] **Step 2: Run the test and confirm the missing-module failure**
 
 ```bash
 cd node
@@ -232,7 +232,7 @@ node --test test/codex-config.test.mjs
 
 Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `src/codex/codex-config.mjs`.
 
-- [ ] **Step 3: Implement exact public contracts**
+- [x] **Step 3: Implement exact public contracts**
 
 Create `node/src/shared/errors.mjs`:
 
@@ -267,7 +267,7 @@ export function bootstrapCodexConfig({ configPath, proxyUrl, now = () => new Dat
 
 `bootstrapCodexConfig` must compare before writing, copy the original beside it with a UTC timestamp, write through a same-directory temporary file, then rename.
 
-- [ ] **Step 4: Import the adapter from the existing CLI**
+- [x] **Step 4: Import the adapter from the existing CLI**
 
 Replace the duplicated config-patching functions in `node/bin/crp.mjs` with:
 
@@ -278,7 +278,7 @@ import { getPaths } from "../src/shared/paths.mjs";
 
 Keep command output and aliases unchanged in this task.
 
-- [ ] **Step 5: Verify focused and regression tests**
+- [x] **Step 5: Verify focused and regression tests**
 
 ```bash
 cd node
@@ -288,7 +288,9 @@ npm test
 
 Expected: new tests pass and the existing 12 tests remain green.
 
-- [ ] **Step 6: Commit**
+Actual Node 22.19 Task 2 verification: the focused suite passes 15/15 and the full suite passes 27/27 after adding deterministic atomic-write failure, exclusive backup-collision, CRP lock, external source-change, CRLF, guide semantics, and CLI alias propagation coverage.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add node/src/shared node/src/codex node/bin/crp.mjs node/test/codex-config.test.mjs

@@ -6,11 +6,11 @@ CRP preserves ChatGPT login/remote features while routing Codex model traffic to
 
 ## Current Scope
 
-V1 implementation is underway. Task 1 quality gates and dependencies have landed; no provider-lifecycle product behavior has landed yet. Task 2, stable paths, errors, and Codex bootstrap, is next. Read `docs/PRD.md`, the formal design spec, and `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` before changing code.
+V1 implementation is underway. Tasks 1 and 2 have landed; no provider-registry or provider-lifecycle product behavior has landed yet. Task 3, the atomic provider registry, is next. Read `docs/PRD.md`, the formal design spec, and `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` before changing code.
 
 ## Architecture
 
-Target: long-lived supervisor control plane plus independent proxy worker. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
+Landed: shared paths, safe public errors, and idempotent Codex bootstrap with source-EOL preservation, CRP sidecar locking, exclusive adjacent backups, external-change detection, atomic replacement, and permission preservation. Target: long-lived supervisor control plane plus independent proxy worker. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
 
 ## Data and API
 
@@ -24,7 +24,7 @@ One authenticated local OS user. Admin API is loopback-only, origin/host checked
 
 ## Current Progress
 
-Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The written specification and detailed V1 plan are approved, subagent-driven sequential execution is selected, and Task 1 is complete.
+Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The written specification and detailed V1 plan are approved, subagent-driven sequential execution is selected, and Tasks 1 and 2 are complete.
 
 ## How To Run Current Code
 
@@ -42,13 +42,13 @@ Do not run `crp start` against a real home directory during tests because it mod
 ## Verification
 
 - Node 22.19 baseline and Task 1 gate: `npm test` passes 12/12 tests and `npm audit --omit=dev` reports zero vulnerabilities.
-- Node 22.19 additions: `npm run lint` syntax-checks the current source roots and `npm run test:unit` passes the 12 top-level tests.
+- Node 22.19 Task 2 gate: `node --test test/codex-config.test.mjs` passes 15/15, including deterministic rename failure, exclusive same-timestamp backup collision, busy lock, external source change, CRLF preservation, guide semantics, and all three start aliases; `npm test` passes 27/27, `npm run lint` syntax-checks 9 source files, and `npm audit --omit=dev` reports zero vulnerabilities.
 - Node 24.2 stability: `node --test test/capture-store.test.mjs` passes 7/7 without hanging after replacing fixed watcher sleeps with bounded condition waits and pre-assertion cleanup.
 - Future V1 gate: the full matrix and acceptance flow in `docs/TESTING.md`.
 
 ## Known Risks
 
-Credential migration, localhost browser security, worker IPC, port release races, in-flight activation semantics, and secret leakage.
+Credential migration, localhost browser security, worker IPC, port release races, in-flight activation semantics, secret leakage, and cross-platform atomic rename and permission semantics.
 
 ## Recent Decisions
 
@@ -61,3 +61,4 @@ Credential migration, localhost browser security, worker IPC, port release races
 - Classify future V1 implementation as L3.
 - Execute the approved design through the task sequence in `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md`.
 - Keep file-watcher tests condition-based and cleanup-safe across supported Node versions.
+- Atomic configuration writes must compare content first and preserve source file permissions.
