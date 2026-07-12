@@ -483,7 +483,7 @@ git commit -m "feat: add secure credential stores"
 - Modify: `node/test/server.test.mjs`
 - Create: `node/test/runtime-settings.test.mjs`
 
-- [ ] **Step 1: Write failing snapshot-generation tests**
+- [x] **Step 1: Write failing snapshot-generation tests**
 
 ```js
 const source = new RuntimeSettingsSource();
@@ -496,11 +496,11 @@ assert.equal(source.current().settings.upstream.baseUrl, settingsB.upstream.base
 
 Assert returned snapshots are deeply frozen and callers cannot mutate headers.
 
-- [ ] **Step 2: Add an in-flight switch integration test to `server.test.mjs`**
+- [x] **Step 2: Add an in-flight switch integration test to `server.test.mjs`**
 
 Start delayed upstream A and immediate upstream B. Send request 1, wait until A receives it, apply generation 2, send request 2, release A, then assert response 1 came from A and response 2 came from B.
 
-- [ ] **Step 3: Run both tests and verify failure**
+- [x] **Step 3: Run both tests and verify failure**
 
 ```bash
 cd node
@@ -509,7 +509,7 @@ node --test test/runtime-settings.test.mjs test/server.test.mjs
 
 Expected: runtime module is missing and the static server cannot switch settings.
 
-- [ ] **Step 4: Implement snapshot capture at request start**
+- [x] **Step 4: Implement snapshot capture at request start**
 
 `RuntimeSettingsSource` exposes `apply(snapshot)`, `current()`, and `publicState()`. Change `createServer` to accept an optional `settingsSource`; for every non-health request, obtain exactly one snapshot before reading the body:
 
@@ -520,7 +520,7 @@ const requestSettings = active.settings;
 
 Use `requestSettings` for target URL, headers, timeout, SSL, capture context, and logs. Health uses `settingsSource.publicState()` and must not include credentials.
 
-- [ ] **Step 5: Verify snapshot behavior and regressions**
+- [x] **Step 5: Verify snapshot behavior and regressions**
 
 ```bash
 cd node
@@ -530,7 +530,9 @@ npm test
 
 Expected: in-flight/new-request assertions pass and existing proxy/capture behavior remains green.
 
-- [ ] **Step 6: Commit**
+Actual Node 22.19 Task 5 verification: the runtime/server focus passes 13/13, the full suite passes 102/102, and the portable syntax gate checks 15 source files. Coverage additionally verifies validation failure atomicity, an unconfigured source without static fallback, pinned transport/TLS and timeout behavior, allowlisted health state, request/response dynamic authentication-header masking, and bidirectional custom-auth capture redaction.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add node/src/worker/runtime-settings.mjs node/src/server.mjs node/test/runtime-settings.test.mjs node/test/server.test.mjs

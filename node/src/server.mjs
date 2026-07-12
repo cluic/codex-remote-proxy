@@ -32,8 +32,6 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade"
 ]);
 
-let DEBUG_ENABLED = false;
-
 export function resolveConfigPath() {
   return process.env[CONFIG_ENV_VAR] ? resolve(process.env[CONFIG_ENV_VAR]) : DEFAULT_CONFIG_PATH;
 }
@@ -98,7 +96,7 @@ function maskSecret(value) {
     return "(empty)";
   }
   if (value.length <= 8) {
-    return value;
+    return "[REDACTED]";
   }
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
@@ -109,8 +107,8 @@ export function log(level, message, fields = {}) {
   console.log(`${new Date().toISOString()} ${level.toUpperCase()} ${message}${suffix}`);
 }
 
-function debugLog(label, data) {
-  if (!DEBUG_ENABLED) return;
+function debugLog(label, data, enabled) {
+  if (!enabled) return;
   const timestamp = new Date().toISOString();
   const json = typeof data === "string" ? data : JSON.stringify(data, null, 2);
   for (const line of json.split("\n")) {
@@ -140,6 +138,14 @@ function formatAuthorization(upstream) {
 }
 
 const CONTENT_HEADERS = new Set(["content-encoding", "content-length"]);
+const DEBUG_SENSITIVE_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key"
+]);
+const DEBUG_SENSITIVE_HEADER_PARTS = ["token", "secret", "api-key"];
 
 function decompressBody(buffer, encoding) {
   const enc = encoding.toLowerCase().trim();
@@ -164,10 +170,26 @@ function autoDecompress(buffer) {
   try { return zlib.brotliDecompressSync(buffer); } catch { return null; }
 }
 
-function sanitizeHeadersForDebug(headersObject) {
+function sanitizeHeadersForDebug(headersObject, authHeader = "authorization") {
   const result = {};
+  const activeAuthHeader = authHeader.toLowerCase();
   for (const [key, value] of Object.entries(headersObject)) {
-    result[key] = key.toLowerCase() === "authorization" ? maskSecret(String(value)) : value;
+    const loweredKey = key.toLowerCase();
+    const sensitive = loweredKey === activeAuthHeader
+      || DEBUG_SENSITIVE_HEADER_NAMES.has(loweredKey)
+      || DEBUG_SENSITIVE_HEADER_PARTS.some((part) => loweredKey.includes(part));
+    result[key] = sensitive ? maskSecret(String(value)) : value;
+  }
+  return result;
+}
+
+function sanitizeHeadersForCapture(headersInput, authHeader) {
+  const result = headersToObject(headersInput);
+  const activeAuthHeader = authHeader.toLowerCase();
+  for (const key of Object.keys(result)) {
+    if (key.toLowerCase() === activeAuthHeader) {
+      result[key] = "[REDACTED]";
+    }
   }
   return result;
 }
@@ -239,7 +261,14 @@ function isEventStream(contentType = "") {
   return contentType.split(";", 1)[0].trim().toLowerCase() === "text/event-stream";
 }
 
-function buildHealthPayload(settings, captureManager) {
+function buildHealthPayload(settings, captureManager, settingsSource) {
+  if (settingsSource) {
+    return {
+      ok: true,
+      ...settingsSource.publicState(),
+      ...captureManager.getPublicState()
+    };
+  }
   return {
     ok: true,
     configPath: settings.configPath,
@@ -265,6 +294,8 @@ function buildRequestContext({ req, settings, targetUrl, requestId, requestHeade
     }
   }
 
+  const captureHeaders = sanitizeHeadersForCapture(requestHeaders, settings.upstream.authHeader);
+
   return {
     requestId,
     sessionId: typeof req.headers["session-id"] === "string"
@@ -276,7 +307,7 @@ function buildRequestContext({ req, settings, targetUrl, requestId, requestHeade
     method: req.method || "GET",
     incomingUrl: new URL(req.url, `http://${settings.server.host}:${settings.server.port}`).href,
     targetUrl: targetUrl.href,
-    requestHeaders: headersToObject(requestHeaders),
+    requestHeaders: captureHeaders,
     requestBody,
     startedAt: new Date(startedAt).toISOString(),
     captureHandle
@@ -309,7 +340,11 @@ function saveCaptureRecord(captureContext, fields) {
   });
 }
 
-export function createServer(settings, { captureManager = createCaptureManager({ configPath: settings.configPath, capture: settings.capture, log }).start(), logFn = log } = {}) {
+export function createServer(settings, {
+  captureManager = createCaptureManager({ configPath: settings.configPath, capture: settings.capture, log }).start(),
+  logFn = log,
+  settingsSource
+} = {}) {
   return http.createServer((req, res) => {
     if (!req.url) {
       writeJson(res, 400, { error: { message: "Missing request URL", type: "proxy_bad_request" } });
@@ -317,12 +352,27 @@ export function createServer(settings, { captureManager = createCaptureManager({
     }
 
     if (req.url === HEALTH_PATH) {
-      writeJson(res, 200, buildHealthPayload(settings, captureManager));
+      writeJson(res, 200, buildHealthPayload(settings, captureManager, settingsSource));
       return;
     }
 
-    const requestId = req.headers[settings.proxy.requestIdHeader] || req.headers["x-request-id"] || "-";
-    const targetUrl = buildTargetUrl(settings.upstream.baseUrl, req.url);
+    let active;
+    try {
+      active = settingsSource ? settingsSource.current() : { generation: 0, settings };
+    } catch (error) {
+      const unavailable = error?.code === "RUNTIME_SETTINGS_UNAVAILABLE";
+      writeJson(res, unavailable ? 503 : 500, {
+        error: {
+          code: unavailable ? "RUNTIME_SETTINGS_UNAVAILABLE" : "RUNTIME_SETTINGS_ERROR",
+          message: unavailable ? "Proxy settings are not configured." : "Proxy settings could not be loaded."
+        }
+      });
+      return;
+    }
+    const requestSettings = active.settings;
+    const requestDebugEnabled = requestSettings.server.logLevel.toLowerCase() === "debug";
+    const requestId = req.headers[requestSettings.proxy.requestIdHeader] || req.headers["x-request-id"] || "-";
+    const targetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
     const transport = targetUrl.protocol === "https:" ? https : http;
     const startedAt = Date.now();
 
@@ -349,13 +399,13 @@ export function createServer(settings, { captureManager = createCaptureManager({
             originalSize: body.length,
             decompressedSize: decompressed.length,
             magicBytes: `0x${body[0].toString(16).padStart(2, "0")} 0x${body[1].toString(16).padStart(2, "0")}`
-          });
+          }, requestDebugEnabled);
           body = decompressed;
           bodyTransformed = true;
         }
       }
 
-      const headers = buildUpstreamHeaders(req, settings, targetUrl, {
+      const headers = buildUpstreamHeaders(req, requestSettings, targetUrl, {
         stripContentHeaders: bodyTransformed
       });
       if (bodyTransformed && body.length) {
@@ -365,7 +415,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
       const captureHandle = captureManager.beginRecord() ?? createNoopCaptureHandle();
       const captureContext = buildRequestContext({
         req,
-        settings,
+        settings: requestSettings,
         targetUrl,
         requestId,
         requestHeaders: headers,
@@ -388,10 +438,16 @@ export function createServer(settings, { captureManager = createCaptureManager({
         method: req.method,
         path: req.url,
         targetUrl: targetUrl.href,
-        incomingHeaders: sanitizeHeadersForDebug(Object.fromEntries(Object.entries(req.headers))),
-        upstreamHeaders: Object.fromEntries(headers.map(([k, v]) => [k, k.toLowerCase() === "authorization" ? maskSecret(v) : v])),
+        incomingHeaders: sanitizeHeadersForDebug(
+          Object.fromEntries(Object.entries(req.headers)),
+          requestSettings.upstream.authHeader
+        ),
+        upstreamHeaders: sanitizeHeadersForDebug(
+          Object.fromEntries(headers),
+          requestSettings.upstream.authHeader
+        ),
         body: safeBodyPreview(body)
-      });
+      }, requestDebugEnabled);
 
       const upstreamRequest = transport.request(
         {
@@ -401,16 +457,22 @@ export function createServer(settings, { captureManager = createCaptureManager({
           port: targetUrl.port || undefined,
           path: `${targetUrl.pathname}${targetUrl.search}`,
           headers,
-          rejectUnauthorized: settings.upstream.verifySsl
+          rejectUnauthorized: requestSettings.upstream.verifySsl
         },
         (upstreamResponse) => {
           const stream = isEventStream(upstreamResponse.headers["content-type"]);
           debugLog("RESPONSE HEADERS", {
             status: upstreamResponse.statusCode,
-            headers: upstreamResponse.headers
-          });
+            headers: sanitizeHeadersForDebug(
+              upstreamResponse.headers,
+              requestSettings.upstream.authHeader
+            )
+          }, requestDebugEnabled);
 
-          const responseHeaders = headersToObject(upstreamResponse.rawHeaders);
+          const responseHeaders = sanitizeHeadersForCapture(
+            upstreamResponse.headers,
+            requestSettings.upstream.authHeader
+          );
           const respChunks = [];
           upstreamResponse.on("data", (chunk) => {
             respChunks.push(chunk);
@@ -426,7 +488,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
               debugLog("RESPONSE BODY", {
                 status: upstreamResponse.statusCode,
                 body: safeBodyPreview(responseBody)
-              });
+              }, requestDebugEnabled);
             }
             finalizeCapture({
               responseStatus: upstreamResponse.statusCode || 502,
@@ -447,7 +509,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
         }
       );
 
-      upstreamRequest.setTimeout(settings.upstream.timeoutMs, () => {
+      upstreamRequest.setTimeout(requestSettings.upstream.timeoutMs, () => {
         upstreamRequest.destroy(new Error("upstream timeout"));
       });
 
@@ -471,7 +533,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
           error: error.message,
           code: error.code || "(none)",
           stack: error.stack
-        });
+        }, requestDebugEnabled);
         if (!res.headersSent) {
           writeJson(res, statusCode, payload);
         } else {
@@ -515,8 +577,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
   });
 }
 
-export function createApp(settings = loadConfig()) {
-  DEBUG_ENABLED = settings.server.logLevel.toLowerCase() === "debug";
+export function createApp(settings = loadConfig(), { settingsSource } = {}) {
   const captureManager = createCaptureManager({
     configPath: settings.configPath,
     capture: settings.capture,
@@ -533,7 +594,7 @@ export function createApp(settings = loadConfig()) {
     capture_db_path: settings.capture.dbPath
   });
 
-  const server = createServer(settings, { captureManager, logFn: log });
+  const server = createServer(settings, { captureManager, logFn: log, settingsSource });
   server.on("close", () => {
     captureManager.close();
   });

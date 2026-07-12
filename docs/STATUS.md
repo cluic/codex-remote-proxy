@@ -6,7 +6,7 @@ V1 implementation: provider lifecycle end to end.
 
 ## In Progress
 
-- Sequential execution of the approved V1 plan; Tasks 1 through 4 are complete and Task 5 is next.
+- Sequential execution of the approved V1 plan; Tasks 1 through 5 are complete and Task 6 is next.
 
 ## Done
 
@@ -22,14 +22,15 @@ V1 implementation: provider lifecycle end to end.
 - Completed Task 2 shared path and public-error contracts plus line-ending-preserving, lock-serialized, idempotent and atomic Codex bootstrap behavior, covered by 15/15 focused and 27/27 full Node 22.19 tests.
 - Completed Task 3 strict provider validation and lock-serialized atomic schema-version-2 registry behavior, covered by 23/23 focused and 50/50 full Node 22.19 tests.
 - Completed Task 4 native and explicit-consent file credential adapters, including construction-only fallback without operation replay, explicit file-label restart continuity, descriptor-safe reads, degraded temp cleanup, canonical lock restoration, and primary-blocked claim-before-delete gate release, covered by 41/41 focused, 64/64 combined credential/provider, and 91/91 full Node 22.19 tests; syntax checking covers 14 source files.
+- Completed Task 5 monotonic immutable runtime settings and request-start snapshot capture. In-flight A remains internally consistent while new traffic switches to B; dynamic health, transport and timeout pinning, request/response short and custom authentication log masking, and bidirectional custom-auth capture redaction are covered by 13/13 focused and 102/102 full Node 22.19 tests; syntax checking covers 15 source files.
 
 ## Blocked
 
-- No current blocker is recorded for Task 5.
+- No current blocker is recorded for Task 6.
 
 ## Next
 
-1. Execute Task 5: make proxy settings snapshot-based.
+1. Execute Task 6: define worker IPC and build the worker entrypoint.
 2. Keep product implementation within the approved V1 task order and fixed provider/proxy invariants.
 
 ## Risks

@@ -19,7 +19,7 @@ The MVP has one role: the local operating-system user. It has no accounts, remot
 | --- | --- | --- | --- |
 | Authenticated local UI session | Manage providers and worker | Read complete keys; bind remote interfaces | CSRF and origin checks required |
 | Local CLI with control token | Same management actions | Read complete keys | Designed for automation |
-| Proxy worker | Use active snapshot | Read registry or other provider keys | Receives least-privilege configuration |
+| Proxy worker | Use the active snapshot captured once per request | Read registry or other provider keys | Receives least-privilege configuration |
 | Remote network client | Nothing | Access UI, API, or proxy management | Admin server is loopback-only |
 
 ## Audit Requirements
@@ -38,6 +38,7 @@ Record provider creation/update/deletion, test result, activation, Codex bootstr
 - Set metadata, token, state, and fallback secret files to `0600` where supported.
 - Never accept sensitive keys inside `extraHeaders`; use the credential field.
 - Redact authorization, cookie, token, secret, and API-key headers and fields.
+- Redact the exact active authentication header before debug logging or capture persistence; short secrets must never be emitted unchanged.
 - Reject non-loopback admin binds.
 - Validate URL scheme and block accidental credential forwarding to an unvalidated target.
 - Treat diagnostics and capture content as sensitive local data.

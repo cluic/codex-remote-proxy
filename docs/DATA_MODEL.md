@@ -1,6 +1,6 @@
 # Data Model
 
-Tasks 3 and 4 have implemented strict schema-version-2 provider metadata persistence plus native and explicit-consent file credential adapters. Provider-service orchestration and migration remain target-state work.
+Tasks 3 through 5 have implemented strict schema-version-2 provider metadata persistence, native and explicit-consent file credential adapters, and immutable in-memory runtime snapshots. Provider-service orchestration and migration remain target-state work.
 
 ## ProviderProfile
 
@@ -68,6 +68,12 @@ Every mutation first acquires an exclusive same-directory protocol gate and a ca
 
 The native adapter lazily loads the addon during construction and stores the same opaque reference under service `org.cluic.codex-remote-proxy`. Backend selection defaults to native. Explicit file selection requires `fallbackConsent === true`; consent permits construction-time file selection only when native cannot be created before any credential operation. Once native is selected, backend-unavailable reads and mutations fail without file replay. A construction-time fallback exposes backend label `file`; callers must reuse that explicit label after restart to remain in the same namespace. Task 4 performs no automatic credential migration.
 
+## RuntimeSettingsSnapshot
+
+A runtime snapshot contains exactly one positive safe-integer `generation` and one plain-data `settings` graph. Applying a snapshot validates its generation, clones its settings, deeply freezes the clone, and replaces the active reference only after all prior work succeeds. Equal or lower generations are stale; invalid, unclonable, or non-plain settings leave the prior reference unchanged.
+
+`current()` returns the frozen active reference. `publicState()` returns only `{ configured, generation }`, both before and after configuration. A proxied request captures `current()` exactly once before body listeners and retains that reference for its target, authentication, headers, TLS, timeout, capture context, and logging lifetime.
+
 ## RuntimeState
 
 Runtime state includes supervisor PID, worker PID, worker status, snapshot generation, start timestamps, restart count, and the last sanitized error. It is observational and can be reconstructed.
@@ -80,7 +86,7 @@ Activity events record timestamp, category, action, provider ID, result, stable 
 
 - One registry has zero or one active provider.
 - Each provider has exactly one credential reference after it is saved; public provider projections omit that reference.
-- A worker snapshot references one provider and one resolved credential for its process lifetime.
+- A runtime snapshot references one provider and one resolved credential; each request retains its starting snapshot for the request lifetime.
 
 ## Lifecycle and Deletion
 

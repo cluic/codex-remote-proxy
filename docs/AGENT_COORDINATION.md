@@ -4,7 +4,7 @@
 
 | Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- | --- |
-| V1 sequential implementation | Primary Codex plus one active task agent | Execute the approved plan one task at a time with read-only spec and quality reviews | Current task files only; Task 4 owns `node/src/credentials/`, `node/test/credential-store.test.mjs`, and affected security/data/living docs | Task 4 complete on `codex/harness-product-design`; Task 5 next | Task 3 atomic provider registry | Every file outside the active task; no simultaneous writable agent |
+| V1 sequential implementation | Primary Codex plus Task 5 implementation agent | Resolve the Task 5 response-log review finding with one writer and read-only re-review | Task 5 owns `node/src/worker/runtime-settings.mjs`, `node/src/server.mjs`, `node/test/runtime-settings.test.mjs`, `node/test/server.test.mjs`, and affected living docs | Task 5 P1 response-log fix implemented; re-review next | Task 4 credential adapters | Credentials, providers, Codex bootstrap, CLI, IPC, UI, and every other module; no simultaneous writable agent |
 
 ## Shared Contracts
 

@@ -23,11 +23,14 @@
 - Task 3 focused suite: `cd node && node --test test/provider-registry.test.mjs`
 - Task 4 focused suite: `cd node && node --test test/credential-store.test.mjs`
 - Task 4 combined credential/provider suite: `cd node && node --test test/credential-store.test.mjs test/provider-registry.test.mjs`
+- Task 5 focused suite: `cd node && node --test test/runtime-settings.test.mjs test/server.test.mjs`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
 `npm run lint` recursively checks `.mjs` and `.js` files under `bin`, `src`, `scripts`, and `ui`, skipping source roots that have not landed. On Node 22.19, the Task 2 focused suite passes 15/15 tests. Its coverage verifies OpenAI provider creation and update, custom-provider and CRLF preservation, byte idempotency, one-time adjacent backup, exclusive same-timestamp backup collision handling, CRP lock contention, external source-change rejection, atomic mode-preserving replacement, deterministic rename-failure cleanup and original preservation, all nine injected-home paths, safe public error serialization, `start`/`install`/`setup` JSON and managed-state backup propagation, and accurate guide backup semantics.
 
 The Node 22.19 Task 3 focused suite passes 23/23 tests. The Task 4 credential suite passes 41/41, the combined credential/provider suite passes 64/64, and the current full suite passes 91/91; `npm run lint` syntax-checks 14 source files. Task 4 coverage includes the shared async adapter contract, lazy native-loader failure, construction-only fallback, no operation replay for native get/set/has/delete outages, explicit file-label restart continuity without migration, exact schema and string persistence, reload and refreshed reads, no enumeration API, two-instance lost-update prevention, strict parent/file modes, POSIX no-follow and simulated-Windows descriptor identity, symlink-swap rejection before byte reads, fsync/rename order, rollback cleanup, bounded secret-temp cleanup and permanent uncommitted degradation, gate-covered atomic lock claims, preexisting foreign-gate preservation, claim-before-delete gate release under an immediate foreign replacement, canonical blocker restoration, synchronous second-instance rejection during gate claim validation, normal claim cleanup and subsequent mutation, fresh-instance busy behavior, permanent committed lock degradation, input validation, and public provider masking. Tests never invoke the default native loader or construct or query a real native credential entry. Real native-backend verification remains L3 on every supported system, including Windows and Linux; file permission and rename semantics on Windows and Linux also remain unverified.
+
+The Node 22.19 Task 5 focused suite passes 13/13 and the current full suite passes 102/102; `npm run lint` syntax-checks 15 source files. Coverage verifies generation validation and failure atomicity, deep clone/freeze behavior, public allowlisting, exactly one request-start snapshot capture, delayed A versus immediate B switching, a transport-option spy for TLS pinning before body arrival, pinned authentication, headers, timeout, capture context and request IDs, static compatibility, unconfigured-source rejection, dynamic health secret scans, request/response short and custom authentication debug masking, and bidirectional custom-auth capture redaction.
 
 `npm run test:unit` runs only top-level `test/*.test.mjs` files. The `test:integration` runner is present and recursively discovers `test/integration/**/*.test.mjs`, but no integration tests exist yet, so it intentionally fails with an explicit no-files error and is not part of the current runnable gate. `test:e2e` and the combined `test:all` command are also not current gates until the UI, Playwright configuration, and E2E specs land.
 
@@ -48,6 +51,10 @@ The Node 22.19 Task 3 focused suite passes 23/23 tests. The Task 4 credential su
 - Credential mutation must remain gate-protected, and the canonical primary lock must cover gate claim validation.
 - Gate release must atomically claim the canonical path and delete only an ownership-verified claim; it must never delete the canonical path after a separate identity check.
 - Primary lock release must follow gate claim validation or proven blocker restoration; an uncertain gate state must retain the primary path.
+- Runtime snapshots must be cloned and deeply frozen before the active reference is replaced.
+- Proxy tests must prove one snapshot read before body listeners and pin every request-level upstream decision to it.
+- Snapshot-switch tests must make every pre-fix routing path terminate deterministically.
+- Request and response debug/capture tests must use the active custom authentication header and scan for complete short and long secret values.
 
 ## Test Matrix
 

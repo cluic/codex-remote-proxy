@@ -2,7 +2,7 @@
 
 ## Current State
 
-Version 0.2.2 remains a Node CLI plus one proxy process. `crp start` writes a single runtime configuration, bootstraps Codex to use the `OpenAI` provider section, and spawns the proxy. Tasks 2 through 4 have landed shared path and public-error contracts, an idempotent Codex configuration adapter, strict provider-schema validation, an atomic schema-version-2 provider registry, and native plus explicit-consent file credential adapters. The supervisor, provider service, Admin API, and independent worker remain target-state architecture.
+Version 0.2.2 remains a Node CLI plus one proxy process. `crp start` writes a single runtime configuration, bootstraps Codex to use the `OpenAI` provider section, and spawns the proxy. Tasks 2 through 5 have landed shared path and public-error contracts, an idempotent Codex configuration adapter, strict provider-schema validation, atomic provider and credential persistence, and immutable request-level runtime settings. The supervisor, provider service, Admin API, and IPC-hosted worker entrypoint remain target-state architecture.
 
 ## Target Overview
 
@@ -40,7 +40,7 @@ Active OpenAI-compatible upstream
 
 ## Module Boundaries
 
-Landed in Tasks 2 through 4:
+Landed in Tasks 2 through 5:
 
 - `shared/paths`: derives CRP registry, credential fallback, state, control token, activity, log, Codex configuration, and Codex auth paths from one home root.
 - `shared/errors`: defines stable `CrpError` fields and safe public serialization for known and unknown failures.
@@ -50,13 +50,15 @@ Landed in Tasks 2 through 4:
 - `credential-store`: selects native storage by default and chooses the schema-version-1 file fallback only with explicit consent when native construction fails before any credential operation; selected native operations never replay into the independent file namespace. Both adapters expose asynchronous get/set/has/delete operations without enumeration.
 - `native-keyring`: lazily loads synchronous `@napi-rs/keyring` entries during construction under service `org.cluic.codex-remote-proxy`, supports injected loaders/factories, preserves backend failures only as internal causes, and exposes safe stable errors.
 - `file-credential-store`: validates a real private parent and regular private file, opens and identity-checks a descriptor before reading, validates exact secret-only documents, refreshes reads, and serializes clone-before-commit mutations with exclusive `0600` lock and temporary files.
+- `runtime-settings`: accepts only positive, strictly increasing safe-integer generations, clone-and-freezes plain settings before replacing one active reference, and exposes only configured state plus generation publicly.
+- `proxy forwarding`: optionally captures exactly one runtime snapshot before request-body listeners and pins target, transport, request ID, authentication, extra headers, TLS, timeout, capture context, and logs for that request. Static configuration remains the generation-zero compatibility path. Dynamic health exposes only runtime and capture public state; an unconfigured source never falls back to the static upstream.
 
 Remaining target-state boundaries:
 
 - `supervisor`: owns state transitions, admin server, activity records, and child-process lifecycle.
 - `provider-service`: coordinates compatibility tests, credentials, activation, and credential-aware deletion above the metadata registry.
 - `worker-protocol`: versioned IPC messages for configure, drain, shutdown, health, and events.
-- `proxy-worker`: forwards traffic from immutable provider snapshots; does not own persistent configuration.
+- `proxy-worker`: hosts the landed forwarding server behind the future IPC entrypoint and does not own persistent configuration.
 - `admin-api`: loopback-only versioned HTTP contract used by both UI and CLI.
 - `web-ui`: static local app with onboarding and daily management views.
 
