@@ -4,7 +4,7 @@
 
 | Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- | --- |
-| V1 sequential implementation | Primary Codex plus one active task agent | Execute the approved plan one task at a time with read-only spec and quality reviews | Current task files only; Task 2 owns `node/src/shared/`, `node/src/codex/`, `node/bin/crp.mjs`, `node/test/codex-config.test.mjs`, and affected living docs | Task 2 complete on `codex/harness-product-design`; Task 3 next | Task 1 quality gates | Every file outside the active task; no simultaneous writable agent |
+| V1 sequential implementation | Primary Codex plus one active task agent | Execute the approved plan one task at a time with read-only spec and quality reviews | Current task files only; Task 3 owns `node/src/providers/`, `node/test/provider-registry.test.mjs`, and affected living docs | Task 3 complete on `codex/harness-product-design`; Task 4 next | Task 2 shared paths, errors, and Codex bootstrap | Every file outside the active task; no simultaneous writable agent |
 
 ## Shared Contracts
 
@@ -29,4 +29,4 @@
 
 ## Decisions Needed
 
-Subagent-driven execution is selected. Work remains on the dedicated branch `codex/harness-product-design`; no linked worktree or parallel writable work is in use. Task 3 requires a fresh file scope before writable work begins.
+Subagent-driven execution is selected. Work remains on the dedicated branch `codex/harness-product-design`; no linked worktree or parallel writable work is in use. Task 4 requires a fresh file scope before writable work begins.

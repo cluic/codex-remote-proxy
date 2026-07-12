@@ -6,7 +6,7 @@ V1 implementation: provider lifecycle end to end.
 
 ## In Progress
 
-- Sequential execution of the approved V1 plan; Tasks 1 and 2 are complete and Task 3 is next.
+- Sequential execution of the approved V1 plan; Tasks 1 through 3 are complete and Task 4 is next.
 
 ## Done
 
@@ -20,17 +20,19 @@ V1 implementation: provider lifecycle end to end.
 - Completed Task 1 portable syntax, unit-test, E2E script, packaging, and dependency gates.
 - Stabilized capture watcher tests with condition-based waits and assertion-safe cleanup on Node 22.19 and Node 24.2.
 - Completed Task 2 shared path and public-error contracts plus line-ending-preserving, lock-serialized, idempotent and atomic Codex bootstrap behavior, covered by 15/15 focused and 27/27 full Node 22.19 tests.
+- Completed Task 3 strict provider validation and lock-serialized atomic schema-version-2 registry behavior, covered by 23/23 focused and 50/50 full Node 22.19 tests.
 
 ## Blocked
 
-- No current blocker is recorded for Task 3.
+- No current blocker is recorded for Task 4.
 
 ## Next
 
-1. Execute Task 3: add the atomic provider registry.
+1. Execute Task 4: add native and explicit-fallback credential stores.
 2. Keep product implementation within the approved V1 task order and fixed provider/proxy invariants.
 
 ## Risks
 
 - Future V1 implementation is L3 because it handles credentials, local browser security, Codex configuration, and process lifecycle.
 - Cross-platform credential APIs and restart semantics require real macOS and Windows verification.
+- Provider-registry atomic rename and permission semantics remain unverified on real Windows and Linux hosts.

@@ -304,7 +304,7 @@ git commit -m "refactor: isolate Codex bootstrap"
 - Create: `node/src/providers/provider-registry.mjs`
 - Create: `node/test/provider-registry.test.mjs`
 
-- [ ] **Step 1: Write failing registry behavior tests**
+- [x] **Step 1: Write failing registry behavior tests**
 
 Cover create/list/get/update, case-insensitive duplicate names, activation, active-delete rejection, inactive deletion, reload, malformed JSON, and `0600` permissions. Use injected deterministic IDs and clocks:
 
@@ -328,7 +328,7 @@ assert.equal(created.id, "provider-1");
 assert.equal(registry.list().length, 1);
 ```
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 ```bash
 cd node
@@ -337,7 +337,7 @@ node --test test/provider-registry.test.mjs
 
 Expected: FAIL because the provider modules do not exist.
 
-- [ ] **Step 3: Implement validation and masking**
+- [x] **Step 3: Implement validation and masking**
 
 Export from `provider-schema.mjs`:
 
@@ -353,7 +353,7 @@ export function toPublicProvider(profile, credentialConfigured) {
 
 Reject missing names, duplicate names, credentials in `extraHeaders`, non-HTTP(S) URLs, non-loopback HTTP URLs, and missing override models.
 
-- [ ] **Step 4: Implement atomic persistence**
+- [x] **Step 4: Implement atomic persistence**
 
 `ProviderRegistry` must expose:
 
@@ -371,7 +371,7 @@ getDocument();
 
 Every mutation writes a complete schema-version-2 document to a same-directory temporary file with mode `0600`, fsyncs it, and renames it over the registry. Failed validation must leave the original file byte-for-byte unchanged.
 
-- [ ] **Step 5: Run focused and full tests**
+- [x] **Step 5: Run focused and full tests**
 
 ```bash
 cd node
@@ -381,7 +381,9 @@ npm test
 
 Expected: all provider tests and regressions pass.
 
-- [ ] **Step 6: Commit**
+Actual Node 22.19 Task 3 verification: the focused suite passes 23/23 and the full suite passes 50/50 after adding strict profile and document validation, multi-instance lock serialization, stale-state refresh, test-state invalidation, primary-error preservation, deterministic rollback and degraded-lock cleanup, defensive-copy, and public-allowlist coverage.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add node/src/providers node/test/provider-registry.test.mjs
