@@ -18,8 +18,15 @@ function makeTempDir(prefix) {
   return join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
-function wait(ms = 700) {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+async function waitFor(condition, description, { timeoutMs = 5000, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (!condition()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${description} after ${timeoutMs}ms`);
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, intervalMs));
+  }
 }
 
 test("normalizeCaptureConfig applies defaults", () => {
@@ -118,9 +125,17 @@ test("capture manager writes a complete request/response record", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("capture manager hot-disables when runtime config changes", async () => {
+test("capture manager hot-disables when runtime config changes", async (t) => {
   const dir = makeTempDir("crp-hot-disable");
   mkdirSync(dir, { recursive: true });
+  let manager;
+  t.after(() => {
+    try {
+      manager?.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   const runtimeConfigPath = join(dir, "proxy-config.json");
   const dbPath = join(dir, "traffic.sqlite3");
   writeFileSync(runtimeConfigPath, `${JSON.stringify({
@@ -130,13 +145,14 @@ test("capture manager hot-disables when runtime config changes", async () => {
     }
   }, null, 2)}\n`, "utf8");
 
-  const manager = new CaptureManager({
+  manager = new CaptureManager({
     configPath: runtimeConfigPath,
     capture: {
       enabled: true,
       dbPath
     }
-  }).start();
+  });
+  manager.start();
 
   assert.equal(manager.getPublicState().captureActive, true);
   writeFileSync(runtimeConfigPath, `${JSON.stringify({
@@ -145,18 +161,26 @@ test("capture manager hot-disables when runtime config changes", async () => {
       dbPath
     }
   }, null, 2)}\n`, "utf8");
-  await wait();
+  await waitFor(
+    () => manager.getPublicState().captureActive === false,
+    "capture recording to become inactive"
+  );
 
   assert.equal(manager.getPublicState().captureActive, false);
   assert.equal(manager.getPublicState().captureState, "disabled");
-
-  manager.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
-test("capture manager marks restart required when db path changes", async () => {
+test("capture manager marks restart required when db path changes", async (t) => {
   const dir = makeTempDir("crp-db-change");
   mkdirSync(dir, { recursive: true });
+  let manager;
+  t.after(() => {
+    try {
+      manager?.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   const runtimeConfigPath = join(dir, "proxy-config.json");
   const dbPath = join(dir, "traffic.sqlite3");
   const nextDbPath = join(dir, "traffic-next.sqlite3");
@@ -167,13 +191,14 @@ test("capture manager marks restart required when db path changes", async () => 
     }
   }, null, 2)}\n`, "utf8");
 
-  const manager = new CaptureManager({
+  manager = new CaptureManager({
     configPath: runtimeConfigPath,
     capture: {
       enabled: true,
       dbPath
     }
-  }).start();
+  });
+  manager.start();
 
   writeFileSync(runtimeConfigPath, `${JSON.stringify({
     capture: {
@@ -181,15 +206,15 @@ test("capture manager marks restart required when db path changes", async () => 
       dbPath: nextDbPath
     }
   }, null, 2)}\n`, "utf8");
-  await wait();
+  await waitFor(
+    () => manager.getPublicState().captureRestartRequired === true,
+    "capture restart to become required"
+  );
 
   const state = manager.getPublicState();
   assert.equal(state.captureRestartRequired, true);
   assert.equal(resolve(state.captureRuntimeDbPath), resolve(dbPath));
   assert.equal(resolve(state.captureDbPath), resolve(nextDbPath));
-
-  manager.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
 test("loadRuntimeCaptureConfig validates malformed config", () => {

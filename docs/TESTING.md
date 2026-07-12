@@ -16,10 +16,16 @@
 
 ## Current Commands
 
-- Existing suite: `cd node && npm test`
+- Portable syntax check: `cd node && npm run lint`
+- Existing full suite: `cd node && npm test`
+- Top-level unit suite: `cd node && npm run test:unit`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
-The implementation plan must add stable scripts for `test:unit`, `test:integration`, `test:e2e`, `lint`, and UI build before their respective modules land.
+`npm run lint` recursively checks `.mjs` and `.js` files under `bin`, `src`, `scripts`, and `ui`, skipping source roots that have not landed. `npm run test:unit` runs only top-level `test/*.test.mjs` files. The `test:integration` runner is present and recursively discovers `test/integration/**/*.test.mjs`, but no integration tests exist yet, so it intentionally fails with an explicit no-files error and is not part of the current runnable gate. `test:e2e` and the combined `test:all` command are also not current gates until the UI, Playwright configuration, and E2E specs land.
+
+## Test Authoring Rules
+
+- File-watcher tests must wait for observable state and register cleanup before assertions.
 
 ## Test Matrix
 

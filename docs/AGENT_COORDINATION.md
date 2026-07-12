@@ -4,7 +4,7 @@
 
 | Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- | --- |
-| Harness, design, and plan | Primary Codex | Documentation only | `AGENTS.md`, `.codex/`, `docs/` | Ready | User execution-mode selection | Product code under `node/` |
+| V1 sequential implementation | Primary Codex plus one active task agent | Execute the approved plan one task at a time with read-only spec and quality reviews | Current task files only; Task 1 owns `node/package*.json`, `node/scripts/`, `node/test/capture-store.test.mjs`, and affected living docs | In progress on `codex/harness-product-design` | Approved design, plan, and Node 22 baseline | Every file outside the active task; no simultaneous writable agent |
 
 ## Shared Contracts
 
@@ -23,10 +23,10 @@
 
 ## Locks / Avoid Editing
 
-- No parallel writable work is authorized while the written spec is under review.
+- No parallel writable work is authorized; only one task implementer may write at a time, and review agents are read-only.
 - Future agents must not change shared contracts without first updating the owning doc and coordination row.
 - Credential, migration, and lifecycle work must be isolated from UI styling work until contracts pass review.
 
 ## Decisions Needed
 
-No blocking decision remains for planning. File ownership and worktree assignments must be added before any parallel implementation begins.
+Subagent-driven execution is selected. Work remains on the clean dedicated branch `codex/harness-product-design`; no linked worktree or parallel writable work is in use.

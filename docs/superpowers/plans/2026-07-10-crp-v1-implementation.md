@@ -64,7 +64,7 @@
 - Create: `node/scripts/run-test-group.mjs`
 - Test: existing `node/test/*.test.mjs`
 
-- [ ] **Step 1: Record the fresh baseline**
+- [x] **Step 1: Record the fresh baseline**
 
 Run:
 
@@ -76,7 +76,7 @@ npm audit --omit=dev
 
 Expected: 12 tests pass and the runtime audit reports zero vulnerabilities.
 
-- [ ] **Step 2: Add the portable source-check script**
+- [x] **Step 2: Add the portable source-check script**
 
 Create `node/scripts/check-source.mjs`:
 
@@ -113,7 +113,7 @@ for (const file of files.sort()) {
 console.log(`Syntax checked ${files.length} source files.`);
 ```
 
-- [ ] **Step 3: Add the cross-platform grouped-test runner**
+- [x] **Step 3: Add the cross-platform grouped-test runner**
 
 Create `node/scripts/run-test-group.mjs`:
 
@@ -143,7 +143,7 @@ const result = spawnSync(process.execPath, ["--test", ...files], { stdio: "inher
 process.exit(result.status ?? 1);
 ```
 
-- [ ] **Step 4: Add exact dependencies and scripts**
+- [x] **Step 4: Add exact dependencies and scripts**
 
 Run:
 
@@ -176,7 +176,7 @@ Set these scripts in `node/package.json`:
 }
 ```
 
-- [ ] **Step 5: Verify gates**
+- [x] **Step 5: Verify gates**
 
 Run:
 
@@ -189,7 +189,7 @@ npm audit --omit=dev
 
 Expected: syntax check succeeds, 12 tests pass, and runtime audit reports zero vulnerabilities.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add node/package.json node/package-lock.json node/scripts/check-source.mjs node/scripts/run-test-group.mjs
