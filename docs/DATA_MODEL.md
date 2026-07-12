@@ -1,6 +1,6 @@
 # Data Model
 
-Tasks 3 through 5 have implemented strict schema-version-2 provider metadata persistence, native and explicit-consent file credential adapters, and immutable in-memory runtime snapshots. Provider-service orchestration and migration remain target-state work.
+Tasks 3 through 6 have implemented strict schema-version-2 provider metadata persistence, native and explicit-consent file credential adapters, immutable in-memory runtime snapshots, and a strict version-1 worker protocol. Provider-service orchestration and migration remain target-state work.
 
 ## ProviderProfile
 
@@ -73,6 +73,12 @@ The native adapter lazily loads the addon during construction and stores the sam
 A runtime snapshot contains exactly one positive safe-integer `generation` and one plain-data `settings` graph. Applying a snapshot validates its generation, clones its settings, deeply freezes the clone, and replaces the active reference only after all prior work succeeds. Equal or lower generations are stale; invalid, unclonable, or non-plain settings leave the prior reference unchanged.
 
 `current()` returns the frozen active reference. `publicState()` returns only `{ configured, generation }`, both before and after configuration. A proxied request captures `current()` exactly once before body listeners and retains that reference for its target, authentication, headers, TLS, timeout, capture context, and logging lifetime.
+
+## WorkerProtocolMessage
+
+Every IPC message has exactly `{ version: 1, type, requestId, ...typeFields }`. Parent messages are `configure`, `drain`, `shutdown`, and `status`; only `configure` adds `{ generation, settings }`, and it is the only message allowed to carry resolved credentials. Child messages are `ready`, `configured`, `drained`, `status`, and `fatal`. Lifecycle messages expose only an exact public worker state `{ phase, configured, generation, listening, listenHost, listenPort, inFlight }`; fatal messages expose a stable code and static public message without causes or input payloads.
+
+Configure settings use the exact runtime graph required by the forwarding server and reject unknown or malformed fields before any bind. Upstream URLs require HTTPS except for explicit loopback HTTP; authentication names and schemes are HTTP tokens, the exact scheme-plus-key value must satisfy Node header-value rules, and extra headers cannot be sensitive or collide case-insensitively with the configured authentication header. A worker accepts only increasing positive safe-integer generations through `RuntimeSettingsSource` while ready or running and rejects configure after drain begins. Drain completion is idempotent: repeated request IDs receive drained acknowledgements without changing the drained state. Protocol sanitization removes configure settings, projects lifecycle state through the public allowlist, maps fatal output to safe static errors, and uses `worker-fatal` instead of an unvalidated input request ID.
 
 ## RuntimeState
 

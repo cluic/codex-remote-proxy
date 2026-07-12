@@ -4,7 +4,7 @@
 
 | Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- | --- |
-| V1 sequential implementation | Primary Codex plus Task 5 implementation agent | Resolve the Task 5 response-log review finding with one writer and read-only re-review | Task 5 owns `node/src/worker/runtime-settings.mjs`, `node/src/server.mjs`, `node/test/runtime-settings.test.mjs`, `node/test/server.test.mjs`, and affected living docs | Task 5 P1 response-log fix implemented; re-review next | Task 4 credential adapters | Credentials, providers, Codex bootstrap, CLI, IPC, UI, and every other module; no simultaneous writable agent |
+| V1 sequential implementation | Primary Codex plus Task 6 implementation agent | Resolve the final Task 6 shutdown/disconnect escalation review finding with one writer | Task 6 owns `node/src/worker/worker-entry.mjs`, `node/test/integration/worker-entry.test.mjs`, and affected living docs; the completed protocol and grouped test runner remain unchanged | Task 6 bounded shutdown/disconnect escalation fix complete on `codex/harness-product-design`; Task 7 is next | Task 6 amended commit | Task 5 server/runtime settings and capture source/tests, test runner/package, supervisor/manager, providers, credentials, Codex, CLI/bin, Admin API, UI, and every other module; no simultaneous writable agent |
 
 ## Shared Contracts
 

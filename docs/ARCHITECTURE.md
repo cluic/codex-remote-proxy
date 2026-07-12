@@ -2,7 +2,7 @@
 
 ## Current State
 
-Version 0.2.2 remains a Node CLI plus one proxy process. `crp start` writes a single runtime configuration, bootstraps Codex to use the `OpenAI` provider section, and spawns the proxy. Tasks 2 through 5 have landed shared path and public-error contracts, an idempotent Codex configuration adapter, strict provider-schema validation, atomic provider and credential persistence, and immutable request-level runtime settings. The supervisor, provider service, Admin API, and IPC-hosted worker entrypoint remain target-state architecture.
+Version 0.2.2 remains a Node CLI plus one proxy process. `crp start` writes a single runtime configuration, bootstraps Codex to use the `OpenAI` provider section, and spawns the proxy. Tasks 2 through 6 have landed shared path and public-error contracts, an idempotent Codex configuration adapter, strict provider-schema validation, atomic provider and credential persistence, immutable request-level runtime settings, and an IPC-hosted worker entrypoint. The supervisor, provider service, and Admin API remain target-state architecture.
 
 ## Target Overview
 
@@ -40,7 +40,7 @@ Active OpenAI-compatible upstream
 
 ## Module Boundaries
 
-Landed in Tasks 2 through 5:
+Landed in Tasks 2 through 6:
 
 - `shared/paths`: derives CRP registry, credential fallback, state, control token, activity, log, Codex configuration, and Codex auth paths from one home root.
 - `shared/errors`: defines stable `CrpError` fields and safe public serialization for known and unknown failures.
@@ -52,13 +52,13 @@ Landed in Tasks 2 through 5:
 - `file-credential-store`: validates a real private parent and regular private file, opens and identity-checks a descriptor before reading, validates exact secret-only documents, refreshes reads, and serializes clone-before-commit mutations with exclusive `0600` lock and temporary files.
 - `runtime-settings`: accepts only positive, strictly increasing safe-integer generations, clone-and-freezes plain settings before replacing one active reference, and exposes only configured state plus generation publicly.
 - `proxy forwarding`: optionally captures exactly one runtime snapshot before request-body listeners and pins target, transport, request ID, authentication, extra headers, TLS, timeout, capture context, and logs for that request. Static configuration remains the generation-zero compatibility path. Dynamic health exposes only runtime and capture public state; an unconfigured source never falls back to the static upstream.
+- `worker-protocol`: validates exact version-1 parent messages (`configure`, `drain`, `shutdown`, `status`) and child messages (`ready`, `configured`, `drained`, `status`, `fatal`). Configure accepts HTTPS or explicit loopback HTTP only, requires HTTP-token authentication fields, validates the exact final authentication value with Node header rules, and rejects sensitive or authentication-conflicting extra headers. Resolved settings are accepted only inside parent configure messages; child output and sanitized projections contain only allowlisted lifecycle state and stable public errors, and invalid input receives the fixed `worker-fatal` correlation ID.
+- `proxy-worker`: creates one runtime settings source and forwarding app after the first valid configure, binds only then, applies strictly increasing generations while ready or running, rejects configure once drain begins, tracks in-flight requests independently of later phase changes, closes the listener and idle keep-alive connections during drain, acknowledges repeated drain requests without leaving the drained phase, closes capture and IPC resources during shutdown, and bounds forced cleanup after parent disconnect even when graceful shutdown is already waiting so a hanging upstream cannot orphan the worker.
 
 Remaining target-state boundaries:
 
 - `supervisor`: owns state transitions, admin server, activity records, and child-process lifecycle.
 - `provider-service`: coordinates compatibility tests, credentials, activation, and credential-aware deletion above the metadata registry.
-- `worker-protocol`: versioned IPC messages for configure, drain, shutdown, health, and events.
-- `proxy-worker`: hosts the landed forwarding server behind the future IPC entrypoint and does not own persistent configuration.
 - `admin-api`: loopback-only versioned HTTP contract used by both UI and CLI.
 - `web-ui`: static local app with onboarding and daily management views.
 

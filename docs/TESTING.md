@@ -24,6 +24,8 @@
 - Task 4 focused suite: `cd node && node --test test/credential-store.test.mjs`
 - Task 4 combined credential/provider suite: `cd node && node --test test/credential-store.test.mjs test/provider-registry.test.mjs`
 - Task 5 focused suite: `cd node && node --test test/runtime-settings.test.mjs test/server.test.mjs`
+- Task 6 focused suite: `cd node && node --test test/worker-protocol.test.mjs test/integration/worker-entry.test.mjs`
+- Worker integration suite: `cd node && npm run test:integration`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
 `npm run lint` recursively checks `.mjs` and `.js` files under `bin`, `src`, `scripts`, and `ui`, skipping source roots that have not landed. On Node 22.19, the Task 2 focused suite passes 15/15 tests. Its coverage verifies OpenAI provider creation and update, custom-provider and CRLF preservation, byte idempotency, one-time adjacent backup, exclusive same-timestamp backup collision handling, CRP lock contention, external source-change rejection, atomic mode-preserving replacement, deterministic rename-failure cleanup and original preservation, all nine injected-home paths, safe public error serialization, `start`/`install`/`setup` JSON and managed-state backup propagation, and accurate guide backup semantics.
@@ -32,7 +34,9 @@ The Node 22.19 Task 3 focused suite passes 23/23 tests. The Task 4 credential su
 
 The Node 22.19 Task 5 focused suite passes 13/13 and the current full suite passes 102/102; `npm run lint` syntax-checks 15 source files. Coverage verifies generation validation and failure atomicity, deep clone/freeze behavior, public allowlisting, exactly one request-start snapshot capture, delayed A versus immediate B switching, a transport-option spy for TLS pinning before body arrival, pinned authentication, headers, timeout, capture context and request IDs, static compatibility, unconfigured-source rejection, dynamic health secret scans, request/response short and custom authentication debug masking, and bidirectional custom-auth capture redaction.
 
-`npm run test:unit` runs only top-level `test/*.test.mjs` files. The `test:integration` runner is present and recursively discovers `test/integration/**/*.test.mjs`, but no integration tests exist yet, so it intentionally fails with an explicit no-files error and is not part of the current runnable gate. `test:e2e` and the combined `test:all` command are also not current gates until the UI, Playwright configuration, and E2E specs land.
+The Node 22.19 Task 6 focused suite passes 21/21, `npm run test:integration` passes 11/11, and `npm test` passes 112/112 top-level tests followed by 11/11 integration tests without duplication; `npm run lint` syntax-checks 18 source files. Coverage verifies exact directional schemas, HTTPS-or-loopback URL enforcement, HTTP-token authentication fields, Node-compatible final authentication values, sensitive and authentication-conflicting header rejection, secret sanitization, fixed invalid-message fatal IDs, and real child-process ready/configure/reconfigure/proxy/status/drain/shutdown flows. Synchronized tests prove configure is rejected after drain begins without replacing generation or losing its acknowledgement, duplicate drain requests keep both acknowledgements and later status drained, and parent disconnect terminates within a deadline despite a hanging upstream both before and after shutdown starts waiting. Invalid authentication values, configuration, stale generation, occupied-port startup, port release, request settlement, stderr/stdout scans, and deterministic deadline-driven cleanup remain covered.
+
+`npm run test:unit` runs only top-level `test/*.test.mjs` files. The `test:integration` runner recursively discovers `test/integration/**/*.test.mjs`; the current worker-entry suite passes 11/11. `npm test` invokes those two nonoverlapping groups in sequence, retaining concurrency inside the top-level group while ensuring real child-process integration load cannot race watcher readiness. `test:e2e` and the combined `test:all` command are not current gates until the UI, Playwright configuration, and E2E specs land.
 
 ## Test Authoring Rules
 
@@ -55,6 +59,14 @@ The Node 22.19 Task 5 focused suite passes 13/13 and the current full suite pass
 - Proxy tests must prove one snapshot read before body listeners and pin every request-level upstream decision to it.
 - Snapshot-switch tests must make every pre-fix routing path terminate deterministically.
 - Request and response debug/capture tests must use the active custom authentication header and scan for complete short and long secret values.
+- Worker protocol tests must reject unknown fields and versions, remote plaintext upstreams, non-token authentication fields, and sensitive or authentication-conflicting extra headers, and prove that child messages and sanitized projections contain no configure settings, complete secrets, or unvalidated request IDs.
+- Child-process integration tests must use observable events and bounded deadlines instead of fixed sleeps, register cleanup before assertions, and leave no worker or test process behind.
+- Worker drain must close idle keep-alive sockets after the final in-flight response before acknowledging.
+- Worker configuration must be rejected once drain begins without replacing generation or losing the pending drain acknowledgement.
+- Duplicate drain requests must keep every acknowledgement and subsequent status in the drained phase.
+- Configure tests must validate the exact authentication header value and prove invalid keys are absent from child IPC, stdout, and stderr.
+- Parent IPC disconnect cleanup must start or reuse bounded escalation even when shutdown is already waiting on an upstream request.
+- Real-fork integration tests must run after watcher-bearing top-level tests, never concurrently with that group.
 
 ## Test Matrix
 

@@ -546,16 +546,18 @@ git commit -m "feat: switch proxy settings atomically"
 - Create: `node/src/worker/worker-entry.mjs`
 - Create: `node/test/worker-protocol.test.mjs`
 - Create: `node/test/integration/worker-entry.test.mjs`
+- Create: `node/scripts/run-tests.mjs`
+- Modify: `node/package.json`
 
-- [ ] **Step 1: Write failing protocol validation tests**
+- [x] **Step 1: Write failing protocol validation tests**
 
 Cover parent messages `configure`, `drain`, `shutdown`, `status` and child messages `ready`, `configured`, `drained`, `status`, `fatal`. Assert secrets are permitted only inside the parent-only configure payload and are removed by `sanitizeProtocolMessage()`.
 
-- [ ] **Step 2: Write a child-process integration test**
+- [x] **Step 2: Write a child-process integration test**
 
 Fork `worker-entry.mjs` with IPC, wait for `ready`, send generation 1 settings on port 0, wait for `configured`, issue a proxied request, request status, then send shutdown and assert exit code 0.
 
-- [ ] **Step 3: Run tests and verify failure**
+- [x] **Step 3: Run tests and verify failure**
 
 ```bash
 cd node
@@ -564,11 +566,11 @@ node --test test/worker-protocol.test.mjs test/integration/worker-entry.test.mjs
 
 Expected: FAIL because protocol and entrypoint modules do not exist.
 
-- [ ] **Step 4: Implement the versioned protocol**
+- [x] **Step 4: Implement the versioned protocol**
 
 Use `PROTOCOL_VERSION = 1`. Every message must contain `{ version: 1, type, requestId }`; configure additionally contains `{ generation, settings }`. Unknown versions/types return a `fatal` child message with stable code `WORKER_PROTOCOL_INVALID` and never echo the input payload.
 
-- [ ] **Step 5: Implement graceful worker behavior**
+- [x] **Step 5: Implement graceful worker behavior**
 
 `worker-entry.mjs` must:
 
@@ -578,17 +580,19 @@ Use `PROTOCOL_VERSION = 1`. Every message must contain `{ version: 1, type, requ
 4. Close capture resources and exit 0 on shutdown.
 5. Emit sanitized fatal messages for uncaught startup errors.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 ```bash
 cd node
 node --test test/worker-protocol.test.mjs test/integration/worker-entry.test.mjs
 npm test
-git add node/src/worker node/test/worker-protocol.test.mjs node/test/integration/worker-entry.test.mjs
+git add node/src/worker node/test/worker-protocol.test.mjs node/test/integration/worker-entry.test.mjs node/scripts/run-tests.mjs node/package.json
 git commit -m "feat: add proxy worker protocol"
 ```
 
 Expected: focused and full suites pass before commit.
+
+Actual Node 22.19 Task 6 verification: the focused protocol/entrypoint suite passes 21/21, the integration runner passes 11/11, and the full gate passes a nonduplicated 112/112 top-level group followed by 11/11 integration tests. The portable syntax gate checks 18 source files. Coverage additionally verifies provider-equivalent URL/header security, Node-compatible final authentication values, child-message secret exclusion, fixed invalid-message fatal IDs, configure-before-listen, monotonic reconfiguration, configure rejection after drain begins, retained tracked in-flight drain acknowledgement with idle keep-alive closure, idempotent duplicate drain, safe invalid/stale/port-conflict fatal exits, bounded parent-disconnect cleanup for a hanging upstream before or during shutdown, and released ports without fixed sleeps. The full runner executes real-fork integration only after watcher-bearing top-level tests complete.
 
 ## Task 7: Implement Reliable Worker Lifecycle Management
 

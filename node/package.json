@@ -27,7 +27,7 @@
     "status": "node bin/crp.mjs status",
     "guide": "node bin/crp.mjs guide",
     "lint": "node scripts/check-source.mjs",
-    "test": "node --test",
+    "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-test-group.mjs unit",
     "test:integration": "node scripts/run-test-group.mjs integration",
     "test:e2e": "playwright test",
