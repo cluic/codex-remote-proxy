@@ -2,7 +2,7 @@
 
 ## Current State
 
-Version 0.2.2 remains a Node CLI plus one proxy process. `crp start` writes a single runtime configuration, bootstraps Codex to use the `OpenAI` provider section, and spawns the proxy. Tasks 2 and 3 have landed shared path and public-error contracts, an idempotent Codex configuration adapter, strict provider-schema validation, and an atomic schema-version-2 provider registry. The supervisor, credential stores, provider service, Admin API, and independent worker remain target-state architecture.
+Version 0.2.2 remains a Node CLI plus one proxy process. `crp start` writes a single runtime configuration, bootstraps Codex to use the `OpenAI` provider section, and spawns the proxy. Tasks 2 through 4 have landed shared path and public-error contracts, an idempotent Codex configuration adapter, strict provider-schema validation, an atomic schema-version-2 provider registry, and native plus explicit-consent file credential adapters. The supervisor, provider service, Admin API, and independent worker remain target-state architecture.
 
 ## Target Overview
 
@@ -40,18 +40,20 @@ Active OpenAI-compatible upstream
 
 ## Module Boundaries
 
-Landed in Tasks 2 and 3:
+Landed in Tasks 2 through 4:
 
 - `shared/paths`: derives CRP registry, credential fallback, state, control token, activity, log, Codex configuration, and Codex auth paths from one home root.
 - `shared/errors`: defines stable `CrpError` fields and safe public serialization for known and unknown failures.
 - `codex-config`: preserves custom providers and source line endings while idempotently bootstrapping the fixed OpenAI provider entry; a sidecar CRP lock serializes writers, changed files receive an exclusive timestamped adjacent backup, and the source is rechecked before atomic mode-preserving replacement.
 - `provider-schema`: canonicalizes safe URLs, validates auth and extra-header syntax plus complete stored profiles, and builds public provider objects from an explicit allowlist.
 - `provider-registry`: synchronously manages provider CRUD, test state, and the active provider ID through strict schema-version-2 documents, lock-serialized reload-before-mutate writes, refreshed defensive reads, and same-directory fsynced `0600` atomic replacement.
+- `credential-store`: selects native storage by default and chooses the schema-version-1 file fallback only with explicit consent when native construction fails before any credential operation; selected native operations never replay into the independent file namespace. Both adapters expose asynchronous get/set/has/delete operations without enumeration.
+- `native-keyring`: lazily loads synchronous `@napi-rs/keyring` entries during construction under service `org.cluic.codex-remote-proxy`, supports injected loaders/factories, preserves backend failures only as internal causes, and exposes safe stable errors.
+- `file-credential-store`: validates a real private parent and regular private file, opens and identity-checks a descriptor before reading, validates exact secret-only documents, refreshes reads, and serializes clone-before-commit mutations with exclusive `0600` lock and temporary files.
 
 Remaining target-state boundaries:
 
 - `supervisor`: owns state transitions, admin server, activity records, and child-process lifecycle.
-- `credential-store`: exposes get/set/delete by opaque credential reference; implements Keychain, Credential Manager, and file fallback adapters.
 - `provider-service`: coordinates compatibility tests, credentials, activation, and credential-aware deletion above the metadata registry.
 - `worker-protocol`: versioned IPC messages for configure, drain, shutdown, health, and events.
 - `proxy-worker`: forwards traffic from immutable provider snapshots; does not own persistent configuration.
@@ -67,13 +69,14 @@ Remaining target-state boundaries:
 ## Storage and Deployment
 
 - Package remains distributed through npm.
-- The landed path contract reserves `~/.codex-remote-proxy/providers.json`, `secrets.json`, `state.json`, `control-token`, `activity.jsonl`, and `supervisor.log`; the provider registry now owns `providers.json`, while the other new stores remain target state.
+- The landed path contract reserves `~/.codex-remote-proxy/providers.json`, `secrets.json`, `state.json`, `control-token`, `activity.jsonl`, and `supervisor.log`; the provider registry owns `providers.json`, the explicit fallback adapter owns `secrets.json`, and the other new stores remain target state.
 - Provider metadata: `~/.codex-remote-proxy/providers.json`, atomically replaced with mode `0600` where supported after complete document validation.
 - Supervisor runtime metadata target: `~/.codex-remote-proxy/state.json`, mode `0600` where supported.
-- Credentials: native OS store; `~/.codex-remote-proxy/secrets.json` only after explicit fallback consent.
+- Credentials: native OS store by default; `~/.codex-remote-proxy/secrets.json` only after strict explicit fallback consent. Native loader/factory failure before selection is a safe backend-unavailable error unless that consent is present. Once native is selected, operation failures remain native and are never replayed. Construction fallback exposes a `file` label that must be explicitly reused across restart; no credential migration is implicit.
 - Activity events: bounded local JSONL or SQLite store without request/response bodies.
 - Codex configuration replacement holds an exclusive sidecar lock, compares bytes before writing, creates backups with exclusive-copy semantics, rechecks the source before rename, and preserves the source permission mode through same-directory temporary-file `fsync` and rename; unchanged content is neither rewritten nor backed up.
 - Provider-registry mutation holds an exclusive `0600` sidecar lock across disk reload, complete validation, same-directory temporary-file `fsync`, `chmod 0600`, rename, and in-memory replacement; validation or persistence failure leaves the prior in-memory document unchanged. Bounded cleanup preserves primary errors and distinguishes a durable committed/degraded result from a retryable failure; permanent residual locks require explicit repair and restart and are never auto-removed.
+- File-credential mutation follows the same conservative durable-commit rules while using a strict schema-version-1 secret-only document. Reads validate the parent and path before opening, verify descriptor identity, and never read secret bytes by path. An exclusive gate covers mutation. Release atomically renames the canonical gate to a unique claim, verifies and removes only that claim, and never deletes the canonical path. The canonical primary lock remains present throughout gate claim validation, so a competing instance that acquires the empty gate still reports busy; foreign or uncertain gate state must prove a canonical blocker before primary release, otherwise the primary lock is retained. Foreign or permanent claimed primary locks likewise restore a nonempty canonical blocker. Permanent secret-temp cleanup failure records uncommitted degradation and stops later mutations before another lock opens. Public errors contain no reference, secret, path, or file bytes.
 - macOS and Windows receive UI support; Linux uses the same supervisor and CLI without an initial UI guarantee.
 
 ## Risks

@@ -398,22 +398,25 @@ git commit -m "feat: add atomic provider registry"
 - Create: `node/src/credentials/credential-store.mjs`
 - Create: `node/test/credential-store.test.mjs`
 
-- [ ] **Step 1: Write one shared adapter contract test**
+- [x] **Step 1: Write one shared adapter contract test**
 
 Run the same assertions against an in-memory test double and `FileCredentialStore`:
 
 ```js
-await store.set("provider-1", "sk-test-secret");
-assert.equal(await store.has("provider-1"), true);
-assert.equal(await store.get("provider-1"), "sk-test-secret");
-await store.delete("provider-1");
-assert.equal(await store.has("provider-1"), false);
-await assert.rejects(() => store.get("provider-1"), /CREDENTIAL_NOT_FOUND/);
+const ref = `provider-${randomUUID()}`;
+const secret = ["test", "credential", randomUUID()].join("-");
+await store.set(ref, secret);
+assert.equal(await store.has(ref), true);
+assert.equal(await store.get(ref), secret);
+assert.equal(await store.delete(ref), true);
+assert.equal(await store.has(ref), false);
+await assert.rejects(() => store.get(ref), (error) => error.code === "CREDENTIAL_NOT_FOUND");
+assert.equal(await store.delete(ref), false);
 ```
 
 Assert the fallback file is `0600`, stores no provider metadata, survives reload, and never returns all secrets through a list method.
 
-- [ ] **Step 2: Verify the contract tests fail**
+- [x] **Step 2: Verify the contract tests fail**
 
 ```bash
 cd node
@@ -422,36 +425,39 @@ node --test test/credential-store.test.mjs
 
 Expected: FAIL because credential modules do not exist.
 
-- [ ] **Step 3: Implement the adapters**
+- [x] **Step 3: Implement the adapters**
 
-Use `@napi-rs/keyring` exactly as follows in `native-keyring.mjs`:
+Load `@napi-rs/keyring` lazily during adapter construction, use service `org.cluic.codex-remote-proxy`, and allow an injected entry loader or factory for tests:
 
 ```js
-import { Entry } from "@napi-rs/keyring";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 const SERVICE = "org.cluic.codex-remote-proxy";
 
+function loadEntry() {
+  return require("@napi-rs/keyring").Entry;
+}
+
 export class NativeKeyringStore {
-  async set(ref, secret) { new Entry(SERVICE, ref).setPassword(secret); }
-  async get(ref) {
-    const password = new Entry(SERVICE, ref).getPassword();
-    if (!password) throw new Error("CREDENTIAL_NOT_FOUND");
-    return password;
+  constructor({ entryLoader = loadEntry, entryFactory } = {}) {
+    const EntryClass = entryFactory === undefined ? entryLoader() : null;
+    this.entryFactory = entryFactory ?? ((service, ref) => new EntryClass(service, ref));
   }
   async has(ref) {
-    try { return Boolean(await this.get(ref)); } catch { return false; }
-  }
-  async delete(ref) {
-    try { new Entry(SERVICE, ref).deletePassword(); } catch { return false; }
-    return true;
+    try { await this.get(ref); return true; }
+    catch (error) {
+      if (error.code === "CREDENTIAL_NOT_FOUND") return false;
+      throw error;
+    }
   }
 }
 ```
 
-`FileCredentialStore` persists `{ "schemaVersion": 1, "credentials": { "provider-1": "secret" } }` atomically with `0600` mode. `createCredentialStore({ backend, fallbackConsent, paths })` must never silently choose file storage; native failure returns `CREDENTIAL_BACKEND_UNAVAILABLE` unless `fallbackConsent === true`.
+The native methods validate inputs, wrap synchronous entry calls in asynchronous methods, map missing passwords to `CREDENTIAL_NOT_FOUND`, map other native failures to `CREDENTIAL_BACKEND_UNAVAILABLE`, and keep causes internal. `FileCredentialStore` persists `{ "schemaVersion": 1, "credentials": { "provider-1": "secret" } }` atomically with `0600` mode, reads through a validated descriptor, degrades on permanent secret-temp cleanup failure, and holds a protocol gate plus canonical primary lock across mutation. Gate release atomically renames canonical state to a unique claim and deletes only a verified owned claim; the primary lock remains until ownership or a foreign-claim blocker is proven. `createCredentialStore({ backend, fallbackConsent, paths })` must never silently choose file storage; explicit consent permits construction-time fallback only before any credential operation. Selected native operations are never replayed, and a selected file label must be explicitly reused after restart without implicit migration.
 
-- [ ] **Step 4: Verify no secret is exposed by public helpers**
+- [x] **Step 4: Verify no secret is exposed by public helpers**
 
-Add assertions that `JSON.stringify(toPublicProvider(profile, true))` contains neither `credentialRef` nor `sk-test-secret`, then run:
+Add assertions that `JSON.stringify(toPublicProvider(profile, true))` contains neither `credentialRef` nor the runtime-generated secret, then run:
 
 ```bash
 cd node
@@ -460,7 +466,9 @@ node --test test/credential-store.test.mjs test/provider-registry.test.mjs
 
 Expected: all focused tests pass.
 
-- [ ] **Step 5: Commit**
+Actual Node 22.19 Task 4 verification: the credential suite passes 41/41, the combined credential/provider suite passes 64/64, the full suite passes 91/91, and the portable syntax gate checks 14 source files. Native tests inject the entry loader and never invoke the default addon loader or access the real OS credential store.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add node/src/credentials node/test/credential-store.test.mjs
