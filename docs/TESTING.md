@@ -28,6 +28,7 @@
 - Task 7 focused suite: `cd node && node --test test/worker-manager.test.mjs test/integration/worker-restart.test.mjs`
 - Task 9 focused suite: `cd node && node --test test/session-auth.test.mjs test/provider-service.test.mjs test/integration/admin-server.test.mjs`
 - Task 8 focused suite: `cd node && node --test test/activity-store.test.mjs test/migration.test.mjs test/provider-service.test.mjs`
+- Task 10 focused suite: `cd node && node --test test/crp.test.mjs test/integration/crp-lifecycle.test.mjs`
 - Worker integration suite: `cd node && npm run test:integration`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
@@ -44,6 +45,8 @@ The Node 22.19 Task 7 strict-unhandled focused suite passes 22/22. Exact `npm te
 The Node 22.19 Task 9 focused suite passes 42/42. Exact `npm test` passes 179/179 core assertions, 7/7 isolated capture assertions, and 23/23 integration assertions; `npm run lint` syntax-checks 26 source files and `npm audit --omit=dev` reports zero vulnerabilities. Coverage verifies private descriptor-validated control tokens, browser expiry and CSRF, exact Host/Origin/CORS rejection, bounded exact JSON and empty-body contracts, every approved route, safe activity pagination, read-only settings, positive response/error/diagnostic projections, static asset allowlisting, active-only lifecycle credentials with in-flight command reuse, supervisor migration-before-registry composition, readiness-gated `0600` state, construction/listen rollback, independent Codex/state adapters, and idempotent signal cleanup. All new integration boundaries use temporary homes, injected stores/services, and loopback HTTP; real HOME, native keyring, external provider traffic, and actual UI assets remain outside this deterministic gate.
 
 The Node 22.19 Task 8 focused suite passes 42/42. Exact `npm test` passes 168/168 core assertions, 7/7 isolated capture assertions, and 12/12 integration tests; `npm run lint` syntax-checks 22 source files. Coverage verifies the expanded activity denylist and full-file secret scans, Error/cycle/non-JSON handling, retention, atomic failure preservation, foreign lock replacement, and canonical degraded blocking; descriptor-safe temp-only migration, symlink rejection, byte-exact backups, exclusive final-path registry creation, identity/byte-owned rollback, foreign registry preservation, transaction locks, committed schema reconciliation, and canonical release blockers; active-update rejection, no-follow redirect behavior across two loopback origins, CRUD/credential committed outcomes, replacement rollback safety, selected credentials, explicit serialization, and deterministic `1 -> 2 -> 3` rollback after health or acknowledgement uncertainty. No test accesses a real HOME, native credential backend, or live upstream network.
+
+The Node 22.19 Task 10 focused suite passes 27/27. Exact `npm test` passes 202/202 core assertions, 7/7 isolated capture assertions, and 24/24 integration assertions; `npm run lint` syntax-checks 27 source files and `npm audit --omit=dev` reports zero vulnerabilities. Coverage verifies private state discovery, authenticated CLI dispatch for lifecycle and provider commands, browser-session discovery for `ui`, explicit legacy secret-bearing flag rejection, startup readiness and owner cleanup, `pid` plus `startedAt` shutdown identity, and bounded failed-spawn cleanup without child or state residue. `git diff --check` and the static secret-pattern scan pass. Tests use temporary homes and injected spawn/client boundaries; real HOME, native keyrings, external provider traffic, browser launch behavior, and cross-platform process identity and signal handling remain L3.
 
 `npm run test:unit` retains its public behavior and runs all top-level `test/*.test.mjs` files. The exact `npm test` gate runs the same top-level set without duplication as two sequential groups: every non-capture unit file first, then `capture-store.test.mjs` alone, followed by recursively discovered `test/integration/**/*.test.mjs`. This isolates the polling watcher registration baseline from unrelated unit load and keeps real child-process integration after watcher cleanup. `test:e2e` and the combined `test:all` command are not current gates until the UI, Playwright configuration, and E2E specs land.
 
@@ -90,6 +93,8 @@ The Node 22.19 Task 8 focused suite passes 42/42. Exact `npm test` passes 168/16
 - Post-ack activation rollback must use a newer generation and confirm both acknowledgement and health before replacing the confirmed snapshot.
 - A rejected worker start/apply Promise must be treated as an unknown commit once sending was attempted; prior state requires a higher-generation deterministic rollback, while no-prior state requires bounded stop.
 - Committed/degraded mutation tests must reconcile registry and credential facts without inverse compensation, and replacement rollback must never restore `passed` unless the old secret was restored successfully.
+- Lifecycle fake waits must advance the injected clock and simulate owner cleanup.
+- Before signaling a process, verify `pid` plus `startedAt` and never mutate state first.
 
 ## Test Matrix
 

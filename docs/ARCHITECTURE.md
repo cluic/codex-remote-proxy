@@ -2,7 +2,7 @@
 
 ## Current State
 
-Version 0.2.2 remains the published Node CLI plus one proxy process. Tasks 2 through 9 have now landed the target control-plane foundations: safe shared contracts, atomic provider and credential persistence, immutable request settings, strict worker IPC, reliable worker lifecycle management, bounded activity, transactional migration, provider orchestration, and a composed secured loopback Admin API. CLI routing and the actual static Web UI remain target-state work.
+Version 0.2.2 remains the published release, while Tasks 2 through 10 have landed the target control-plane foundations: safe shared contracts, atomic provider and credential persistence, immutable request settings, strict worker IPC, reliable worker lifecycle management, bounded activity, transactional migration, provider orchestration, a composed secured loopback Admin API, and supervisor-backed CLI routing. Only the actual static Web UI remains target-state work in the next task.
 
 ## Target Overview
 
@@ -40,7 +40,7 @@ Active OpenAI-compatible upstream
 
 ## Module Boundaries
 
-Landed in Tasks 2 through 9:
+Landed in Tasks 2 through 10:
 
 - `shared/paths`: derives CRP registry, credential fallback, state, control token, activity, log, Codex configuration, and Codex auth paths from one home root.
 - `shared/errors`: defines stable `CrpError` fields and safe public serialization for known and unknown failures.
@@ -59,10 +59,10 @@ Landed in Tasks 2 through 9:
 - `session-auth`: owns one private 32-byte control token plus in-memory expiring browser session/CSRF tokens; existing token files are descriptor-validated and unsafe, malformed, symbolic-link, or broadly accessible files fail closed.
 - `admin-api`: enforces the exact loopback Host and Origin, disables CORS, authenticates CLI bearer and browser cookie/CSRF requests, bounds and validates request bodies, dispatches the versioned allowlisted routes, and positively projects provider, worker, status, settings, diagnostics, and error data.
 - `supervisor`: composes activity and credentials before migration, constructs the registry only after migration, owns worker/provider/auth/Admin services, writes a positive `0600` state projection only after Admin readiness, and performs idempotent reverse-order cleanup on startup failure or signal shutdown.
+- `cli-supervisor-client`: discovers and validates the private supervisor state, authenticates to the loopback Admin API, dispatches lifecycle and provider commands, creates browser sessions for `ui`, starts a missing supervisor through an injected spawn boundary, rejects legacy secret-bearing flags, verifies `pid` plus `startedAt` before shutdown signaling, and bounds failed-spawn cleanup.
 
 Remaining target-state boundaries:
 
-- `cli-supervisor-client`: routes lifecycle and provider commands through the same Admin contract.
 - `web-ui`: static local app with onboarding and daily management views.
 
 ## Lifecycle
@@ -74,7 +74,7 @@ Remaining target-state boundaries:
 ## Storage and Deployment
 
 - Package remains distributed through npm.
-- The landed path contract reserves `~/.codex-remote-proxy/providers.json`, `secrets.json`, `state.json`, `control-token`, `activity.jsonl`, and `supervisor.log`; the provider registry owns `providers.json`, the explicit fallback adapter owns `secrets.json`, and the other new stores remain target state.
+- The landed path contract reserves `~/.codex-remote-proxy/providers.json`, `secrets.json`, `state.json`, `control-token`, `activity.jsonl`, and `supervisor.log`; the provider registry owns `providers.json`, the explicit fallback adapter owns `secrets.json`, the supervisor owns `state.json` and `control-token`, the activity store owns `activity.jsonl`, and `supervisor.log` remains reserved target state.
 - Provider metadata: `~/.codex-remote-proxy/providers.json`, atomically replaced with mode `0600` where supported after complete document validation.
 - Supervisor runtime metadata: `~/.codex-remote-proxy/state.json`, atomically written with mode `0600` after Admin readiness and removed only by the owning supervisor instance.
 - Credentials: native OS store by default; `~/.codex-remote-proxy/secrets.json` only after strict explicit fallback consent. Native loader/factory failure before selection is a safe backend-unavailable error unless that consent is present. Once native is selected, operation failures remain native and are never replayed. Construction fallback exposes a `file` label that must be explicitly reused across restart; no credential migration is implicit.

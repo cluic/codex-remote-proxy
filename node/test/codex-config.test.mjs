@@ -27,32 +27,6 @@ import { getPaths } from "../src/shared/paths.mjs";
 const PROXY_URL = "http://127.0.0.1:15100";
 const PACKAGE_ROOT = resolve(import.meta.dirname, "..");
 const CLI_PATH = join(PACKAGE_ROOT, "bin", "crp.mjs");
-const START_PAYLOAD_KEYS = [
-  "captureActive",
-  "captureConfigured",
-  "captureDbPath",
-  "captureRestartRequired",
-  "captureState",
-  "codexConfigBackup",
-  "codexConfigPath",
-  "configSource",
-  "failedWriteCount",
-  "health",
-  "implementation",
-  "lastWriteErrorAt",
-  "lastWriteErrorMessage",
-  "listenHost",
-  "listenPort",
-  "logFile",
-  "managedStatePath",
-  "message",
-  "ok",
-  "pid",
-  "proxyConfigPath",
-  "proxyUrl",
-  "upstreamBaseUrl"
-].sort();
-
 function makeHomeEnv(homeDir) {
   return {
     ...process.env,
@@ -69,68 +43,6 @@ function runCrp(args, env) {
     timeout: 20_000,
     killSignal: "SIGKILL"
   });
-}
-
-function isProcessAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForProcessExit(pid, timeoutMs = 2_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (isProcessAlive(pid) && Date.now() < deadline) {
-    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
-  }
-  return !isProcessAlive(pid);
-}
-
-async function cleanupCliHome({ homeDir, env, pid }) {
-  const statePath = join(homeDir, ".codex-remote-proxy", "state.json");
-  let managedPid = pid;
-  let cleanupError;
-
-  try {
-    if (!managedPid && existsSync(statePath)) {
-      try {
-        managedPid = JSON.parse(readFileSync(statePath, "utf8")).pid;
-      } catch {
-        managedPid = null;
-      }
-    }
-    if (existsSync(statePath)) {
-      runCrp(["stop", "--json"], env);
-    }
-    if (isProcessAlive(managedPid)) {
-      try {
-        process.kill(managedPid, "SIGTERM");
-      } catch {
-        // The process may exit between the liveness check and the signal.
-      }
-    }
-    if (isProcessAlive(managedPid) && !(await waitForProcessExit(managedPid))) {
-      try {
-        process.kill(managedPid, "SIGKILL");
-      } catch {
-        // The process may exit between the liveness check and the signal.
-      }
-      if (!(await waitForProcessExit(managedPid))) {
-        cleanupError = new Error(`Could not stop test proxy process ${managedPid}`);
-      }
-    }
-  } finally {
-    rmSync(homeDir, { recursive: true, force: true });
-  }
-
-  if (cleanupError) {
-    throw cleanupError;
-  }
 }
 
 test("patchCodexConfigText creates the fixed OpenAI provider and preserves custom providers", () => {
@@ -399,7 +311,7 @@ test("bootstrapCodexConfig keeps both backups when changes share a timestamp", (
 });
 
 for (const command of ["start", "install", "setup"]) {
-  test(`${command} preserves the JSON contract and propagates the Codex backup`, async (t) => {
+  test(`${command} safely rejects legacy direct-start options`, () => {
     const homeDir = mkdtempSync(join(os.tmpdir(), `crp-${command}-home-`));
     const env = makeHomeEnv(homeDir);
     const codexDir = join(homeDir, ".codex");
@@ -408,13 +320,6 @@ for (const command of ["start", "install", "setup"]) {
     const originalConfig = 'model_provider = "custom"\n';
     const placeholderCredential = ["placeholder", "credential", randomUUID()].join("-");
     const upstreamBaseUrl = "http://127.0.0.1:1/v1";
-    let managedPid = null;
-    let cleanupPromise;
-    const cleanup = () => {
-      cleanupPromise ??= cleanupCliHome({ homeDir, env, pid: managedPid });
-      return cleanupPromise;
-    };
-    t.after(cleanup);
 
     try {
       mkdirSync(codexDir, { recursive: true });
@@ -429,34 +334,17 @@ for (const command of ["start", "install", "setup"]) {
         placeholderCredential
       ], env);
 
-      assert.equal(result.status, 0, result.stderr);
-      const payload = JSON.parse(result.stdout);
-      managedPid = payload.pid;
-
-      assert.deepEqual(Object.keys(payload).sort(), START_PAYLOAD_KEYS);
-      assert.equal(payload.ok, true);
-      assert.equal(payload.implementation, "node");
-      assert.equal(payload.listenHost, "127.0.0.1");
-      assert.equal(payload.upstreamBaseUrl, upstreamBaseUrl);
-      assert.equal(payload.codexConfigPath, codexConfigPath);
-      assert.equal(payload.configSource.upstreamBaseUrl, "cli");
-      assert.equal(payload.configSource.apiKey, "cli");
-      assert.equal(payload.configSource.listenPort, "auto");
-      assert.equal(payload.message, "Proxy configured and started");
-      assert.match(payload.proxyUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
-
-      const state = JSON.parse(readFileSync(statePath, "utf8"));
-      assert.equal(state.pid, payload.pid);
-      assert.equal(state.proxyUrl, payload.proxyUrl);
-      assert.equal(state.codexConfigBackup, payload.codexConfigBackup);
-      assert.equal(existsSync(payload.codexConfigBackup), true);
-      assert.equal(readFileSync(payload.codexConfigBackup, "utf8"), originalConfig);
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
       assert.equal(
-        readFileSync(codexConfigPath, "utf8"),
-        patchCodexConfigText(originalConfig, payload.proxyUrl)
+        result.stderr,
+        `Error: The ${command} command contains an unsupported option.\n`
       );
+      assert.equal(result.stderr.includes(placeholderCredential), false);
+      assert.equal(readFileSync(codexConfigPath, "utf8"), originalConfig);
+      assert.equal(existsSync(statePath), false);
     } finally {
-      await cleanup();
+      rmSync(homeDir, { recursive: true, force: true });
     }
   });
 }

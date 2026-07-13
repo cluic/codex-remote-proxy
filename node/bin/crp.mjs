@@ -5,10 +5,17 @@ import { resolve } from "node:path";
 import net from "node:net";
 import readline from "node:readline/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 import { DEFAULT_CAPTURE_DB_PATH } from "../src/capture-config.mjs";
 import { bootstrapCodexConfig } from "../src/codex/codex-config.mjs";
 import { getPaths } from "../src/shared/paths.mjs";
+import {
+  discoverSupervisor,
+  ensureSupervisor,
+  readControlToken,
+  readSupervisorState
+} from "../src/supervisor/supervisor-client.mjs";
 
 const PACKAGE_ROOT = resolve(import.meta.dirname, "..");
 const {
@@ -60,18 +67,22 @@ function parseCommandLine(argv) {
   return { command, options };
 }
 
-function printHelp() {
-  console.log("Usage:");
-  console.log("  crp check [--json] [--codex-config PATH] [--auth PATH]");
-  console.log("  crp init [--json] [--upstream-base-url URL] [--api-key KEY] [--listen-host 127.0.0.1] [--listen-port PORT] [--capture] [--no-capture] [--capture-db-path PATH]");
-  console.log("  crp start [--json] [--upstream-base-url URL] [--api-key KEY] [--listen-host 127.0.0.1] [--listen-port PORT] [--capture] [--no-capture] [--capture-db-path PATH] [--debug]");
-  console.log("  crp install [same as start]");
-  console.log("  crp capture <on|off|status> [--json]");
-  console.log("  crp status [--json]");
-  console.log("  crp stop [--json]");
-  console.log("  crp setup [same as start]");
-  console.log("  crp guide [--json]");
-  console.log("  crp install-cli [--json]");
+function printHelp(writeLine = (line) => console.log(line)) {
+  writeLine("Usage:");
+  writeLine("  crp check [--json] [--codex-config PATH] [--auth PATH]");
+  writeLine("  crp init [--json] [--upstream-base-url URL] [--api-key KEY]");
+  writeLine("  crp ui [--no-open] [--json]");
+  writeLine("  crp start [--json]");
+  writeLine("  crp install [same as start]");
+  writeLine("  crp capture <on|off|status> [--json]");
+  writeLine("  crp status [--json]");
+  writeLine("  crp stop [--json]");
+  writeLine("  crp restart [--json]");
+  writeLine("  crp shutdown [--json]");
+  writeLine("  crp provider list|add|test|activate|delete [--json]");
+  writeLine("  crp setup [same as start]");
+  writeLine("  crp guide [--json]");
+  writeLine("  crp install-cli [--json]");
 }
 
 function maybePrintJson(options, payload) {
@@ -305,8 +316,21 @@ function isProcessAlive(pid) {
 }
 
 function getManagedServiceInfo() {
+  const supervisorState = readSupervisorState({ path: STATE_FILE, adminPort: 15101 });
+  if (supervisorState) {
+    return {
+      state: {
+        ...supervisorState,
+        alive: isProcessAlive(supervisorState.supervisorPid)
+      },
+      staleStateRemoved: false
+    };
+  }
   const state = loadManagedState();
   if (!state) {
+    return { state: null, staleStateRemoved: false };
+  }
+  if (!Number.isSafeInteger(state.pid) || state.pid < 1) {
     return { state: null, staleStateRemoved: false };
   }
   const alive = Boolean(state.pid && isProcessAlive(state.pid));
@@ -475,31 +499,31 @@ function buildGuideData() {
     preferredImplementation: "node",
     commands: {
       inspect: "crp check --json",
-      init: "crp init --upstream-base-url <URL> --api-key <KEY> [--capture] [--capture-db-path PATH] --json",
-      start: "crp start --upstream-base-url <URL> --api-key <KEY> [--capture] [--capture-db-path PATH] --json",
-      captureOn: "crp capture on --json",
-      captureOff: "crp capture off --json",
-      captureStatus: "crp capture status --json",
+      providerAdd: "crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --json",
+      providerTest: "crp provider test --id <ID> --model <MODEL> --json",
+      providerActivate: "crp provider activate --id <ID> --json",
+      start: "crp start --json",
       status: "crp status --json",
+      ui: "crp ui --json",
       stop: "crp stop --json",
+      shutdown: "crp shutdown --json",
       installCli: "npm install -g @cluic/codex-remote-proxy",
       runWithoutInstall: "npx @cluic/codex-remote-proxy guide --json"
     },
     expectedFlow: [
-      "Run check --json first.",
-      "Read runtimeStatus and recommendedImplementation.",
-      "If node dependencies are ready, use the node path.",
-      "Optionally set [codex_remote_proxy] in ~/.codex/config.toml or run init once to save upstream settings under ~/.codex-remote-proxy/.",
-      "Run start. It will resolve settings from CLI flags, then environment variables, then ~/.codex/config.toml [codex_remote_proxy], then saved config, and only prompt as a last resort.",
-      "Use `crp capture on|off` for runtime capture toggling; manual edits to the runtime proxy config also hot-apply capture.enabled.",
-      "start launches the proxy in the background by default and patches ~/.codex/config.toml.",
-      "Use status --json to confirm the proxy is healthy."
+      "Add a provider with `crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --json`.",
+      "Validate it with `crp provider test --id <ID> --model <MODEL> --json`.",
+      "Activate it with `crp provider activate --id <ID> --json`.",
+      "Start the proxy through the supervisor with `crp start --json`.",
+      "Confirm supervisor and worker health with `crp status --json`.",
+      "Open the local management UI with `crp ui --json`.",
+      "When finished, stop the supervisor with `crp shutdown --json`."
     ],
     notes: [
       "The start command creates a backup only when it changes ~/.codex/config.toml.",
-      "The proxy configuration and state are stored under ~/.codex-remote-proxy/.",
-      "Use CRP_UPSTREAM_BASE_URL and CRP_UPSTREAM_API_KEY when you want non-interactive start without exposing secrets in later AI interactions.",
-      "The optional ~/.codex/config.toml [codex_remote_proxy] section supports upstream_base_url, upstream_api_key, capture_enabled, and capture_db_path as non-interactive sources."
+      "Provider credential is write-only and never echoed by CLI or Admin API responses.",
+      "The supervisor owns proxy lifecycle and applies the active provider when start is requested.",
+      "The proxy configuration and state are stored under ~/.codex-remote-proxy/."
     ]
   };
 }
@@ -529,15 +553,17 @@ function buildCheckData(options) {
     },
     codexRemoteProxy: {
       upstreamBaseUrl: codexRemoteProxyUpstreamBaseUrl,
-      upstreamApiKeyPreview: typeof codexRemoteProxyUpstreamApiKey === "string" ? maskSecret(codexRemoteProxyUpstreamApiKey) : null,
+      credentialConfigured: typeof codexRemoteProxyUpstreamApiKey === "string"
+        && codexRemoteProxyUpstreamApiKey.length > 0,
       captureEnabled: codexRemoteProxyCaptureEnabled,
       captureDbPath: codexRemoteProxyCaptureDbPath
     },
     auth: {
       authMode: authData.auth_mode ?? null,
-      openAiApiKeyPreview: typeof authData.OPENAI_API_KEY === "string" ? maskSecret(authData.OPENAI_API_KEY) : null,
-      accessTokenPrefix: typeof authData?.tokens?.access_token === "string" ? authData.tokens.access_token.slice(0, 2) : null,
-      accessTokenLength: typeof authData?.tokens?.access_token === "string" ? authData.tokens.access_token.length : 0
+      openAiApiKeyConfigured: typeof authData.OPENAI_API_KEY === "string"
+        && authData.OPENAI_API_KEY.length > 0,
+      accessTokenConfigured: typeof authData?.tokens?.access_token === "string"
+        && authData.tokens.access_token.length > 0
     },
     runtimeStatus,
     configSources: {
@@ -556,7 +582,19 @@ function buildCheckData(options) {
     implementation: {
       configPath: NODE_RUNTIME_CONFIG_PATH,
       configExists: existsSync(NODE_RUNTIME_CONFIG_PATH),
-      runtimeConfig: runtimeProxyConfig,
+      runtimeConfig: runtimeProxyConfig === null ? null : {
+        server: {
+          host: runtimeProxyConfig.server?.host ?? null,
+          port: runtimeProxyConfig.server?.port ?? null
+        },
+        upstream: {
+          baseUrl: runtimeProxyConfig.upstream?.baseUrl ?? null
+        },
+        capture: {
+          enabled: runtimeProxyConfig.capture?.enabled === true,
+          dbPath: runtimeProxyConfig.capture?.dbPath ?? null
+        }
+      },
       startCommand: startCommand(NODE_RUNTIME_CONFIG_PATH)
     },
     recommendedImplementation: "node",
@@ -572,8 +610,8 @@ function printHumanCheck(data) {
   console.log(`Codex auth path:   ${data.authPath}`);
   console.log("");
   console.log(`auth_mode: ${data.auth.authMode || "(unknown)"}`);
-  console.log(`OPENAI_API_KEY: ${data.auth.openAiApiKeyPreview || "(missing)"}`);
-  console.log(`tokens.access_token: ${data.auth.accessTokenPrefix ? `${data.auth.accessTokenPrefix}..., len=${data.auth.accessTokenLength}` : "(missing)"}`);
+  console.log(`OPENAI_API_KEY configured: ${data.auth.openAiApiKeyConfigured ? "yes" : "no"}`);
+  console.log(`tokens.access_token configured: ${data.auth.accessTokenConfigured ? "yes" : "no"}`);
   console.log("");
   console.log("Codex [model_providers.OpenAI]:");
   console.log(`  base_url: ${data.codexOpenAiProvider.baseUrl || "(missing)"}`);
@@ -582,7 +620,7 @@ function printHumanCheck(data) {
   console.log("");
   console.log("Codex [codex_remote_proxy]:");
   console.log(`  upstream_base_url: ${data.codexRemoteProxy.upstreamBaseUrl || "(missing)"}`);
-  console.log(`  upstream_api_key: ${data.codexRemoteProxy.upstreamApiKeyPreview || "(missing)"}`);
+  console.log(`  credential configured: ${data.codexRemoteProxy.credentialConfigured ? "yes" : "no"}`);
   console.log(`  capture_enabled: ${data.codexRemoteProxy.captureEnabled ?? "(missing)"}`);
   console.log(`  capture_db_path: ${data.codexRemoteProxy.captureDbPath || "(missing)"}`);
   console.log("");
@@ -889,11 +927,10 @@ function checkCommand(options) {
 function guideCommand(options) {
   const data = buildGuideData();
   if (!maybePrintJson(options, data)) {
-    console.log("AI guide:");
-    console.log(`  Entrypoint: ${data.entrypoint}`);
-    console.log(`  Inspect first: ${data.commands.inspect}`);
-    console.log(`  Install:       ${data.commands.install}`);
-    console.log(`  Status:        ${data.commands.status}`);
+    console.log("CRP V1 guide:");
+    for (const step of data.expectedFlow) {
+      console.log(`  ${step}`);
+    }
   }
 }
 
@@ -947,11 +984,21 @@ async function captureCommand(options, action) {
   if (action === "status") {
     const runtime = loadRuntimeProxyConfig();
     const state = loadManagedState();
+    const supervisorState = readSupervisorState({ path: STATE_FILE, adminPort: 15101 });
     const payload = {
       ok: true,
-      running: Boolean(state?.pid && isProcessAlive(state.pid)),
-      persistedConfig: loadUserConfig(),
-      runtimeConfig: runtime?.capture ?? null
+      running: supervisorState
+        ? isProcessAlive(supervisorState.supervisorPid)
+        : Boolean(state?.pid && isProcessAlive(state.pid)),
+      managedBySupervisor: supervisorState !== null,
+      persistedConfig: {
+        captureEnabled: loadUserConfig().captureEnabled === true,
+        captureDbPath: loadUserConfig().captureDbPath ?? null
+      },
+      runtimeConfig: runtime?.capture ? {
+        enabled: runtime.capture.enabled === true,
+        dbPath: runtime.capture.dbPath ?? null
+      } : null
     };
     if (state?.proxyUrl && payload.running) {
       try {
@@ -972,6 +1019,9 @@ async function captureCommand(options, action) {
     return;
   }
 
+  if (readSupervisorState({ path: STATE_FILE, adminPort: 15101 })) {
+    throw new Error("Capture settings are read-only in this version.");
+  }
   const enabled = action === "on";
   const persistedConfig = applyUserConfigPatch({
     captureEnabled: enabled,
@@ -981,7 +1031,10 @@ async function captureCommand(options, action) {
   const payload = {
     ok: true,
     action,
-    persistedConfig,
+    persistedConfig: {
+      captureEnabled: persistedConfig.captureEnabled === true,
+      captureDbPath: persistedConfig.captureDbPath ?? null
+    },
     runtimeUpdated: false,
     message: ""
   };
@@ -1049,8 +1102,311 @@ async function installCliCommand(options) {
   }
 }
 
-async function main() {
-  const argv = process.argv.slice(2);
+function writePayload(options, payload, stdout, humanMessage) {
+  if (options.json) {
+    stdout(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  stdout(`${humanMessage}\n`);
+}
+
+export function openManagementUrl(url, {
+  platform = process.platform,
+  spawnImpl = spawn
+} = {}) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("The local management URL is invalid.");
+  }
+  if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1"
+    || !parsed.port || parsed.pathname !== "/" || parsed.search
+    || !/^#token=[A-Za-z0-9_-]{43}$/.test(parsed.hash)) {
+    throw new Error("The local management URL is invalid.");
+  }
+  let command;
+  let args;
+  if (platform === "darwin") {
+    command = "open";
+    args = [url];
+  } else if (platform === "win32") {
+    command = "cmd";
+    args = ["/d", "/s", "/c", "start", "", url];
+  } else {
+    command = "xdg-open";
+    args = [url];
+  }
+  const child = spawnImpl(command, args, {
+    detached: true,
+    stdio: "ignore",
+    shell: false,
+    windowsHide: true
+  });
+  child.once?.("error", () => {});
+  child.unref();
+  return child;
+}
+
+function parseProviderOptions(argv) {
+  const action = argv[1];
+  if (!["list", "add", "test", "activate", "delete"].includes(action)) {
+    throw new Error("Unknown provider action.");
+  }
+  const { options } = parseCommandLine(["provider", ...argv.slice(2)]);
+  const allowed = {
+    list: new Set(["json"]),
+    add: new Set([
+      "json",
+      "name",
+      "base-url",
+      "api-key",
+      "auth-header",
+      "auth-scheme",
+      "model-mode",
+      "model-override",
+      "fallback-consent"
+    ]),
+    test: new Set(["json", "id", "model"]),
+    activate: new Set(["json", "id"]),
+    delete: new Set(["json", "id"])
+  }[action];
+  if (Object.keys(options).some((field) => !allowed.has(field))) {
+    throw new Error("The provider command contains an unsupported option.");
+  }
+  return { action, options };
+}
+
+function requiredOption(options, name) {
+  const value = options[name];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`The provider ${name} option is required.`);
+  }
+  return value.trim();
+}
+
+async function dispatchProviderCommand(argv, dependencies) {
+  const { action, options } = parseProviderOptions(argv);
+  const context = await dependencies.ensureSupervisorImpl({
+    paths: dependencies.paths,
+    adminPort: dependencies.adminPort
+  });
+  let method;
+  let path;
+  let body;
+  if (action === "list") {
+    method = "GET";
+    path = "/providers";
+  } else if (action === "add") {
+    method = "POST";
+    path = "/providers";
+    const provider = {
+      name: requiredOption(options, "name"),
+      baseUrl: requiredOption(options, "base-url")
+    };
+    for (const [option, field] of [
+      ["auth-header", "authHeader"],
+      ["auth-scheme", "authScheme"],
+      ["model-mode", "modelMode"],
+      ["model-override", "modelOverride"]
+    ]) {
+      if (typeof options[option] === "string") provider[field] = options[option];
+    }
+    body = {
+      provider,
+      credential: requiredOption(options, "api-key"),
+      fallbackConsent: options["fallback-consent"] === true
+    };
+  } else {
+    const id = encodeURIComponent(requiredOption(options, "id"));
+    if (action === "test") {
+      method = "POST";
+      path = `/providers/${id}/test`;
+      body = { model: requiredOption(options, "model") };
+    } else if (action === "activate") {
+      method = "POST";
+      path = `/providers/${id}/activate`;
+    } else {
+      method = "DELETE";
+      path = `/providers/${id}`;
+    }
+  }
+  const result = await context.client.request(method, path, body);
+  writePayload(options, {
+    ok: true,
+    action,
+    ...result
+  }, dependencies.stdout, `Provider ${action} completed.`);
+}
+
+function parseSupervisorOptions(argv) {
+  const { command, options } = parseCommandLine(argv);
+  const allowed = {
+    ui: new Set(["json", "no-open"]),
+    start: new Set(["json"]),
+    install: new Set(["json"]),
+    setup: new Set(["json"]),
+    status: new Set(["json"]),
+    stop: new Set(["json"]),
+    restart: new Set(["json"]),
+    shutdown: new Set(["json"])
+  }[command];
+  if (Object.keys(options).some((field) => !allowed.has(field))) {
+    throw new Error(`The ${command} command contains an unsupported option.`);
+  }
+  return { command, options };
+}
+
+async function dispatchSupervisorCommand(argv, dependencies) {
+  const supervisorCommands = new Set([
+    "ui",
+    "start",
+    "install",
+    "setup",
+    "status",
+    "stop",
+    "restart",
+    "shutdown",
+    "provider"
+  ]);
+  if (!supervisorCommands.has(argv[0])) return false;
+  if (argv[0] === "provider") {
+    await dispatchProviderCommand(argv, dependencies);
+    return true;
+  }
+  const { command, options } = parseSupervisorOptions(argv);
+  const {
+    paths,
+    adminPort,
+    ensureSupervisorImpl,
+    discoverSupervisorImpl,
+    stdout,
+    killProcess,
+    isProcessAliveImpl,
+    wait,
+    now,
+    shutdownTimeoutMs,
+    readControlTokenImpl,
+    openManagementUrlImpl
+  } = dependencies;
+  const discoveryOptions = { paths, adminPort };
+
+  if (command === "ui") {
+    const context = await ensureSupervisorImpl(discoveryOptions);
+    const token = readControlTokenImpl({ path: paths.controlTokenPath });
+    const url = `${context.origin}/#token=${token}`;
+    const opened = options["no-open"] !== true;
+    if (opened) openManagementUrlImpl(url);
+    writePayload(options["no-open"] === true ? { ...options, json: true } : options, {
+      ok: true,
+      opened,
+      origin: context.origin,
+      supervisorPid: context.state.supervisorPid,
+      url
+    }, stdout, opened ? "CRP management UI opened." : url);
+    return true;
+  }
+
+  if (command === "status") {
+    const context = await discoverSupervisorImpl(discoveryOptions);
+    const payload = context === null
+      ? { ok: true, running: false, reason: "supervisor_not_running" }
+      : { ok: true, running: true, ...context.status };
+    writePayload(options, payload, stdout, payload.running
+      ? "CRP supervisor is running."
+      : "CRP supervisor is not running.");
+    return true;
+  }
+
+  if (command === "stop") {
+    const context = await discoverSupervisorImpl(discoveryOptions);
+    if (context === null) {
+      writePayload(options, {
+        ok: true,
+        stopped: false,
+        reason: "supervisor_not_running"
+      }, stdout, "No running proxy worker to stop.");
+      return true;
+    }
+    const result = await context.client.request("POST", "/proxy/stop");
+    const payload = {
+      ok: true,
+      stopped: result?.worker?.phase === "stopped",
+      worker: result?.worker ?? null
+    };
+    writePayload(options, payload, stdout, "Proxy worker stopped.");
+    return true;
+  }
+
+  if (command === "shutdown") {
+    const context = await discoverSupervisorImpl(discoveryOptions);
+    if (context === null) {
+      writePayload(options, {
+        ok: true,
+        shutdown: false,
+        reason: "supervisor_not_running"
+      }, stdout, "CRP supervisor is not running.");
+      return true;
+    }
+    const latest = await context.client.request("GET", "/status");
+    const supervisorPid = context.state.supervisorPid;
+    if (latest?.supervisor?.pid !== supervisorPid
+      || latest?.supervisor?.startedAt !== context.state.startedAt) {
+      throw new Error("Supervisor identity changed; shutdown was cancelled.");
+    }
+    killProcess(supervisorPid, "SIGTERM");
+    const deadline = now() + shutdownTimeoutMs;
+    while ((isProcessAliveImpl(supervisorPid) || existsSync(paths.statePath)) && now() < deadline) {
+      await wait(Math.min(100, deadline - now()));
+    }
+    if (isProcessAliveImpl(supervisorPid)) {
+      throw new Error("The supervisor did not stop in time.");
+    }
+    if (existsSync(paths.statePath)) {
+      throw new Error("The supervisor state was not cleaned up in time.");
+    }
+    writePayload(options, {
+      ok: true,
+      shutdown: true,
+      supervisorPid,
+      workerStopped: true
+    }, stdout, "CRP supervisor stopped.");
+    return true;
+  }
+
+  const context = await ensureSupervisorImpl(discoveryOptions);
+  if (command === "restart") {
+    const result = await context.client.request("POST", "/proxy/restart");
+    writePayload(options, {
+      ok: true,
+      command: "restart",
+      supervisorPid: context.state.supervisorPid,
+      worker: result?.worker ?? null
+    }, stdout, "Proxy worker restarted.");
+    return true;
+  }
+
+  let codexBootstrap = null;
+  if (context.status?.codex?.configured !== true) {
+    const bootstrap = await context.client.request("POST", "/codex/bootstrap");
+    codexBootstrap = bootstrap?.result ?? null;
+  }
+  const result = await context.client.request("POST", "/proxy/start");
+  const payload = {
+    ok: true,
+    command: "start",
+    implementation: "node",
+    supervisorPid: context.state.supervisorPid,
+    proxyUrl: context.status?.codex?.proxyUrl ?? "http://127.0.0.1:15100",
+    worker: result?.worker ?? null,
+    codexBootstrap
+  };
+  if (command === "install" || command === "setup") payload.deprecated = true;
+  writePayload(options, payload, stdout, "Codex Remote Proxy is ready.");
+  return true;
+}
+
+async function main(argv = process.argv.slice(2)) {
   if (argv[0] === "capture") {
     const action = argv[1];
     const options = {};
@@ -1082,9 +1438,54 @@ async function main() {
   throw new Error(`Unknown command: ${command}`);
 }
 
-try {
-  await main();
-} catch (error) {
-  console.error(`Error: ${error.message}`);
-  process.exit(1);
+export async function runCli(argv, {
+  stdout = (text) => process.stdout.write(text),
+  stderr = (text) => process.stderr.write(text),
+  paths = getPaths(),
+  adminPort = 15101,
+  ensureSupervisorImpl = ensureSupervisor,
+  discoverSupervisorImpl = discoverSupervisor,
+  readControlTokenImpl = readControlToken,
+  openManagementUrlImpl = (url) => openManagementUrl(url),
+  killProcess = (pid, signal) => process.kill(pid, signal),
+  isProcessAlive: isProcessAliveImpl = isProcessAlive,
+  wait = (milliseconds) => delay(milliseconds),
+  now = () => Date.now(),
+  shutdownTimeoutMs = 8_000
+} = {}) {
+  try {
+    if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+      printHelp((line) => stdout(`${line}\n`));
+      return 0;
+    }
+    const handled = await dispatchSupervisorCommand(argv, {
+      paths,
+      adminPort,
+      ensureSupervisorImpl,
+      discoverSupervisorImpl,
+      stdout,
+      killProcess,
+      isProcessAliveImpl,
+      wait,
+      now,
+      shutdownTimeoutMs,
+      readControlTokenImpl,
+      openManagementUrlImpl
+    });
+    if (!handled) await main(argv);
+    return 0;
+  } catch (error) {
+    stderr(`Error: ${error?.message || "CRP could not complete the command."}\n`);
+    return 1;
+  }
+}
+
+function isDirectExecution(metaUrl = import.meta.url, argv1 = process.argv[1]) {
+  return typeof argv1 === "string"
+    && argv1.length > 0
+    && resolve(fileURLToPath(metaUrl)) === resolve(argv1);
+}
+
+if (isDirectExecution()) {
+  process.exitCode = await runCli(process.argv.slice(2));
 }
