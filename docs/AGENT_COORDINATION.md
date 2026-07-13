@@ -2,12 +2,13 @@
 
 ## Active Workstreams
 
-None. Task 12 must be claimed here with an exact writable scope and no-edit areas before implementation begins.
+None.
 
 ## Completed Workstreams
 
 | Workstream | Owner | Scope | Files/Areas | Status | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- |
+| Task 12 package, native-keyring, and platform gates | `/root/task12_gates` | From base `dd4de3f`, add exact package-content verification, injectable native-keyring smoke coverage, strict release-workflow policy tests, and cross-platform/release-preflight workflows | `docs/AGENT_COORDINATION.md`; `.github/workflows/release-preflight.yml`; `.github/workflows/platform-tests.yml`; `node/test/package-content.test.mjs`; `node/scripts/native-keyring-smoke.mjs`; `node/test/native-keyring-smoke.test.mjs`; `node/test/release-workflows.test.mjs` | Completed and released on 2026-07-14; no active write authority; final full-tree and real platform-runner evidence remain owned by `/root` | `.github/workflows/release.yml`; production source; manifests and lockfiles; pre-existing tests; other docs; `README*`; Changesets; `output/**`; commits |
 | Task 11 guided bilingual Web UI | `/root/task11_ui` | Implement and verify the user-approved English/Simplified Chinese static UI | `node/ui/index.html`; `node/ui/styles.css`; `node/ui/app.js`; `node/playwright.config.mjs`; `node/test/e2e/crp-ui-fixture.mjs`; `node/test/e2e/onboarding.spec.mjs`; `node/test/e2e/provider-switch.spec.mjs`; `node/test/e2e/restart-and-errors.spec.mjs` | Completed, committed as `d114061`, and released on 2026-07-14; no active write authority | All backend, CLI, manifest, existing non-E2E test, contract, and release files |
 | Task 11 documentation closeout | `/root/task11_docs_closeout` | Synchronize verified Task 11 facts and hand off Task 12 | `AGENTS.md`; `docs/AGENT_COORDINATION.md`; `docs/AI_HANDOFF.md`; `docs/STATUS.md`; `docs/ROADMAP.md`; `docs/TESTING.md`; `docs/UIUX.md`; existing Task 11 design/plan docs | Completed and released on 2026-07-14; no active write authority | `node/**`; `output/**`; manifests; implementation and release workflow files |
 

@@ -1,0 +1,104 @@
+name: Platform Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  platform:
+    name: Node 22 / ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux
+            os: ubuntu-latest
+            browser: false
+          - label: macOS
+            os: macos-latest
+            browser: true
+          - label: Windows
+            os: windows-latest
+            browser: true
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run syntax checks
+        run: npm run lint
+
+      - name: Run deterministic tests
+        run: npm test
+
+      - name: Install Chromium
+        if: matrix.browser
+        run: npx playwright install chromium
+
+      - name: Run 40 browser E2E tests
+        if: matrix.browser
+        run: npm run test:e2e -- --project=chromium --workers=1
+
+      - name: Upload sanitized UI evidence
+        if: always() && matrix.browser
+        uses: actions/upload-artifact@v4
+        with:
+          name: crp-ui-${{ matrix.label }}-${{ github.run_id }}
+          path: output/playwright/task11/**/*.png
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Install Linux Secret Service
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes dbus-x11 gnome-keyring libglib2.0-bin
+
+      - name: Smoke test Linux native keyring through Secret Service
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          CRP_NATIVE_KEYRING_SMOKE: "1"
+        run: |
+          smoke_home="$RUNNER_TEMP/crp-native-keyring-home"
+          mkdir -p "$smoke_home/.local/share/keyrings"
+          chmod 700 "$smoke_home" "$smoke_home/.local" "$smoke_home/.local/share" "$smoke_home/.local/share/keyrings"
+          HOME="$smoke_home" dbus-run-session -- bash -euo pipefail -c '
+            printf "%s" "crp-ci-keyring" | gnome-keyring-daemon --components=secrets --unlock >/dev/null
+            gdbus wait --session --timeout 10 org.freedesktop.secrets
+            gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.DBus.Peer.Ping >/dev/null
+            gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/aliases/default --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Label >/dev/null
+            node scripts/native-keyring-smoke.mjs
+          '
+
+      - name: Smoke test native keyring
+        if: runner.os != 'Linux'
+        env:
+          CRP_NATIVE_KEYRING_SMOKE: "1"
+        run: node scripts/native-keyring-smoke.mjs
