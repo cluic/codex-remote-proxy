@@ -82,7 +82,11 @@ Configure settings use the exact runtime graph required by the forwarding server
 
 ## RuntimeState
 
-Runtime state includes supervisor PID plus the worker manager's exact public projection `{ phase, pid, generation, state, restartCount, startedAt, error }`. Nested `state` is the child protocol's public lifecycle state, and `error` is either null or a stable `{ code, message }`; snapshots, credentials, raw causes, argv, environment, stdout, and stderr are excluded. The state is observational and can be reconstructed.
+The implemented private state document is `{ schemaVersion: 1, supervisorPid, startedAt, admin, worker }`. `admin` is the ready loopback address and `worker` is the manager's exact public projection `{ phase, pid, generation, state, restartCount, startedAt, error }`. Nested `state` is the child protocol's public lifecycle state, and `error` is either null or a stable `{ code, message }`; snapshots, credentials, raw causes, argv, environment, stdout, and stderr are excluded. State is observational, atomically written with mode `0600` only after Admin readiness, and reconstructable.
+
+## LocalAuthState
+
+The control token and every session/CSRF token are independent 32-byte base64url values. Only the control token is persisted, in a descriptor-validated regular `0600` file below a private `0700` parent. Browser session IDs and CSRF tokens remain in memory with an expiry timestamp; the cookie is HttpOnly and `SameSite=Strict`. Public API data never includes the control token or session ID.
 
 ## ActivityEvent
 
@@ -102,6 +106,7 @@ The provider service now implements the following lifecycle behavior:
 - Deleting the active profile is rejected until another profile is activated or the proxy is stopped.
 - Deleting a profile removes its native credential entry and writes an activity event.
 - Activity retention defaults to 30 days or 10,000 events, whichever limit is reached first.
+- Proxy start and restart resolve only the active tested provider credential, advance the confirmed generation after worker acknowledgement and health, and return only worker public state. Stop is credential-free and idempotent.
 
 ## Migration
 

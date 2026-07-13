@@ -2,7 +2,7 @@
 
 ## Current State
 
-Version 0.2.2 remains a Node CLI plus one proxy process. `crp start` writes a single runtime configuration, bootstraps Codex to use the `OpenAI` provider section, and spawns the proxy. Tasks 2 through 7 have landed shared path and public-error contracts, an idempotent Codex configuration adapter, strict provider-schema validation, atomic provider and credential persistence, immutable request-level runtime settings, an IPC-hosted worker entrypoint, and the worker lifecycle manager. The composed supervisor, provider service, and Admin API remain target-state architecture.
+Version 0.2.2 remains the published Node CLI plus one proxy process. Tasks 2 through 9 have now landed the target control-plane foundations: safe shared contracts, atomic provider and credential persistence, immutable request settings, strict worker IPC, reliable worker lifecycle management, bounded activity, transactional migration, provider orchestration, and a composed secured loopback Admin API. CLI routing and the actual static Web UI remain target-state work.
 
 ## Target Overview
 
@@ -40,7 +40,7 @@ Active OpenAI-compatible upstream
 
 ## Module Boundaries
 
-Landed in Tasks 2 through 7:
+Landed in Tasks 2 through 9:
 
 - `shared/paths`: derives CRP registry, credential fallback, state, control token, activity, log, Codex configuration, and Codex auth paths from one home root.
 - `shared/errors`: defines stable `CrpError` fields and safe public serialization for known and unknown failures.
@@ -55,12 +55,14 @@ Landed in Tasks 2 through 7:
 - `worker-protocol`: validates exact version-1 parent messages (`configure`, `drain`, `shutdown`, `status`) and child messages (`ready`, `configured`, `drained`, `status`, `fatal`). Configure accepts HTTPS or explicit loopback HTTP only, requires HTTP-token authentication fields, validates the exact final authentication value with Node header rules, and rejects sensitive or authentication-conflicting extra headers. Resolved settings are accepted only inside parent configure messages; child output and sanitized projections contain only allowlisted lifecycle state and stable public errors, and invalid input receives the fixed `worker-fatal` correlation ID.
 - `proxy-worker`: creates one runtime settings source and forwarding app after the first valid configure, binds only then, applies strictly increasing generations while ready or running, rejects configure once drain begins, tracks in-flight requests independently of later phase changes, closes the listener and idle keep-alive connections during drain, acknowledges repeated drain requests without leaving the drained phase, closes capture and IPC resources during shutdown, and bounds forced cleanup after parent disconnect even when graceful shutdown is already waiting so a hanging upstream cannot orphan the worker.
 - `worker-manager`: serializes lifecycle operations, validates restart snapshots before disturbing the current worker, validates every child message before use, correlates immediately observed acknowledgements by request ID and child epoch, cancels waiters on send failure, confirms configuration health before running, drains and escalates termination within deadlines, retains child control after termination timeout, proves the fixed port free before replacement, and recovers unexpected exits with a cancellable rolling crash window and sanitized public state.
+- `activity/migration/provider-service`: persists a bounded sanitized event allowlist, transactionally migrates descriptor-validated legacy files, serializes provider CRUD/test/activation compensation, and exposes start/stop/restart facades that resolve only the active credential and advance confirmed generations.
+- `session-auth`: owns one private 32-byte control token plus in-memory expiring browser session/CSRF tokens; existing token files are descriptor-validated and unsafe, malformed, symbolic-link, or broadly accessible files fail closed.
+- `admin-api`: enforces the exact loopback Host and Origin, disables CORS, authenticates CLI bearer and browser cookie/CSRF requests, bounds and validates request bodies, dispatches the versioned allowlisted routes, and positively projects provider, worker, status, settings, diagnostics, and error data.
+- `supervisor`: composes activity and credentials before migration, constructs the registry only after migration, owns worker/provider/auth/Admin services, writes a positive `0600` state projection only after Admin readiness, and performs idempotent reverse-order cleanup on startup failure or signal shutdown.
 
 Remaining target-state boundaries:
 
-- `supervisor`: now owns worker management, bounded activity, transactional migration, and provider orchestration; the Admin server remains the next composition layer.
-- `provider-service`: coordinates compatibility tests, credentials, activation, and credential-aware deletion above the metadata registry.
-- `admin-api`: loopback-only versioned HTTP contract used by both UI and CLI.
+- `cli-supervisor-client`: routes lifecycle and provider commands through the same Admin contract.
 - `web-ui`: static local app with onboarding and daily management views.
 
 ## Lifecycle
@@ -74,9 +76,9 @@ Remaining target-state boundaries:
 - Package remains distributed through npm.
 - The landed path contract reserves `~/.codex-remote-proxy/providers.json`, `secrets.json`, `state.json`, `control-token`, `activity.jsonl`, and `supervisor.log`; the provider registry owns `providers.json`, the explicit fallback adapter owns `secrets.json`, and the other new stores remain target state.
 - Provider metadata: `~/.codex-remote-proxy/providers.json`, atomically replaced with mode `0600` where supported after complete document validation.
-- Supervisor runtime metadata target: `~/.codex-remote-proxy/state.json`, mode `0600` where supported.
+- Supervisor runtime metadata: `~/.codex-remote-proxy/state.json`, atomically written with mode `0600` after Admin readiness and removed only by the owning supervisor instance.
 - Credentials: native OS store by default; `~/.codex-remote-proxy/secrets.json` only after strict explicit fallback consent. Native loader/factory failure before selection is a safe backend-unavailable error unless that consent is present. Once native is selected, operation failures remain native and are never replayed. Construction fallback exposes a `file` label that must be explicitly reused across restart; no credential migration is implicit.
-- Activity events: bounded local JSONL or SQLite store without request/response bodies.
+- Activity events: implemented bounded private JSONL without request/response bodies.
 - Codex configuration replacement holds an exclusive sidecar lock, compares bytes before writing, creates backups with exclusive-copy semantics, rechecks the source before rename, and preserves the source permission mode through same-directory temporary-file `fsync` and rename; unchanged content is neither rewritten nor backed up.
 - Provider-registry mutation holds an exclusive `0600` sidecar lock across disk reload, complete validation, same-directory temporary-file `fsync`, `chmod 0600`, rename, and in-memory replacement; validation or persistence failure leaves the prior in-memory document unchanged. Bounded cleanup preserves primary errors and distinguishes a durable committed/degraded result from a retryable failure; permanent residual locks require explicit repair and restart and are never auto-removed.
 - File-credential mutation follows the same conservative durable-commit rules while using a strict schema-version-1 secret-only document. Reads validate the parent and path before opening, verify descriptor identity, and never read secret bytes by path. An exclusive gate covers mutation. Release atomically renames the canonical gate to a unique claim, verifies and removes only that claim, and never deletes the canonical path. The canonical primary lock remains present throughout gate claim validation, so a competing instance that acquires the empty gate still reports busy; foreign or uncertain gate state must prove a canonical blocker before primary release, otherwise the primary lock is retained. Foreign or permanent claimed primary locks likewise restore a nonempty canonical blocker. Permanent secret-temp cleanup failure records uncommitted degradation and stops later mutations before another lock opens. Public errors contain no reference, secret, path, or file bytes.

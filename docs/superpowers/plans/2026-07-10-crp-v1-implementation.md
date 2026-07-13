@@ -725,15 +725,15 @@ Actual Node 22.19 Task 8 verification after security review fixes: the focused a
 - Create: `node/test/session-auth.test.mjs`
 - Create: `node/test/integration/admin-server.test.mjs`
 
-- [ ] **Step 1: Write failing browser-auth tests**
+- [x] **Step 1: Write failing browser-auth tests**
 
 Assert a 32-byte control token is created with `0600` mode. Test `/api/v1/session` with a valid bearer token returns an HttpOnly `SameSite=Strict` cookie and CSRF token, then clears access when expired. Invalid Host, non-loopback Origin, missing CSRF, missing cookie, and CORS preflight must be rejected.
 
-- [ ] **Step 2: Write failing API contract tests**
+- [x] **Step 2: Write failing API contract tests**
 
 Exercise every endpoint in `docs/API.md` against injected provider and worker services. Assert mutation status codes, `409` conflicts, sanitized error format, activity pagination, static UI fallback, and that serialized responses never contain `credentialRef` or a complete key.
 
-- [ ] **Step 3: Run and verify failures**
+- [x] **Step 3: Run and verify failures**
 
 ```bash
 cd node
@@ -742,15 +742,15 @@ node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs
 
 Expected: FAIL because auth and Admin API modules do not exist.
 
-- [ ] **Step 4: Implement auth and route table**
+- [x] **Step 4: Implement auth and route table**
 
 Use `crypto.randomBytes(32).toString("base64url")` for control/session/CSRF tokens. Accept bearer auth for CLI and cookie+CSRF for browser mutations. Route only the methods and paths listed in `docs/API.md`; unmatched API paths return `404 API_NOT_FOUND`. Serve `ui/index.html`, `ui/styles.css`, and `ui/app.js` with explicit MIME types and `Cache-Control: no-store`.
 
-- [ ] **Step 5: Compose the supervisor**
+- [x] **Step 5: Compose the supervisor**
 
 `createSupervisor(options)` builds paths, migration, registry, credential store, activity store, worker manager, provider service, auth, and Admin API. `supervisor-entry.mjs` loads the selected home, listens on `127.0.0.1:15101`, writes state only after health is ready, and shuts down cleanly on `SIGTERM`/`SIGINT`.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 ```bash
 cd node
@@ -759,6 +759,8 @@ npm test
 git add node/src/supervisor node/test/session-auth.test.mjs node/test/integration/admin-server.test.mjs
 git commit -m "feat: add secured local Admin API"
 ```
+
+Result: Node 22.19 focused coverage passes 42/42; the exact full gate passes 179/179 core, 7/7 isolated capture, and 23/23 integration assertions. Syntax checking covers 26 source files and the runtime dependency audit reports zero vulnerabilities.
 
 ## Task 10: Route CLI Commands Through the Supervisor
 

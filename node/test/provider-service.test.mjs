@@ -170,6 +170,14 @@ function committedError(code) {
   );
 }
 
+function createGate() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 async function listen(server) {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -854,4 +862,125 @@ test("reports rollback degraded when first activation may commit and bounded sto
   assert.equal((await service.getStatus()).generation, 0);
   assert.equal(workerManager.generation, 1);
   assert.equal(activity.events.at(-1).errorCode, "PROVIDER_ACTIVATION_ROLLBACK_DEGRADED");
+});
+
+test("proxy lifecycle facade resolves only the active credential and advances confirmed generations", async (t) => {
+  const harness = makeHarness(t);
+  const { service, registry, credentials, workerManager, activity } = harness;
+  const secretA = makeSecret("active");
+  const secretB = makeSecret("inactive");
+  const providerA = await service.createProvider(providerInput("A"), secretA);
+  await service.createProvider(providerInput("B", "https://b.example/v1"), secretB);
+  registry.markTest(providerA.id, { status: "passed" });
+  await service.activate(providerA.id);
+
+  credentials.operations.length = 0;
+  workerManager.calls.length = 0;
+  const stopped = await service.stopProxy();
+  assert.equal(stopped.phase, "stopped");
+  assert.deepEqual(credentials.operations, []);
+
+  const started = await service.startProxy();
+  assert.equal(started.phase, "running");
+  assert.equal(started.generation, 2);
+  assert.equal(workerManager.calls.at(-1)[0], "start");
+  assert.equal(workerManager.calls.at(-1)[1].settings.upstream.apiKey, secretA);
+
+  const restarted = await service.restartProxy();
+  assert.equal(restarted.phase, "running");
+  assert.equal(restarted.generation, 3);
+  assert.equal(workerManager.calls.at(-1)[0], "restart");
+  assert.equal(workerManager.calls.at(-1)[1].settings.upstream.apiKey, secretA);
+  assert.deepEqual(
+    credentials.operations.filter(([operation]) => operation === "get").map(([, ref]) => ref),
+    ["credential-1", "credential-1"]
+  );
+
+  const serialized = JSON.stringify({ stopped, started, restarted, events: activity.events });
+  for (const forbidden of [secretA, secretB, "credential-1", "credential-2", "apiKey"]) {
+    assert.equal(serialized.includes(forbidden), false, `lifecycle output leaked ${forbidden}`);
+  }
+  assert.deepEqual(
+    activity.events.slice(-3).map(({ category, action, result }) => ({ category, action, result })),
+    [
+      { category: "proxy", action: "stop", result: "success" },
+      { category: "proxy", action: "start", result: "success" },
+      { category: "proxy", action: "restart", result: "success" }
+    ]
+  );
+});
+
+test("shares each pending proxy lifecycle operation across concurrent commands", async (t) => {
+  for (const leader of ["start", "stop", "restart"]) {
+    await t.test(leader, async (t) => {
+      const { service, registry, credentials, workerManager, activity } = makeHarness(t);
+      const provider = await service.createProvider(providerInput(), makeSecret());
+      registry.markTest(provider.id, { status: "passed" });
+      registry.setActive(provider.id);
+      if (leader === "stop") {
+        workerManager.phase = "running";
+      }
+      credentials.operations.length = 0;
+      workerManager.calls.length = 0;
+      activity.events.length = 0;
+
+      const gate = createGate();
+      const method = `${leader}Proxy`;
+      const original = workerManager[leader].bind(workerManager);
+      let leaderCalls = 0;
+      workerManager[leader] = (...args) => {
+        leaderCalls += 1;
+        return gate.promise.then(() => original(...args));
+      };
+
+      const current = service[method]();
+      const concurrent = [
+        service.startProxy(),
+        service.stopProxy(),
+        service.restartProxy()
+      ];
+      await new Promise((resolvePromise) => setImmediate(resolvePromise));
+      const samePromises = concurrent.map((operation) => operation === current);
+      gate.resolve();
+      const [result, ...concurrentResults] = await Promise.all([current, ...concurrent]);
+
+      assert.deepEqual(samePromises, [true, true, true]);
+      assert.ok(concurrentResults.every((candidate) => candidate === result));
+      assert.equal(leaderCalls, 1);
+      assert.deepEqual(workerManager.calls.map(([operation]) => operation), [leader]);
+      assert.equal(
+        credentials.operations.filter(([operation]) => operation === "get").length,
+        leader === "stop" ? 0 : 1
+      );
+      assert.deepEqual(
+        activity.events.map(({ category, action, result }) => ({ category, action, result })),
+        [{ category: "proxy", action: leader, result: "success" }]
+      );
+      assert.equal(result.generation, leader === "stop" ? 0 : 1);
+
+      const later = service.restartProxy();
+      assert.notEqual(later, current);
+      const laterResult = await later;
+      assert.equal(laterResult.generation, leader === "stop" ? 1 : 2);
+      assert.equal(activity.events.length, 2);
+    });
+  }
+});
+
+test("proxy start and restart reject without an active provider while stop remains idempotent", async (t) => {
+  const { service, credentials } = makeHarness(t);
+  await assert.rejects(
+    () => service.startProxy(),
+    (error) => error instanceof CrpError
+      && error.code === "PROXY_NOT_CONFIGURED"
+      && error.status === 409
+  );
+  await assert.rejects(
+    () => service.restartProxy(),
+    (error) => error instanceof CrpError
+      && error.code === "PROXY_NOT_CONFIGURED"
+      && error.status === 409
+  );
+  assert.equal((await service.stopProxy()).phase, "stopped");
+  assert.deepEqual(credentials.operations, []);
 });

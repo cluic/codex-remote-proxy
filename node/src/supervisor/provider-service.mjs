@@ -64,6 +64,22 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
     PROVIDER_ACTIVATION_COMMITTED_DEGRADED: [
       "The provider was activated, but its persistence cleanup degraded.",
       "Stop CRP and repair the residual active-provider state before restarting."
+    ],
+    PROXY_NOT_CONFIGURED: [
+      "No active provider is configured for the proxy.",
+      "Test and activate a provider before starting the proxy."
+    ],
+    PROXY_START_FAILED: [
+      "The proxy worker could not be started.",
+      "Review worker health and try again."
+    ],
+    PROXY_STOP_FAILED: [
+      "The proxy worker could not be stopped.",
+      "Review worker health and try again."
+    ],
+    PROXY_RESTART_FAILED: [
+      "The proxy worker could not be restarted.",
+      "Review worker health and try again."
     ]
   };
   const [message, action] = contracts[code] ?? [
@@ -92,6 +108,7 @@ function committedServiceError(action, cause) {
 
 export class ProviderService {
   #operationTail = Promise.resolve();
+  #lifecycleOperation = null;
 
   constructor({
     registry,
@@ -490,6 +507,37 @@ export class ProviderService {
     });
   }
 
+  startProxy() {
+    return this.#runLifecycleOperation(async () => {
+      const current = this.workerManager.getPublicState();
+      if (current?.phase === "running") {
+        const worker = publicWorkerState(current);
+        await this.#recordProxy("start", "success", null, { alreadyRunning: true });
+        return worker;
+      }
+      return await this.#startOrRestartProxy("start");
+    });
+  }
+
+  stopProxy() {
+    return this.#runLifecycleOperation(async () => {
+      try {
+        const state = await this.workerManager.stop();
+        const worker = publicWorkerState(state);
+        await this.#recordProxy("stop", "success", null, {});
+        return worker;
+      } catch (error) {
+        const failure = serviceError("PROXY_STOP_FAILED", { cause: error });
+        await this.#safeRecordProxyFailure("stop", failure);
+        throw failure;
+      }
+    });
+  }
+
+  restartProxy() {
+    return this.#runLifecycleOperation(() => this.#startOrRestartProxy("restart"));
+  }
+
   async getStatus() {
     const document = this.registry.getDocument();
     const activeProfile = document.activeProviderId === null
@@ -562,6 +610,64 @@ export class ProviderService {
     return toPublicProvider(profile, configured);
   }
 
+  async #startOrRestartProxy(action) {
+    let workerAttempted = false;
+    let generation = null;
+    try {
+      const document = this.registry.getDocument();
+      if (document.activeProviderId === null) {
+        throw serviceError("PROXY_NOT_CONFIGURED", { status: 409 });
+      }
+      const profile = document.providers.find(({ id }) => id === document.activeProviderId);
+      if (!profile || profile.lastTestStatus !== "passed") {
+        throw serviceError("PROXY_NOT_CONFIGURED", { status: 409 });
+      }
+      const secret = await this.credentialStore.get(profile.credentialRef);
+      const observedGeneration = this.workerManager.getPublicState()?.generation;
+      generation = Math.max(
+        this.confirmedGeneration,
+        Number.isSafeInteger(observedGeneration) ? observedGeneration : 0
+      ) + 1;
+      if (!Number.isSafeInteger(generation)) throw new Error("proxy generation is invalid");
+      const snapshot = this.#buildSnapshot(profile, secret, generation);
+      workerAttempted = true;
+      const state = action === "restart"
+        ? await this.workerManager.restart(snapshot)
+        : await this.workerManager.start(snapshot);
+      if (!isConfirmedWorkerState(state, generation)) {
+        throw new Error("worker generation was not confirmed");
+      }
+      if (await this.verifyWorkerHealth(generation, state) !== true) {
+        throw new Error("worker health was not confirmed");
+      }
+      this.confirmedGeneration = generation;
+      this.confirmedSnapshot = structuredClone(snapshot);
+      const worker = publicWorkerState(state);
+      await this.#recordProxy(action, "success", null, { generation });
+      return worker;
+    } catch (error) {
+      if (error instanceof CrpError && error.code === "PROXY_NOT_CONFIGURED") {
+        await this.#safeRecordProxyFailure(action, error);
+        throw error;
+      }
+      let cleanupFailure = null;
+      if (workerAttempted) {
+        try {
+          await this.workerManager.stop();
+        } catch (caught) {
+          cleanupFailure = caught;
+        }
+      }
+      const code = action === "restart" ? "PROXY_RESTART_FAILED" : "PROXY_START_FAILED";
+      const failure = serviceError(code, {
+        cause: cleanupFailure ?? error,
+        details: cleanupFailure ? { degraded: true } : {}
+      });
+      await this.#safeRecordProxyFailure(action, failure, generation === null ? {} : { generation });
+      throw failure;
+    }
+  }
+
   #buildSnapshot(profile, secret, generation) {
     const document = this.registry.getDocument();
     const runtimeConfigPath = this.paths.runtimeConfigPath;
@@ -611,6 +717,30 @@ export class ProviderService {
     });
   }
 
+  async #recordProxy(action, result, errorCode, details) {
+    await this.activityStore.append({
+      category: "proxy",
+      action,
+      providerId: null,
+      result,
+      errorCode,
+      details
+    });
+  }
+
+  async #safeRecordProxyFailure(action, error, details = {}) {
+    try {
+      await this.#recordProxy(
+        action,
+        "failed",
+        stableErrorCode(error, `PROXY_${action.toUpperCase()}_FAILED`),
+        details
+      );
+    } catch {
+      // Preserve the lifecycle error when the audit store is unavailable.
+    }
+  }
+
   async #safeRecordFailure(action, providerId, error, details = {}) {
     const errorCode = stableErrorCode(error, `PROVIDER_${action.toUpperCase()}_FAILED`);
     try {
@@ -622,6 +752,17 @@ export class ProviderService {
 
   async #recordCommitted(action, providerId, error, details = {}) {
     await this.#record(action, providerId, "degraded", error.code, details);
+  }
+
+  #runLifecycleOperation(operation) {
+    if (this.#lifecycleOperation) return this.#lifecycleOperation;
+    const run = this.#runExclusive(operation);
+    this.#lifecycleOperation = run;
+    const clear = () => {
+      if (this.#lifecycleOperation === run) this.#lifecycleOperation = null;
+    };
+    void run.then(clear, clear);
+    return run;
   }
 
   #runExclusive(operation) {

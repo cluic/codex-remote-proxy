@@ -50,6 +50,12 @@ Record provider creation/update/deletion, test result, activation, Codex bootstr
 - Provider tests must use a no-follow redirect policy; no 3xx target may receive the configured authentication header or credential.
 - Migration and activity cleanup may delete only atomically claimed paths whose descriptor identity or ownership token matches; foreign replacements must remain canonical blockers.
 - A `committed: true` persistence error must be reconciled from durable state before compensation; it must never trigger an inverse credential mutation by assumption.
+- The Admin server must bind exactly `127.0.0.1`, require its exact loopback `Host`, reject every mismatched `Origin` and CORS preflight, and emit no access-control allow headers.
+- CLI requests require the private control-token bearer. Browser reads require an expiring HttpOnly `SameSite=Strict` session cookie, and browser mutations additionally require the matching session CSRF token.
+- Admin request bodies must use the exact route schema, UTF-8 JSON where a body is allowed, and a 64 KiB limit; routes defined with an empty body must reject nonempty input.
+- API responses, status files, settings, diagnostics, and errors must use positive field allowlists. Error details may expose only stable validation/commit metadata or `[REDACTED]` sensitive fields.
+- Static UI serving must map only the three packaged asset filenames and an extensionless index fallback; decoded traversal, unknown asset extensions, and non-GET/HEAD methods are prohibited.
+- State and Codex filesystem adapters must remain separate, and supervisor cleanup must not delete state it cannot prove it owns.
 
 ## Credential Verification Boundary
 
