@@ -1,6 +1,6 @@
 # Data Model
 
-Tasks 3 through 8 have implemented strict schema-version-2 provider metadata persistence, native and explicit-consent file credential adapters, immutable runtime snapshots, strict worker IPC, bounded activity, transactional migration, and provider-service orchestration.
+Tasks 3 through 11 have implemented strict schema-version-2 provider metadata persistence, a required public native credential adapter plus a lower-level injected private file adapter, immutable runtime snapshots, strict worker IPC, bounded activity, transactional migration, provider-service orchestration, and positive projections consumed by the packaged bilingual UI.
 
 ## ProviderProfile
 
@@ -45,9 +45,9 @@ Lock close and removal receive bounded cleanup retries. Cleanup failure never ma
 
 Changing `baseUrl`, authentication fields, extra headers, or model policy resets the compatibility-test state to `untested`; changing only the display name preserves it. Credential replacement can explicitly record the same reset. Public provider projection uses an explicit field allowlist and requires a boolean credential-configured flag.
 
-## CredentialDocument
+## Lower-Level CredentialDocument
 
-The explicit fallback adapter persists exactly this schema and exposes only `set`, `get`, `has`, and `delete` operations by opaque reference:
+The private file adapter persists exactly this schema and exposes only `set`, `get`, `has`, and `delete` operations by opaque reference. It is not selectable through current UI, CLI, Admin API, or ordinary Supervisor startup; only trusted dependency injection can reach it:
 
 ```json
 {
@@ -66,7 +66,7 @@ Reads refresh from disk only after validating a real private parent directory an
 
 Every mutation first acquires an exclusive same-directory protocol gate and a canonical primary lock before persistence. Release atomically renames the canonical gate directory to a unique claim path, verifies ownership there, and removes only a matching claim; the canonical gate path is never deleted after a separate identity check. The primary lock remains canonical throughout gate claim validation. A second instance may acquire the now-empty gate, but its primary acquisition reports busy and its own gate cleanup does not touch the first claim. A foreign gate claim is preserved, and exclusive canonical `mkdir` supplies a nonsecret blocker; `EEXIST` proves another blocker or owner already occupies the path. Primary release is permitted only after gate ownership or canonical blocker state is proven; otherwise the primary lock path is retained. Primary cleanup then claims the closed lock before reading its token. A foreign or permanent primary claim is preserved and linked back to the canonical path, or a nonsecret canonical blocker is created. Fresh instances therefore report busy instead of writing through degraded state.
 
-The native adapter lazily loads the addon during construction and stores the same opaque reference under service `org.cluic.codex-remote-proxy`. Backend selection defaults to native. Explicit file selection requires `fallbackConsent === true`; consent permits construction-time file selection only when native cannot be created before any credential operation. Once native is selected, backend-unavailable reads and mutations fail without file replay. A construction-time fallback exposes backend label `file`; callers must reuse that explicit label after restart to remain in the same namespace. Task 4 performs no automatic credential migration.
+The native adapter lazily loads the addon during construction and stores the same opaque reference under service `org.cluic.codex-remote-proxy`. Public Supervisor startup requires native construction and fails closed when it is unavailable. The lower-level factory can select the file adapter only through trusted injected options; no public consent input exists today. Once native is selected, backend-unavailable reads and mutations fail without file replay. Any future startup consent is L3 work, and Task 4 performs no automatic credential migration.
 
 ## RuntimeSettingsSnapshot
 
@@ -103,11 +103,13 @@ Activity events persist the exact allowlist `{ timestamp, category, action, prov
 The provider service now implements the following lifecycle behavior:
 
 - A profile must pass a Responses compatibility test before first activation.
-- Deleting the active profile is rejected until another profile is activated or the proxy is stopped.
+- Updating or deleting the active profile is rejected until another profile is activated, even if the proxy worker is stopped.
 - Deleting a profile removes its native credential entry and writes an activity event.
 - Activity retention defaults to 30 days or 10,000 events, whichever limit is reached first.
 - Proxy start and restart resolve only the active tested provider credential, advance the confirmed generation after worker acknowledgement and health, and return only worker public state. Stop is credential-free and idempotent.
 
 ## Migration
 
-On first version-2 start, migration transaction-locks injected legacy paths, rejects symbolic links, reads regular sources through lstat/open-no-follow/fstat identity validation, and writes collision-safe byte-exact `0600` backups. It converts the flat upstream to an inactive and untested provider named `Default`, moves the key to an opaque credential reference, validates schema version 2, and only then scrubs legacy secret fields. Failure restores source bytes in reverse order and removes registry state only when the current identity and bytes match this transaction. Foreign replacements are preserved, committed mutation errors are reconciled from disk, and lock uncertainty restores a canonical blocker. Existing valid schema version 2 is idempotently preserved.
+On the first supervisor start with pre-supervisor state, migration transaction-locks the legacy `config.json`, runtime `node/proxy-config.json`, and target registry paths; rejects symbolic links; reads regular sources through lstat/open-no-follow/fstat identity validation; and writes collision-safe byte-exact private backups. It converts the flat upstream to an inactive and untested provider named `Default`, moves the key to an opaque credential reference, validates schema version 2, and only then scrubs legacy secret fields. Backups remain available for an operator-controlled rollback.
+
+Failure restores source bytes in reverse order and removes registry/credential state only when identity and bytes prove ownership by this transaction. Foreign replacements are preserved. Committed mutation errors are reconciled from disk, and lock uncertainty restores a canonical blocker. `MIGRATION_COMMITTED_DEGRADED`, `MIGRATION_COMMITTED_LOCK_DEGRADED`, and `MIGRATION_ROLLBACK_DEGRADED` require stop-and-repair handling rather than automatic retry. Existing valid schema version 2 is idempotently preserved; no automatic downgrade to the flat schema exists.

@@ -2,234 +2,131 @@
 
 # Codex Remote Proxy 中文文档
 
-Codex Remote Proxy 的作用很直接：
+Codex Remote Proxy（CRP）让 Codex 保持 ChatGPT 登录态，同时把模型请求转发到当前选中的 OpenAI 兼容提供商。Codex 始终使用内置的 `OpenAI` 提供商身份，因此切换上游不会改变已有 OpenAI 线程的归属。
 
-- 保留 Codex 的 ChatGPT 登录态，用于手机端远程连接和远程控制
-- 把真实模型请求转发到你自己的 OpenAI 兼容 `base_url`
-- 把请求头里的 `Authorization` 改写成真实 API key
+[English](./README.md)
 
-已发布到 npm：
+> 发布状态：npm 当前发布的仍是 pre-supervisor `0.2.2`，其中不包含 `crp ui`。下文说明待发布的下一个 minor 版本；必须先通过外部平台门禁与 L3 确认才能发布。
 
-```bash
-npm install -g @cluic/codex-remote-proxy
-```
+## 发布后安装
 
-## 它解决了什么问题
-
-Codex 的两个本地文件分别控制不同事情：
-
-- `~/.codex/config.toml` 决定请求发往哪里
-- `~/.codex/auth.json` 决定 `Authorization` 里放什么
-
-当 Codex 处于 ChatGPT 登录模式时，发出去的通常不是普通 API key，而是 `tokens.access_token`。很多第三方 OpenAI 兼容服务并不接受这个值，所以即使 `base_url` 改对了，也可能无法正常对话。
-
-这个项目通过本地代理解决这个错位。
-
-## 推荐安装方式
-
-当前最推荐的路径是 Node 版本，也是目前已验证可正常转发和对话的主路径。
-
-### 全局安装
+需要 Node.js 22.13 或更高版本。
 
 ```bash
 npm install -g @cluic/codex-remote-proxy
 ```
 
-然后执行：
+普通用户的主要入口是：
 
 ```bash
-crp init
-crp start
+crp ui
 ```
 
-### 不做全局安装
+不做全局安装也可以运行：
 
 ```bash
-npx @cluic/codex-remote-proxy init
-npx @cluic/codex-remote-proxy start
+npx @cluic/codex-remote-proxy ui
 ```
 
-### 直接从当前仓库运行
+`crp ui` 会启动或发现本地 Supervisor，并打开管理界面。界面完整支持 English 和简体中文，可在页头切换；浏览器只会保存用户明确选择的语言。
+
+## 可以管理什么
+
+本地管理界面覆盖完整的日常流程：
+
+- 创建具名提供商；
+- 通过只写输入框填写凭据；
+- 测试 OpenAI Responses API 兼容性；
+- 激活并切换已通过测试的提供商；
+- 替换非当前提供商的凭据或删除非当前提供商；
+- 启动、停止、重启和查看代理 Worker；
+- 查看已脱敏的活动记录和只读设置；
+- 生成只包含创建状态、生成时间和已脱敏事件数量的内存诊断摘要。
+
+提供商切换只影响新请求。已经在处理中的请求继续使用其开始时捕获的提供商快照。
+
+## 固定的 Codex 配置
+
+CRP 只需引导配置一次，并持续保持以下不变量：
+
+```toml
+model_provider = "OpenAI"
+```
+
+```text
+http://127.0.0.1:15100
+```
+
+提供商切换发生在 CRP 内部。日常切换时不要为每个上游创建不同的 Codex `model_provider`，也不要修改固定代理地址。
+
+## 凭据安全
+
+公开 Supervisor 必须通过服务名 `org.cluic.codex-remote-proxy` 使用操作系统原生凭据存储：
+
+- macOS Keychain；
+- Windows Credential Manager；
+- Linux 上兼容的 Secret Service。
+
+如果原生后端无法构造或后续失败，公开启动与凭据操作会直接失败。当前 UI、CLI 和 Admin API 都没有文件存储授权或选择控件。底层私有文件适配器只允许受信任的依赖注入使用；公开 startup consent 属于未来 L3 工作，原生操作绝不会重放到该适配器。
+
+界面不会读回已保存的密钥。编辑时密钥输入框始终为空，完整密钥不会出现在 API 读取结果、活动记录、诊断、状态文件或日志中。
+
+## 本地浏览器安全
+
+Admin 服务只绑定 `127.0.0.1:15101`，会拒绝不符合预期的 `Host` 和 `Origin`，禁用 CORS，并要求浏览器修改操作携带 CSRF 保护。
+
+`crp ui` 会把私有的本地控制令牌放在 URL fragment 中。fragment 不会随 HTTP 请求发送；界面用它换取仅驻留内存的 CSRF 令牌和 HttpOnly、`SameSite=Strict` 会话 Cookie，随后移除 fragment 并清除本地令牌引用。令牌、凭据、提供商草稿、响应和错误都不会写入浏览器存储。
+
+如果会话仍有效但刷新后的页面没有启动 fragment，界面会进入仅 GET 工作区：读取仍可使用，所有修改控件都会禁用，必须重新运行 `crp ui` 才能恢复修改能力。会话交换失败，或后续会话/CSRF 鉴权失败，都会使当前标签页进入终止状态。
+
+## CLI
+
+凡是需要输入凭据，优先使用管理界面。Supervisor 同时提供以下命令：
+
+```text
+crp ui [--no-open] [--json]
+crp init [--no-open] [--json]
+crp start [--json]
+crp status [--json]
+crp stop [--json]
+crp restart [--json]
+crp shutdown [--json]
+crp provider list|add|test|activate|delete [--json]
+```
+
+`crp init` 是 `crp ui` 的兼容别名，只接受 `--no-open` 和 `--json`，不会询问提供商，也不会写入旧的扁平配置。旧的 `--api-key`、`--upstream-base-url`、请求记录/主机/端口参数、未知参数和位置参数都会在发现 Supervisor 或写磁盘前被拒绝。
+
+`crp provider add` 支持高级鉴权和模型选项，但要求使用只写的 `--api-key` 参数。命令行密钥可能出现在 shell 历史或进程检查中，因此该路径仅适合受控自动化。可通过 `crp guide --json` 查看准确的机器可读命令格式。
+
+`crp install` 和 `crp setup` 仍是 Supervisor 版 `crp start` 的弃用别名，三者都只接受 `--json`。其他已实现的兼容/检查命令是 `check`、`capture on|off|status`、`guide` 和 `install-cli`；CLI 没有 provider update、Activity、Settings 或 diagnostics 命令。
+
+## 从 0.2.2 升级
+
+下一个 minor 版本会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 2。
+
+1. 停止旧的托管代理。
+2. 私下备份 `~/.codex-remote-proxy/` 和 `~/.codex/config.toml`；所有备份都应视为包含敏感信息。
+3. 运行 `crp ui`。
+4. 检查迁移得到的 `Default` 提供商，运行兼容性测试，并且只在测试通过后激活。
+
+如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建未激活且未测试的 schema-2 提供商，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。
+
+如果事务在提交前失败，CRP 会尝试恢复原始字节，并且只删除能够证明属于本次事务的 registry 与凭据状态；外部替换的文件不会被删除。出现 `MIGRATION_COMMITTED_DEGRADED`、`MIGRATION_COMMITTED_LOCK_DEGRADED` 或 `MIGRATION_ROLLBACK_DEGRADED`，表示最终状态不确定或需要修复：停止 CRP，不要连续重试，保留备份，并在修改文件前查看 Activity 中已脱敏的错误码。处于降级状态时，CRP 不会擅自用备份自动覆盖当前状态。
+
+回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-2 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
+
+## 开发验证
 
 ```bash
 cd node
-npm install
-node bin/crp.mjs start
+npm ci
+npm run lint
+npm test
+npm run test:e2e -- --project=chromium --workers=1
+npm audit --omit=dev
+npm pack --dry-run --json --ignore-scripts
 ```
 
-完成后：
+测试只使用临时 HOME、合成凭据、注入适配器和 loopback 模拟上游。不要让 Supervisor 启动或迁移测试操作真实 HOME。
 
-1. 重启 Codex Desktop
-2. 使用 ChatGPT 账号登录
-3. 正常继续使用 Codex
-
-## 全局目录
-
-CLI 统一管理目录：
-
-```text
-~/.codex-remote-proxy/
-```
-
-这里会保存：
-
-- 运行配置
-- 托管状态
-- 代理日志
-- 可选的本地 shim 文件
-
-## 密钥处理方式
-
-你不必每次都把 `base_url` 和 `api_key` 再传给 `crp start`。
-
-推荐三种方式：
-
-### 方式 1：写进 `~/.codex/config.toml`
-
-可以额外加一段：
-
-```toml
-[codex_remote_proxy]
-upstream_base_url = "https://your-upstream.example.com"
-upstream_api_key = "sk-your-key"
-capture_enabled = true
-capture_db_path = "/Users/you/.codex-remote-proxy/traffic.sqlite3"
-```
-
-之后直接执行：
-
-```bash
-crp start
-```
-
-### 方式 2：本地保存一次
-
-```bash
-crp init
-crp start
-```
-
-`crp init` 会把配置保存到：
-
-```text
-~/.codex-remote-proxy/config.json
-```
-
-之后只需要：
-
-```bash
-crp start
-```
-
-### 方式 3：使用环境变量
-
-```bash
-export CRP_UPSTREAM_BASE_URL="https://your-upstream.example.com"
-export CRP_UPSTREAM_API_KEY="sk-your-key"
-export CRP_CAPTURE_ENABLED="true"
-export CRP_CAPTURE_DB_PATH="/Users/you/.codex-remote-proxy/traffic.sqlite3"
-crp start
-```
-
-`crp start` 的取值优先级是：
-
-1. CLI 参数
-2. 环境变量
-3. `~/.codex/config.toml` 里的 `[codex_remote_proxy]`，键名使用 `upstream_base_url`、`upstream_api_key`、`capture_enabled` 和 `capture_db_path`
-4. `crp init` 保存的本地配置
-5. 交互式输入
-
-## 请求记录
-
-SQLite 请求记录是可选功能，默认关闭。
-
-开启后，代理会把每次完整请求/响应保存成一条 SQLite 记录，默认数据库路径是：
-
-```text
-~/.codex-remote-proxy/traffic.sqlite3
-```
-
-启动时开启：
-
-```bash
-crp start --capture
-crp start --capture --capture-db-path /Users/you/.codex-remote-proxy/custom-traffic.sqlite3
-```
-
-对正在运行的代理做热切换：
-
-```bash
-crp capture on
-crp capture off
-crp capture status --json
-```
-
-你也可以直接编辑 `~/.codex-remote-proxy/node/proxy-config.json`。其中 `capture.enabled` 会在代理校验 SQLite 成功后热生效；`capture.dbPath` 的变化会被探测到，但需要重启后才会真正切到新路径。
-
-写入前会默认脱敏敏感请求头，例如 `Authorization`、`Cookie`、`Set-Cookie` 以及名称中包含 `token`、`secret`、`api-key` 的头。
-
-## 全局 CLI
-
-主要命令：
-
-- `crp check`
-  查看 Codex 配置、鉴权模式、运行时状态和托管服务状态
-
-- `crp start`
-  从 CLI 参数、环境变量、`~/.codex/config.toml` 的 `[codex_remote_proxy]` 或交互输入中获取上游配置，自动选择空闲端口，修改 Codex 配置，并默认后台启动代理
-
-- `crp init`
-  先把上游配置和可选的请求记录默认值安全保存到 `~/.codex-remote-proxy/`，如果你不想把密钥写进 `~/.codex/config.toml`，以后 `crp start` 也不需要再重复输入
-
-- `crp install`
-  与 `crp start` 等价的兼容别名
-
-- `crp capture on|off|status`
-  对托管中的代理热切换 SQLite 请求记录；如果代理当前没运行，则保存为下次启动时生效的偏好
-
-- `crp status`
-  查看当前托管服务状态和健康检查结果。如果代理在运行但不是 CLI 托管的，也会尝试探测
-
-- `crp stop`
-  停止托管服务
-
-- `crp guide`
-  输出给 AI 读取的调用说明
-
-常见 JSON 调用方式：
-
-```bash
-crp check --json
-crp capture status --json
-crp guide --json
-crp status --json
-```
-
-## 给 AI 的建议
-
-建议流程：
-
-1. 先跑 `crp check --json`
-2. 读取 `recommendedImplementation`
-3. 如果 Node 依赖就绪，优先走 `node`
-4. 优先使用现有 `~/.codex/config.toml` 里的 `[codex_remote_proxy]`，并使用 `upstream_base_url` / `upstream_api_key` / `capture_enabled` / `capture_db_path` 这些键，否则让用户先在本地跑一次 `crp init`，或者提前在系统里设置好环境变量
-5. 再跑 `crp start`
-6. 从返回结果中读取 `proxyUrl`、`pid`、`health`
-7. 之后用 `crp status --json` 做确认
-
-注意：
-
-- `start` 会修改 `~/.codex/config.toml`
-- `install` 会先创建备份
-- 托管状态和日志保存在 `~/.codex-remote-proxy/`
-- 只有在显式开启时才会写 SQLite 请求记录
-- 如果你是直接从当前仓库运行，需要先执行 `cd node && npm install`
-- `~/.codex/config.toml`、`crp init` 或环境变量模式都可以避免后续 AI 直接接触密钥
-
-## 实现目录
-
-- [./node](./node)
-  npm 包实现
-
-- [./node/RELEASING.md](./node/RELEASING.md)
-  自动发布 npm 的配置与发布流程说明
+发布准备及仍待完成的外部门禁见 [node/RELEASING.md](./node/RELEASING.md)。

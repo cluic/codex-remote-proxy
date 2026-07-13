@@ -22,6 +22,10 @@
 - Cancel stale asynchronous focus callbacks and preserve newer user focus.
 - Browser fixtures must mirror production enum values and response contracts.
 - Temporary-resource checks must stay within the current `$TMPDIR`; traversing all of `/var/folders` is prohibited.
+- Package-content tests must compare the exact reviewed allowlist.
+- CI native-backend gates must probe the intended platform service and must not accept fallback storage.
+- Tests must import only declared direct dependencies, and every checkout before pull-request code must set `persist-credentials: false`.
+- Secret-bearing negative tests must assert absence before equality so a RED failure cannot print the sentinel.
 
 ## Required Checks
 

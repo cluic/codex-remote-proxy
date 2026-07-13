@@ -1,159 +1,91 @@
 # Codex Remote Proxy
 
-Codex Remote Proxy lets Codex stay signed into ChatGPT for remote-control features while sending the actual model traffic to your own OpenAI-compatible upstream and API key.
+`@cluic/codex-remote-proxy` keeps Codex signed in with ChatGPT while routing model requests through a selected OpenAI-compatible provider.
 
-## Install
+> Release status: npm `0.2.2` is still the published pre-supervisor version and does not include `crp ui`. This document describes the pending next minor release, which must not be published until its external platform and L3 gates pass.
+
+## Requirements and Install After Release
+
+Node.js 22.13 or newer is required.
 
 ```bash
 npm install -g @cluic/codex-remote-proxy
+crp ui
 ```
 
-Then run:
+Or run without a global install:
 
 ```bash
-crp start
+npx @cluic/codex-remote-proxy ui
 ```
 
-You can also run it without a global install:
+`crp ui` is the normal setup and management entry point. It starts or discovers the loopback supervisor, opens the local management UI, and supports complete English and Simplified Chinese interfaces.
 
-```bash
-npx @cluic/codex-remote-proxy start
-```
+## Product Behavior
 
-## What It Solves
+The UI can create, test, activate, switch, update, and delete named providers; start, stop, and restart the proxy worker; review sanitized activity; inspect read-only settings; and generate in-memory diagnostic summary metadata. A provider must pass an OpenAI Responses compatibility test before activation. The active provider cannot be updated or deleted, even while the worker is stopped; activate another provider first.
 
-Codex splits request routing and authentication across two local files:
-
-- `~/.codex/config.toml` controls the OpenAI `base_url`
-- `~/.codex/auth.json` controls the `Authorization` token
-
-When Codex is signed into ChatGPT, requests may still carry `tokens.access_token` instead of the API key required by your upstream provider.
-
-This package inserts a local proxy that:
-
-1. receives Codex requests on `127.0.0.1`
-2. forwards them to the real upstream
-3. rewrites `Authorization` to the real upstream API key
-
-## Recommended Setup
-
-The easiest persistent setup is to add this section to `~/.codex/config.toml`:
+Codex remains configured as:
 
 ```toml
-[codex_remote_proxy]
-upstream_base_url = "https://your-upstream.example.com"
-upstream_api_key = "sk-your-key"
-capture_enabled = true
-capture_db_path = "/Users/you/.codex-remote-proxy/traffic.sqlite3"
+model_provider = "OpenAI"
 ```
 
-Then run:
+Its proxy address remains fixed at `http://127.0.0.1:15100`. CRP switches upstreams internally for new requests while in-flight requests retain their starting snapshot.
 
-```bash
-crp start
-```
+## Credentials
 
-If you do not want to place secrets in `~/.codex/config.toml`, use one of these alternatives instead:
+The public Supervisor requires the operating-system native store under service `org.cluic.codex-remote-proxy`. Native construction or operation failure fails closed. The UI, CLI, and Admin API expose no file-backend control. The lower-level private file adapter is limited to trusted dependency injection; a public startup-consent path remains future L3 work, and native operations never replay into the file namespace.
 
-### Option 1: Save once locally
+Complete credentials are write-only. They are excluded from public provider projections, state, settings, activity, diagnostics, and errors. Prefer the UI for secret entry. `crp provider add` accepts a required `--api-key` for controlled automation, but command-line values may be exposed through shell history or process inspection.
 
-```bash
-crp init
-crp start
-```
+## Browser Session Boundary
 
-`crp init` stores the upstream configuration under:
+The Admin server binds exactly to `127.0.0.1:15101`, checks `Host` and `Origin`, disables CORS, and requires CSRF for browser mutations. `crp ui` launches with a control token in the URL fragment; the app exchanges it once for an HttpOnly `SameSite=Strict` session cookie plus an in-memory CSRF token, then removes and clears the fragment token.
+
+Only an explicit `crp.locale` selection may enter browser storage. Session/control/CSRF tokens, credentials, drafts, responses, and errors remain memory-only. Reload with a valid cookie but no launch fragment is GET-only; reopen with `crp ui` for mutations. Exchange, session, or CSRF authentication failure is terminal for the tab.
+
+## Commands
 
 ```text
-~/.codex-remote-proxy/config.json
+crp ui [--no-open] [--json]
+crp init [--no-open] [--json]
+crp start [--json]
+crp status [--json]
+crp stop [--json]
+crp restart [--json]
+crp shutdown [--json]
+crp provider list|add|test|activate|delete [--json]
+crp guide [--json]
 ```
 
-### Option 2: Use environment variables
+`crp init` is a strict compatibility alias for `crp ui`. It accepts only `--no-open` and `--json`; legacy secret/upstream options, unknown options, and positional arguments fail before discovery or disk writes. It never creates the legacy flat secret configuration.
+
+`crp install` and `crp setup` are deprecated aliases for `crp start`. These three commands accept only `--json`. `check`, `capture on|off|status`, `guide`, and `install-cli` remain implemented compatibility/inspection commands; there are no provider-update, Activity, Settings, or diagnostics CLI commands.
+
+## Migration From 0.2.2
+
+Before first startup, stop the old proxy and privately back up the whole CRP home plus Codex configuration. Backups may contain credentials.
+
+The first supervisor startup transactionally reads legacy `config.json` and `node/proxy-config.json` when present, writes collision-safe byte-exact private backups, stores the secret through the required native adapter, creates schema-2 `providers.json` with one inactive and untested `Default` profile, validates the registry, and only then scrubs legacy secret fields. The user must test and activate `Default`; migration does not assume compatibility.
+
+On an ordinary pre-commit failure, CRP attempts reverse-order restoration and removes only transaction-owned registry/credential state. Foreign replacements and all backups are preserved. Committed or rollback-degraded migration codes require CRP to remain stopped while an operator reviews Activity and the private backups; repeated retry or partial manual copying can make an uncertain state worse.
+
+Returning to `0.2.2` requires stopping CRP and restoring the complete pre-upgrade backup as a unit. Schema 2 is not automatically downgraded. Real-home migration, native stores, and rollback are L3 platform operations.
+
+## Development and Release Gates
 
 ```bash
-export CRP_UPSTREAM_BASE_URL="https://your-upstream.example.com"
-export CRP_UPSTREAM_API_KEY="sk-your-key"
-export CRP_CAPTURE_ENABLED="true"
-export CRP_CAPTURE_DB_PATH="/Users/you/.codex-remote-proxy/traffic.sqlite3"
-crp start
+npm ci
+npm run lint
+npm test
+node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs
+npm run test:e2e -- --project=chromium --workers=1
+npm audit --omit=dev
+node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs test/release-workflows.test.mjs
+npm pack --dry-run --json --ignore-scripts
 ```
 
-`crp start` resolves values in this order:
+The package-content test requires the exact reviewed 30-file allowlist and rejects runtime state, credentials, tests, Changesets, logs, databases, and generated output. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
 
-1. CLI flags
-2. Environment variables
-3. `~/.codex/config.toml` under `[codex_remote_proxy]` using `upstream_base_url`, `upstream_api_key`, `capture_enabled`, and `capture_db_path`
-4. Saved config from `crp init`
-5. Interactive prompts
-
-## Request Capture
-
-SQLite request capture is optional and off by default.
-
-When enabled, the proxy stores one full request/response transaction per row in:
-
-```text
-~/.codex-remote-proxy/traffic.sqlite3
-```
-
-You can enable it at startup:
-
-```bash
-crp start --capture
-crp start --capture --capture-db-path /Users/you/.codex-remote-proxy/custom-traffic.sqlite3
-```
-
-Or hot-toggle it on a running proxy:
-
-```bash
-crp capture on
-crp capture off
-crp capture status --json
-```
-
-Edits to `~/.codex-remote-proxy/node/proxy-config.json` also hot-apply `capture.enabled`. Changes to `capture.dbPath` are detected but require a restart before the new database path is used.
-
-## Main Commands
-
-- `crp check`
-  Inspect Codex config, auth mode, runtime availability, and managed service state
-
-- `crp start`
-  Accept upstream settings from CLI flags, environment variables, `~/.codex/config.toml` `[codex_remote_proxy]`, or prompts; choose a free port, patch Codex, and start the proxy in the background by default
-
-- `crp init`
-  Save upstream settings and optional capture defaults once under `~/.codex-remote-proxy/`
-
-- `crp capture on|off|status`
-  Toggle SQLite request capture at runtime for a managed proxy, or save the preference for the next start
-
-- `crp status`
-  Show managed service status and health
-
-- `crp stop`
-  Stop the managed service
-
-- `crp guide`
-  Print AI-oriented usage guidance
-
-## Release Flow
-
-This package uses Changesets and GitHub Actions for npm releases.
-
-From `node/`:
-
-```bash
-npm run changeset
-```
-
-Commit the generated file under `.changeset/` with your feature PR. After the PR is merged to `main`, GitHub Actions will open or update a release PR. Merging that release PR publishes the package to npm.
-
-See [RELEASING.md](./RELEASING.md) for the one-time npm Trusted Publishing setup.
-
-## Notes
-
-- `crp start` modifies `~/.codex/config.toml` and creates a backup
-- the managed proxy runs in the background by default
-- managed state and logs live under `~/.codex-remote-proxy/`
-- request capture redacts sensitive headers before writing
-- Node.js 22.13.0 or newer is required
+This release requires a minor Changeset. Do not run `npm run version-packages` or `npm run release` during feature preparation. See [RELEASING.md](./RELEASING.md) for local evidence and remaining remote/human gates.

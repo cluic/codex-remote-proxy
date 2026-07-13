@@ -390,7 +390,7 @@ git add node/src/providers node/test/provider-registry.test.mjs
 git commit -m "feat: add atomic provider registry"
 ```
 
-## Task 4: Add Native and Explicit-Fallback Credential Stores
+## Task 4: Add Native and Lower-Level Private File Credential Stores
 
 **Files:**
 - Create: `node/src/credentials/native-keyring.mjs`
@@ -414,7 +414,7 @@ await assert.rejects(() => store.get(ref), (error) => error.code === "CREDENTIAL
 assert.equal(await store.delete(ref), false);
 ```
 
-Assert the fallback file is `0600`, stores no provider metadata, survives reload, and never returns all secrets through a list method.
+Assert the injected private file is `0600`, stores no provider metadata, survives reload, and never returns all secrets through a list method.
 
 - [x] **Step 2: Verify the contract tests fail**
 
@@ -453,7 +453,7 @@ export class NativeKeyringStore {
 }
 ```
 
-The native methods validate inputs, wrap synchronous entry calls in asynchronous methods, map missing passwords to `CREDENTIAL_NOT_FOUND`, map other native failures to `CREDENTIAL_BACKEND_UNAVAILABLE`, and keep causes internal. `FileCredentialStore` persists `{ "schemaVersion": 1, "credentials": { "provider-1": "secret" } }` atomically with `0600` mode, reads through a validated descriptor, degrades on permanent secret-temp cleanup failure, and holds a protocol gate plus canonical primary lock across mutation. Gate release atomically renames canonical state to a unique claim and deletes only a verified owned claim; the primary lock remains until ownership or a foreign-claim blocker is proven. `createCredentialStore({ backend, fallbackConsent, paths })` must never silently choose file storage; explicit consent permits construction-time fallback only before any credential operation. Selected native operations are never replayed, and a selected file label must be explicitly reused after restart without implicit migration.
+The native methods validate inputs, wrap synchronous entry calls in asynchronous methods, map missing passwords to `CREDENTIAL_NOT_FOUND`, map other native failures to `CREDENTIAL_BACKEND_UNAVAILABLE`, and keep causes internal. `FileCredentialStore` persists `{ "schemaVersion": 1, "credentials": { "provider-1": "secret" } }` atomically with `0600` mode, reads through a validated descriptor, degrades on permanent secret-temp cleanup failure, and holds a protocol gate plus canonical primary lock across mutation. Gate release atomically renames canonical state to a unique claim and deletes only a verified owned claim; the primary lock remains until ownership or a foreign-claim blocker is proven. The lower-level `createCredentialStore({ backend, fallbackConsent, paths })` factory supports trusted injected file selection only; the current public Supervisor requires native storage and exposes no UI/CLI/Admin fallback input. Selected native operations are never replayed, and any future startup consent remains L3 work.
 
 - [x] **Step 4: Verify no secret is exposed by public helpers**
 
@@ -466,7 +466,7 @@ node --test test/credential-store.test.mjs test/provider-registry.test.mjs
 
 Expected: all focused tests pass.
 
-Actual Node 22.19 Task 4 verification: the credential suite passes 41/41, the combined credential/provider suite passes 64/64, the full suite passes 91/91, and the portable syntax gate checks 14 source files. Native tests inject the entry loader and never invoke the default addon loader or access the real OS credential store.
+Actual Node 22.19 Task 4 verification: the credential suite passes 41/41, the combined credential/provider suite passes 64/64, the full suite passes 91/91, and the portable syntax gate checks 14 source files. Native tests inject the entry loader and never invoke the default addon loader or access the real OS credential store; the private file adapter is a lower-level injected boundary, not a public Supervisor option.
 
 - [x] **Step 5: Commit**
 
@@ -693,7 +693,7 @@ Use one safe recursive redactor shared by activity and errors. `ProviderService`
 
 ```js
 listProviders();
-createProvider(input, secret, { fallbackConsent });
+createProvider(input, secret);
 updateProvider(id, patch, replacementSecret);
 deleteProvider(id);
 testProvider(id, model);
@@ -799,6 +799,7 @@ Expected: FAIL because new commands and client do not exist.
 - [ ] **Step 4: Implement command semantics**
 
 - `ui`: ensure supervisor, create the fragment URL `/#token=<controlToken>`, open with macOS `open`, Windows `cmd /c start`, or Linux `xdg-open`; `--no-open` only prints JSON.
+- `init`: strict compatibility alias of `ui`; accept only `--no-open`/`--json`, reject legacy secret/upstream options and positional input before discovery or writes, and never create flat secret configuration.
 - `start`: ensure supervisor, bootstrap Codex if required, then POST `/proxy/start`.
 - `stop`: POST `/proxy/stop` and leave supervisor running.
 - `restart`: POST `/proxy/restart`.
@@ -881,6 +882,8 @@ git commit -m "feat: add guided local management UI"
 
 ## Task 12: Complete Migration, Cross-Platform Gates, Docs, and Release Readiness
 
+**Status (2026-07-14):** Package/workflow source is `af918d5` and credential-boundary hardening is `210cb71`. This documentation commit records final local evidence: lint 29, `npm test` 258/258 (`227` core + `7` isolated capture + `24` integration), integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3 against the exact 30-file allowlist, minor Changeset status since `origin/main`, and a clean cached diff check. Remote platform/native/visual/migration evidence, human L3 approval, push/PR/merge, versioning, publication, and release remain pending; Task 12 is not complete.
+
 **Files:**
 - Modify: `.github/workflows/release-preflight.yml`
 - Create: `.github/workflows/platform-tests.yml`
@@ -893,15 +896,15 @@ git commit -m "feat: add guided local management UI"
 - Modify: `docs/STATUS.md`
 - Modify: `docs/AI_HANDOFF.md`
 
-- [ ] **Step 1: Add failing package-content verification**
+- [x] **Step 1: Add failing package-content verification**
 
 Run `npm pack --dry-run --json` in a test and assert the package includes `bin/`, `src/`, `ui/index.html`, `ui/styles.css`, and `ui/app.js`, and excludes tests, `.superpowers`, credentials, state, and capture databases.
 
-- [ ] **Step 2: Add platform workflow matrix**
+- [x] **Step 2: Add platform workflow matrix**
 
 Create a GitHub Actions matrix over `macos-latest`, `windows-latest`, and `ubuntu-latest` using Node 22. Each runs `npm ci`, `npm run lint`, and `npm test`. macOS and Windows also install Chromium and run E2E; native keyring jobs create/read/delete a synthetic CI credential and always clean it up.
 
-- [ ] **Step 3: Run the complete local deterministic gate**
+- [x] **Step 3: Run the complete local deterministic gate**
 
 ```bash
 cd node
@@ -919,13 +922,15 @@ Expected: zero test failures, zero runtime vulnerabilities, and UI assets presen
 
 Use temporary credentials only. Search generated logs, activity, diagnostics, capture records, API responses, screenshots, and the Git diff for the complete test key. Verify invalid Host/Origin requests fail, the Admin API is not reachable from a non-loopback bind, macOS/Windows screenshots match the approved guided console, and keyboard-only onboarding succeeds.
 
-- [ ] **Step 5: Synchronize living docs and release notes**
+Local deterministic secret, localhost-contract, accessibility, and visual reviews are approved. Real macOS/Windows artifacts and real platform security/native-service evidence remain pending.
+
+- [x] **Step 5: Synchronize living docs and release notes**
 
 Mark implemented facts rather than target facts, record verification commands/results, update migration and rollback instructions, document new commands, set `docs/STATUS.md` to expert review, and add a minor Changeset because the npm package gains user-visible provider/UI/lifecycle capabilities.
 
-- [ ] **Step 6: Request two-stage review**
+- [ ] **Step 6: Complete two-stage review**
 
-First request requirements review against the approved design spec. After all requirement findings are resolved, request code-quality/security review focused on credential boundaries, migration rollback, localhost security, worker lifecycle, and secret leakage.
+Requirements and code-quality/security reviews produced findings addressed by `210cb71` and this documentation change; final confirmation with zero unresolved findings remains pending.
 
 - [ ] **Step 7: Commit the release-readiness change**
 
@@ -936,9 +941,9 @@ git commit -m "docs: prepare multi-provider UI release"
 
 ## Final Verification and Merge Gate
 
-- [ ] Re-run every command from Task 12 Step 3 on the final tree.
+- [x] Re-run every command from Task 12 Step 3 on the final tree.
 - [ ] Confirm macOS, Windows, and Linux CI is green.
-- [ ] Confirm zero unresolved requirements, quality, security, accessibility, or visual-review findings.
-- [ ] Confirm migration rollback evidence and a redacted diagnostic bundle are attached to the review.
-- [ ] Confirm `docs/STATUS.md`, `docs/AI_HANDOFF.md`, and `docs/DECISIONS.md` match implemented behavior.
+- [ ] Confirm zero unresolved local requirements, quality, security, accessibility, or visual-review findings.
+- [ ] Confirm migration rollback evidence and redacted diagnostic summary metadata are attached to the review.
+- [x] Confirm `docs/STATUS.md`, `docs/AI_HANDOFF.md`, and `docs/DECISIONS.md` match implemented behavior.
 - [ ] Classify the implementation as L3 and obtain expert confirmation; do not auto-merge.

@@ -31,12 +31,16 @@
 - Task 10 focused suite: `cd node && node --test test/crp.test.mjs test/integration/crp-lifecycle.test.mjs`
 - Task 11 browser suite: `cd node && npm run test:e2e -- --project=chromium --workers=1`
 - Task 11 session/Admin regression: `cd node && node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs`
+- Task 12 focused release gates: `cd node && node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs test/release-workflows.test.mjs`
+- Task 12 package dry run: `cd node && npm pack --dry-run --json --ignore-scripts`
+- Task 12 Changeset status: `cd node && npm run changeset -- status`
+- Task 12 post-security focus: `cd node && node --test test/crp.test.mjs test/provider-service.test.mjs test/integration/admin-server.test.mjs`
 - Worker integration suite: `cd node && npm run test:integration`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
 `npm run lint` recursively checks `.mjs` and `.js` files under `bin`, `src`, `scripts`, and `ui`, skipping source roots that have not landed. On Node 22.19, the Task 2 focused suite passes 15/15 tests. Its coverage verifies OpenAI provider creation and update, custom-provider and CRLF preservation, byte idempotency, one-time adjacent backup, exclusive same-timestamp backup collision handling, CRP lock contention, external source-change rejection, atomic mode-preserving replacement, deterministic rename-failure cleanup and original preservation, all nine injected-home paths, safe public error serialization, `start`/`install`/`setup` JSON and managed-state backup propagation, and accurate guide backup semantics.
 
-The Node 22.19 Task 3 focused suite passes 23/23 tests. The Task 4 credential suite passes 41/41, the combined credential/provider suite passes 64/64, and the current full suite passes 91/91; `npm run lint` syntax-checks 14 source files. Task 4 coverage includes the shared async adapter contract, lazy native-loader failure, construction-only fallback, no operation replay for native get/set/has/delete outages, explicit file-label restart continuity without migration, exact schema and string persistence, reload and refreshed reads, no enumeration API, two-instance lost-update prevention, strict parent/file modes, POSIX no-follow and simulated-Windows descriptor identity, symlink-swap rejection before byte reads, fsync/rename order, rollback cleanup, bounded secret-temp cleanup and permanent uncommitted degradation, gate-covered atomic lock claims, preexisting foreign-gate preservation, claim-before-delete gate release under an immediate foreign replacement, canonical blocker restoration, synchronous second-instance rejection during gate claim validation, normal claim cleanup and subsequent mutation, fresh-instance busy behavior, permanent committed lock degradation, input validation, and public provider masking. Tests never invoke the default native loader or construct or query a real native credential entry. Real native-backend verification remains L3 on every supported system, including Windows and Linux; file permission and rename semantics on Windows and Linux also remain unverified.
+The Node 22.19 Task 3 focused suite passes 23/23 tests. The Task 4 credential suite passes 41/41, the combined credential/provider suite passes 64/64, and the current full suite passes 91/91; `npm run lint` syntax-checks 14 source files. Task 4 coverage includes the shared async adapter contract, lazy native-loader failure, trusted injected private-file selection, no operation replay for native get/set/has/delete outages, explicit file-label restart continuity without migration, exact schema and string persistence, reload and refreshed reads, no enumeration API, two-instance lost-update prevention, strict parent/file modes, POSIX no-follow and simulated-Windows descriptor identity, symlink-swap rejection before byte reads, fsync/rename order, rollback cleanup, bounded secret-temp cleanup and permanent uncommitted degradation, gate-covered atomic lock claims, preexisting foreign-gate preservation, claim-before-delete gate release under an immediate foreign replacement, canonical blocker restoration, synchronous second-instance rejection during gate claim validation, normal claim cleanup and subsequent mutation, fresh-instance busy behavior, permanent committed lock degradation, input validation, and public provider masking. The public Supervisor requires native storage and exposes no file selector. Tests never invoke the default native loader or construct or query a real native credential entry. Real native-backend verification remains L3 on every supported system, including Windows and Linux; private file permission and rename semantics on Windows and Linux also remain unverified.
 
 The Node 22.19 Task 5 focused suite passes 13/13 and the current full suite passes 102/102; `npm run lint` syntax-checks 15 source files. Coverage verifies generation validation and failure atomicity, deep clone/freeze behavior, public allowlisting, exactly one request-start snapshot capture, delayed A versus immediate B switching, a transport-option spy for TLS pinning before body arrival, pinned authentication, headers, timeout, capture context and request IDs, static compatibility, unconfigured-source rejection, dynamic health secret scans, request/response short and custom authentication debug masking, and bidirectional custom-auth capture redaction.
 
@@ -52,7 +56,11 @@ The Node 22.19 Task 10 focused suite passes 27/27. Exact `npm test` passes 202/2
 
 The 2026-07-14 Task 11 gate uses Playwright 1.61.1 and Chrome for Testing 149.0.7827.55. `npm run test:e2e -- --project=chromium --workers=1` passes 40/40, the focused session/Admin regression passes 16/16, exact `npm test` passes 202/202 core plus 7/7 isolated capture plus 24/24 integration assertions (233 total), `npm run lint` syntax-checks 28 source files, and `npm audit --omit=dev` reports zero vulnerabilities. Coverage verifies complete `en`/`zh-CN` dictionary parity and locale precedence, only explicit `crp.locale` persistence, onboarding, provider CRUD/test/activation and production invalidation rules, production activity values (`proxy`, `start`/`stop`/`restart`, and `failed`/`degraded`), validated mock-upstream HTTP/auth/Responses contracts, lifecycle confirmation, degraded/committed errors, read-only Settings, GET-only valid-cookie re-entry without a fragment, terminal exchange/session/CSRF failures, keyboard/focus semantics, fixture failure cleanup, and 390x844 automatic layout. Full-secret collectors await and scan console/page errors, request and response bodies, activity, diagnostics, DOM/input values, URL/history, local/session storage, IndexedDB, attachments, and screenshot bytes after the visible DOM scan. Requirements review and the subsequent quality/security/accessibility reviews ended `APPROVED` with no unresolved finding.
 
-`npm run test:unit` retains its public behavior and runs all top-level `test/*.test.mjs` files. The exact `npm test` gate runs the same top-level set without duplication as two sequential groups: every non-capture unit file first, then `capture-store.test.mjs` alone, followed by recursively discovered `test/integration/**/*.test.mjs`. This isolates the polling watcher registration baseline from unrelated unit load and keeps real child-process integration after watcher cleanup. `test:e2e` is now a required UI gate; Task 12 owns the combined final-tree and cross-platform release gates.
+The 2026-07-14 Task 12 package/platform gate at `af918d5` passes the 21/21 focused package/native/workflow suite, exact 30-file package dry run, `actionlint`, and workflow policy checks. Safety commit `210cb71` then passes 67/67 post-security focused tests, 41/41 Chromium E2E, exact `npm test` with 227/227 core plus 7/7 isolated capture plus 24/24 integration assertions (258 total), `npm run lint` across 29 source files, `npm audit --omit=dev` with zero vulnerabilities, and diff checks. Coverage adds strict `init` alias rejection before discovery/writes, native-only public credential boundaries, rejected fallback fields, active-provider edit/delete blocking, metadata-only diagnostics, and secret-negative assertion ordering.
+
+This documentation commit records final local evidence: `npm run lint` checks 29 source files; `npm test` passes 258/258 (`227` core + `7` isolated capture + `24` integration); `npm run test:integration` passes 24/24; Chromium E2E passes 41/41; `npm audit --omit=dev` reports zero vulnerabilities; package-content passes 3/3 against the exact 30-file allowlist; Changeset status since `origin/main` is minor; and the cached diff check is clean. The workflow matrix is implemented but remote macOS/Windows/Linux run URLs do not yet exist in this review record. Real macOS Keychain, Windows Credential Manager, Linux Secret Service, Windows screenshots, real-home migration/rollback, and platform process/filesystem behavior remain pending L3 evidence. No real provider credential or external upstream is used by the local gate.
+
+`npm run test:unit` retains its public behavior and runs all top-level `test/*.test.mjs` files. The exact `npm test` gate runs the same top-level set without duplication as two sequential groups: every non-capture unit file first, then `capture-store.test.mjs` alone, followed by recursively discovered `test/integration/**/*.test.mjs`. This isolates the polling watcher registration baseline from unrelated unit load and keeps real child-process integration after watcher cleanup. `test:e2e` is a required UI gate; Task 12 combines the final-tree gate with cross-platform release evidence.
 
 ## Task 11 Visual Evidence
 
@@ -61,7 +69,7 @@ The Task 11 suite explicitly writes sanitized English and Simplified Chinese Ove
 - `output/playwright/task11/onboarding-onboards-in-Eng-57b0b-ce-and-finishes-on-Overview-chromium/overview-en.png`
 - `output/playwright/task11/onboarding-onboards-in-Eng-57b0b-ce-and-finishes-on-Overview-chromium/overview-zh-CN.png`
 
-These files are local review attachments under untracked `output/`, not source inputs and not part of the exact eight-file Task 11 commit. Do not stage or relocate them during Task 11 closeout. Automatic screenshots, traces, video, and failure artifacts remain disabled. The repository-retained evidence is the accepted visual contract and deterministic test that regenerates the images. Task 12 must attach fresh macOS and Windows screenshots to the L3 review record; no current rule requires committing PNGs to Git.
+These files are local review attachments under untracked `output/`, not source inputs and not part of the exact eight-file Task 11 commit. Do not stage or relocate them during release closeout. Automatic screenshots, traces, video, and failure artifacts remain disabled. The repository-retained evidence is the accepted visual contract and deterministic test that regenerates the images. Task 12 remote macOS and Windows jobs must attach fresh sanitized screenshots to the L3 review record; those artifact URLs are still pending, and no current rule requires committing PNGs to Git.
 
 ## Test Authoring Rules
 
@@ -71,9 +79,9 @@ These files are local review attachments under untracked `output/`, not source i
 - Registry mutations must reload while holding the registry lock before replacing state.
 - Lock cleanup must never mask a primary registry error or make a durable mutation appear retryable.
 - A recorded residual registry lock must never be inspected or removed automatically.
-- File credential fallback must never be selected without explicit consent.
+- Public Supervisor tests must require native credentials; only trusted injected lower-level tests may select the private file adapter.
 - Native operation failures must never be replayed into the independent file credential namespace.
-- A construction-time file fallback label must be explicitly reused across restart; Task 4 performs no credential migration.
+- An injected construction-time private file-adapter label must be explicitly reused across restart; Task 4 performs no credential migration and exposes no public selector.
 - Credential-store tests must inject native entry loaders and must never invoke the default loader or access a developer's real OS credential store.
 - Secret files must be read from a validated descriptor, never by path after a metadata check.
 - Secret-temp cleanup failure must degrade the instance instead of permitting another mutation.
@@ -112,13 +120,18 @@ These files are local review attachments under untracked `output/`, not source i
 - Secret submissions must clear state and the current DOM before validation, request dispatch, or re-rendering.
 - Delayed focus restoration must cancel stale callbacks and preserve newer user focus.
 - Temporary-resource leak checks must stay inside the current `$TMPDIR` and must not traverse all of `/var/folders`.
+- Package-content tests must compare the complete tarball against the exact reviewed allowlist; presence-only checks are insufficient.
+- Native credential release jobs must probe the intended Keychain, Credential Manager, or Secret Service backend and must not accept file fallback as passing evidence.
+- Tests must import only dependencies declared directly by this package.
+- Every workflow checkout before pull-request code executes must set `persist-credentials: false`.
+- Secret-bearing negative tests must assert absence before equality so a failing equality cannot print the sentinel.
 
 ## Test Matrix
 
 | Area | Required Tests |
 | --- | --- |
-| Provider registry | Validation, duplicate names, strict schema rejection, atomic persistence, rollback; migration is covered by the future migration suite |
-| Credentials | Native adapter contract, file fallback permission, masking, deletion, log redaction |
+| Provider registry and migration | Validation, duplicate names, strict schema rejection, atomic persistence, and rollback; the existing migration suite covers descriptor-safe legacy reads, byte-exact backups, schema-2 idempotency, reverse rollback, foreign replacements, and committed/rollback degradation |
+| Credentials | Required public native adapter, trusted-injection-only private file adapter, masking, deletion, log redaction |
 | Worker protocol | Version mismatch, acknowledgement, stale generation rejection, crash handling |
 | Proxy behavior | Auth rewrite, HTTP/SSE, compression, timeout, disconnect, optional model override |
 | Activation | Failed test rejection, atomic new-request switch, in-flight old snapshot |
@@ -126,7 +139,9 @@ These files are local review attachments under untracked `output/`, not source i
 | Codex bootstrap | Backup, idempotency, stable OpenAI provider, fixed URL, recovery |
 | Admin API | Auth/session, CSRF, Host/Origin rejection, error contracts, secret write-only behavior |
 | UI E2E | First-run flow, two-provider switch, restart, errors, keyboard and accessibility scan |
-| Cross-platform | macOS and Windows UI path; Linux CLI regression |
+| Cross-platform | Remote macOS and Windows UI artifacts; real native backend on macOS, Windows, and Linux; Linux CLI regression; workflow run URLs retained |
+
+The existing migration suite uses injected temporary paths and adapters. Migration and rollback against a real home, native credential service, and platform filesystem remain pending L3 confirmation.
 
 ## First Vertical Slice Acceptance
 
@@ -142,6 +157,6 @@ These files are local review attachments under untracked `output/`, not source i
 
 ## Verification Gate
 
-Credential, config migration, lifecycle, and browser-security tests must all pass before L3 expert review. Passing unit tests alone is insufficient.
+Credential, config migration, lifecycle, browser-security, exact package, release-policy, and platform workflow tests must all pass before L3 expert review. Passing local tests or defining a workflow alone is insufficient; real platform results and native-service evidence are required.
 
 Tasks 2 and 3 do not remove the L3 requirement, and atomic rename and permission behavior remain unverified on real Windows and Linux hosts.

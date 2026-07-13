@@ -2,12 +2,12 @@
 
 ## Product Summary
 
-Codex Remote Proxy keeps Codex signed in with ChatGPT while routing model traffic through a user-selected OpenAI-compatible upstream. The next product milestone adds a durable local control plane, named provider profiles, reliable proxy lifecycle management, and a browser-based management UI without changing Codex's provider identity during routine use.
+Codex Remote Proxy keeps Codex signed in with ChatGPT while routing model traffic through a user-selected OpenAI-compatible upstream. The current unreleased minor implements a durable local control plane, named provider profiles, reliable proxy lifecycle management, and a bilingual browser-based management UI without changing Codex's provider identity during routine use.
 
 ## Target Users
 
 - Primary: ordinary Codex Desktop users who have an OpenAI-compatible base URL and API key but do not want to edit configuration files.
-- Secondary: developers who want CLI automation, diagnostics, and multiple provider profiles.
+- Secondary: developers who want bounded CLI automation, UI diagnostic summaries, and multiple provider profiles.
 - Initial platform: management UI on macOS and Windows; CLI remains supported on Linux.
 
 ## Core Problems
@@ -21,7 +21,7 @@ Codex Remote Proxy keeps Codex signed in with ChatGPT while routing model traffi
 
 - `crp ui` starts the local supervisor and opens the management UI.
 - Add, edit, test, activate, and delete named provider profiles.
-- Store API keys in macOS Keychain or Windows Credential Manager, with an explicit `0600` file fallback.
+- Require the native OS credential service for the public Supervisor and fail closed when it is unavailable.
 - Keep Codex on `model_provider = "OpenAI"` and a fixed loopback proxy URL.
 - Atomically switch the active upstream for new requests without restarting Codex.
 - Start, stop, and reliably restart the proxy worker from CLI and UI.
@@ -48,7 +48,7 @@ Codex Remote Proxy keeps Codex signed in with ChatGPT while routing model traffi
 - Client UI: onboarding, provider forms, status, lifecycle actions, activity display, safe secret entry.
 - Supervisor/API: validation, provider persistence, credential access, Codex bootstrap, worker lifecycle, audit events.
 - Proxy worker: request forwarding, authorization rewrite, stable ingress, in-flight configuration snapshots, optional capture.
-- CLI: automation-compatible access to the same supervisor contracts.
+- CLI: an approved Admin-contract subset for `ui`/`init`, status, proxy lifecycle, and provider list/add/test/activate/delete, plus documented compatibility commands; it has no provider update, Activity, Settings, or diagnostics command.
 
 ## Success Criteria
 
@@ -57,6 +57,8 @@ Codex Remote Proxy keeps Codex signed in with ChatGPT while routing model traffi
 - The proxy worker can restart on the same port without taking down the management UI.
 - Full API keys never appear in read APIs, logs, capture headers, diagnostics, or repository files.
 - macOS and Windows E2E flows pass; Linux CLI regression tests pass.
+
+The implementation and latest code gates satisfy the functional criteria with temporary homes, mock upstreams, injected credential boundaries, and 41/41 Chromium E2E tests. Real macOS/Windows UI flows, real native credential services on all three target platforms, Linux CLI workflow evidence, migration/rollback on real homes, and L3 expert approval remain release criteria rather than completed facts.
 
 ## Open Decisions
 

@@ -22,9 +22,9 @@
 ```json
 {
   "error": {
-    "code": "PROVIDER_AUTH_FAILED",
-    "message": "The provider rejected the API key.",
-    "action": "Update the API key and test again.",
+    "code": "PROVIDER_NOT_READY",
+    "message": "The provider has not passed its compatibility test.",
+    "action": "Test the provider successfully before activating it.",
     "requestId": "local-request-id",
     "details": {}
   }
@@ -53,29 +53,34 @@
 | GET | `/settings` | Read non-secret local settings |
 | PATCH | `/settings` | Return `409 SETTINGS_READ_ONLY` while V1 fixed settings have no supported mutation |
 | POST | `/codex/bootstrap` | Back up and idempotently set the fixed Codex provider/proxy entry |
-| POST | `/diagnostics/export` | Produce a redacted local diagnostic bundle |
+| POST | `/diagnostics/export` | Return in-memory diagnostic summary metadata; no bundle, file, or download is created |
 
 ## Request Contracts
 
-- `POST /providers`: `{ "provider": { ...public input fields }, "credential": "write-only", "fallbackConsent": false }`.
+- `POST /providers`: `{ "provider": { ...public input fields }, "credential": "write-only" }`; unknown fields, including any fallback selector, are rejected.
 - `PATCH /providers/:id`: `{ "patch": { ...editable fields }, "replacementCredential"?: "write-only" }`.
 - `POST /providers/:id/test`: `{ "model": "non-empty-model" }`.
-- `PATCH /settings`: currently accepts only a boolean `captureEnabled` shape, then returns `409 SETTINGS_READ_ONLY` without mutation.
+- `PATCH /settings`: a schema-valid boolean `captureEnabled` shape always returns `409 SETTINGS_READ_ONLY` without mutation; malformed shapes fail validation.
 - Session exchange, delete, activate, proxy lifecycle, Codex bootstrap, and diagnostics export require an empty body.
 - Root objects reject unknown fields. Malformed JSON returns `400 API_BODY_INVALID`, unsupported media types return `415 API_CONTENT_TYPE_UNSUPPORTED`, and oversized input returns `413 API_BODY_TOO_LARGE`.
 
 `GET /activity` accepts one bounded `limit` from 1 through 100 and one `offset` from 0 through 9999. It returns `{ events, page: { limit, offset, nextOffset } }` with newest events first.
 
+Provider compatibility failures are successful HTTP exchanges: `POST /providers/:id/test` returns HTTP `200` with `{ "result": { "ok": false, "code": "PROVIDER_TEST_AUTH" } }` for upstream 401/403 authentication rejection. `PROVIDER_TEST_AUTH` is not an Admin error envelope.
+
+`POST /diagnostics/export` retains its compatibility path but returns only `{ "diagnostics": { "created": true, "generatedAt": "ISO timestamp", "eventCount": 0 } }`. The summary is generated in memory from sanitized Activity metadata and has no path, body content, bundle, persisted artifact, or download URL.
+
 ## Static UI Boundary
 
-The Admin server supports only `index.html`, `styles.css`, and `app.js` with explicit MIME types, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`. Extensionless client routes fall back to `index.html`; unknown asset extensions, unsafe decoded paths, and non-GET/HEAD UI methods are rejected. The actual UI assets land in Task 11.
+The Admin server serves the implemented packaged `index.html`, `styles.css`, and `app.js` only, with explicit MIME types, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`. Extensionless client routes fall back to `index.html`; unknown asset extensions, unsafe decoded paths, and non-GET/HEAD UI methods are rejected.
+
+The UI exchanges the `crp ui` launch fragment through `POST /session`, removes and clears that fragment token, and keeps the returned CSRF value in memory. A valid cookie without a launch fragment may call GET endpoints only; every mutation control is disabled until a fresh `crp ui` launch. Failed exchange and later session/CSRF authentication failures terminate API use for that tab rather than attempting refresh.
 
 ## State Conflict Rules
 
 - Activating an untested or failed provider returns `409 PROVIDER_NOT_READY`.
-- Deleting the active provider returns `409 PROVIDER_ACTIVE`.
+- Updating or deleting the active provider returns `409 PROVIDER_ACTIVE`, even when the worker is stopped; activate another provider first.
 - Lifecycle commands already in progress return their current operation instead of starting a second one.
-- Changing the fixed proxy port requires successful Codex bootstrap and an explicit UI warning.
 
 ## Contract Change Rules
 

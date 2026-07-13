@@ -17,8 +17,10 @@ The admin UI is not designed for mobile or remote access.
 - Onboarding: provider details → compatibility test → activate → Codex bootstrap result.
 - Overview: supervisor/worker health, active provider, fixed proxy address, recent error, switch and restart actions.
 - Providers: list, create, edit, test, activate, delete, and replace credential.
-- Activity: sanitized lifecycle events and diagnostic export.
+- Activity: sanitized lifecycle events and an in-memory diagnostic summary.
 - Settings: read-only ports, credential backend status, capture state, and Codex bootstrap state.
+
+All five views are implemented in the packaged `index.html`, `styles.css`, and `app.js`; the UI has no CDN, framework, or separate locale asset dependency.
 
 ## Core Interaction Rules
 
@@ -26,10 +28,11 @@ The admin UI is not designed for mobile or remote access.
 - Activation shows progress and completes only after the worker acknowledges the new generation.
 - Restart uses one explicit confirmation only when in-flight requests may be interrupted.
 - Destructive profile deletion requires confirmation and is unavailable for the active profile.
+- Active-provider edit and deletion stay unavailable even when the worker is stopped; activate another provider first.
 - Secret inputs are blank on edit; masked previews are informational, never form values.
 - Every error includes a plain-language cause and a next action.
 - First-run provider setup persists the provider before testing it, then permits activation only after a passing test.
-- Permission-restricted file credential fallback requires a dedicated, unchecked consent checkbox.
+- Public onboarding requires the native credential store; the UI has no file-backend selection or consent control and shows the safe backend error when native storage is unavailable.
 - Settings is read-only in V1; fixed ports, capture state, credential backend, and Codex bootstrap state are informational.
 - A valid session cookie without a launch fragment opens a GET-only workspace with mutation controls disabled and a banner to reopen with `crp ui` for changes.
 - A failed session exchange or later session/CSRF authentication failure becomes a terminal read-only instruction to close the tab and run `crp ui` again; Task 11 does not refresh sessions.
@@ -76,3 +79,5 @@ Low-fidelity architecture, provider flow, UI direction, and dashboard/error-stat
 Task 11 acceptance cleared token and credential state before explicitly generating English and Simplified Chinese Overview screenshots at 1440x900. The canonical local review artifacts are `output/playwright/task11/onboarding-onboards-in-Eng-57b0b-ce-and-finishes-on-Overview-chromium/overview-en.png` and `overview-zh-CN.png`; both are 1440x900, and automated layout coverage also exercises 390x844 without redefining the product as mobile. Automatic Playwright trace, video, failure screenshots, and other sensitive browser artifacts stay disabled.
 
 The PNGs under `output/` are explicit, sanitized local review attachments, not repository source and not part of the exact eight-file Task 11 commit. The durable repository evidence is this accepted visual contract plus the deterministic test that regenerates the images. Task 12 must attach fresh macOS and Windows screenshots to the L3 review record; neither Task 11 nor `docs/TESTING.md` requires committing PNGs to Git.
+
+Latest code evidence at `210cb71` includes 41/41 Chromium tests and regenerated sanitized artifacts. Real macOS and Windows workflow artifact URLs and Windows-specific visual review are still pending and must not be inferred from local Chrome for Testing results.
