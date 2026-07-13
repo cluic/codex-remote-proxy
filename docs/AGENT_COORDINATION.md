@@ -4,7 +4,7 @@
 
 | Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- | --- |
-| V1 sequential implementation | Primary Codex plus Task 7 implementation agent | Resolve Task 7 lifecycle review findings with one writer | Task 7 owns `node/src/supervisor/worker-manager.mjs`, `node/test/fixtures/fake-worker.mjs`, `node/test/worker-manager.test.mjs`, `node/test/integration/worker-restart.test.mjs`, `node/scripts/run-tests.mjs`, the minimal group selection in `node/scripts/run-test-group.mjs`, and affected living docs | Task 7 review fixes complete and deterministic gates pass; pending re-review | Task 7 commit `9129df281a3fb58724aeb5866d0bb08aabf2747d` | Task 6 protocol/worker entry, Task 5 server/runtime settings and capture source/tests, provider and credential stores, Codex, CLI/bin, Admin API, UI, package scripts, and every other module; no simultaneous writable agent |
+| V1 sequential implementation | Primary Codex plus Task 8 implementation agent | Resolve Task 8 security-review findings with one writer | Task 8 owns `node/src/supervisor/activity-store.mjs`, `node/src/supervisor/migration.mjs`, `node/src/supervisor/provider-service.mjs`, their three focused tests, and affected living docs | Review fixes implemented; deterministic gates passing; re-review pending; real HOME/keyring/network migration remains prohibited | Task 8 commit `fa5e485468065c3f2eff54d2c9ebcc69fbcf8e35` | Existing provider registry, credential adapters, worker manager, server/runtime settings, capture, Codex, CLI/bin, Admin API, UI, runners, package scripts, and every other module; no simultaneous writable agent |
 
 ## Shared Contracts
 

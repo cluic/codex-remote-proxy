@@ -44,6 +44,12 @@ Record provider creation/update/deletion, test result, activation, Codex bootstr
 - Reject non-loopback admin binds.
 - Validate URL scheme and block accidental credential forwarding to an unvalidated target.
 - Treat diagnostics and capture content as sensitive local data.
+- Activity persistence must use only its exact public event allowlist and must omit Error messages, causes, stacks, credentials, headers, bodies, and backup paths.
+- Migration tests and ordinary deterministic gates must inject temporary paths and adapters; real HOME, native-keyring, and upstream migration is reserved for L3 platform confirmation.
+- Provider CRUD, testing, and activation must serialize through a provider-service mutex and resolve only the selected provider credential for test/activation.
+- Provider tests must use a no-follow redirect policy; no 3xx target may receive the configured authentication header or credential.
+- Migration and activity cleanup may delete only atomically claimed paths whose descriptor identity or ownership token matches; foreign replacements must remain canonical blockers.
+- A `committed: true` persistence error must be reconciled from durable state before compensation; it must never trigger an inverse credential mutation by assumption.
 
 ## Credential Verification Boundary
 

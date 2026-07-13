@@ -58,7 +58,7 @@ Landed in Tasks 2 through 7:
 
 Remaining target-state boundaries:
 
-- `supervisor`: composes the worker manager with the future admin server, provider service, and activity records.
+- `supervisor`: now owns worker management, bounded activity, transactional migration, and provider orchestration; the Admin server remains the next composition layer.
 - `provider-service`: coordinates compatibility tests, credentials, activation, and credential-aware deletion above the metadata registry.
 - `admin-api`: loopback-only versioned HTTP contract used by both UI and CLI.
 - `web-ui`: static local app with onboarding and daily management views.
@@ -89,5 +89,7 @@ Remaining target-state boundaries:
 - Port release races during restart.
 - Localhost CSRF and DNS-rebinding-style attacks.
 - Safe migration from the existing flat secret-bearing configuration.
+- Provider compatibility tests never follow redirects; 3xx is a stable failure so custom authentication cannot be forwarded to another origin. Active profiles reject every update until another provider is activated or the proxy is stopped.
+- Provider-service activation persists the candidate active ID, reconciles committed/degraded persistence from the registry, marks the worker attempt before sending, and applies one selected credential through a strictly increasing snapshot. A health failure or rejected acknowledgement is treated as an unknown worker commit and restores the prior profile with a newer confirmed generation (`1 -> 2 -> 3`); rollback uncertainty is degraded and requires explicit repair.
 
 These areas require integration tests and L3 review before release.

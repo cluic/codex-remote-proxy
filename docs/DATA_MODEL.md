@@ -1,6 +1,6 @@
 # Data Model
 
-Tasks 3 through 6 have implemented strict schema-version-2 provider metadata persistence, native and explicit-consent file credential adapters, immutable in-memory runtime snapshots, and a strict version-1 worker protocol. Provider-service orchestration and migration remain target-state work.
+Tasks 3 through 8 have implemented strict schema-version-2 provider metadata persistence, native and explicit-consent file credential adapters, immutable runtime snapshots, strict worker IPC, bounded activity, transactional migration, and provider-service orchestration.
 
 ## ProviderProfile
 
@@ -86,7 +86,7 @@ Runtime state includes supervisor PID plus the worker manager's exact public pro
 
 ## ActivityEvent
 
-Activity events record timestamp, category, action, provider ID, result, stable error code, and sanitized details. They never contain complete keys, authorization headers, cookies, or request/response bodies.
+Activity events persist the exact allowlist `{ timestamp, category, action, providerId, result, errorCode, details }`. Details are recursively serialized with cycles and non-JSON values bounded. Error messages/causes/stacks are omitted, and compacted authorization, cookie, token, secret, API-key, credential-ref, request/response-body, cause, stack, headers, and backup-path field names are redacted. Atomic `0600` JSONL replacement retains the newest 10,000 events no older than 30 days; lock initialization and release claim canonical state and remove only identity-proven ownership. Uncertainty restores a canonical blocker and stops later mutations.
 
 ## Relationships
 
@@ -96,7 +96,7 @@ Activity events record timestamp, category, action, provider ID, result, stable 
 
 ## Lifecycle and Deletion
 
-The following provider-service lifecycle behavior remains target state; Task 3 implements only profile test-state recording, active-ID persistence, active-profile delete rejection, and inactive-profile metadata deletion.
+The provider service now implements the following lifecycle behavior:
 
 - A profile must pass a Responses compatibility test before first activation.
 - Deleting the active profile is rejected until another profile is activated or the proxy is stopped.
@@ -105,4 +105,4 @@ The following provider-service lifecycle behavior remains target state; Task 3 i
 
 ## Migration
 
-On first version-2 start, back up existing CRP files, convert the flat upstream to a provider named `Default`, move the API key into the selected credential backend, persist schema version 2, and verify the resulting profile before removing the old secret field. Migration must be transactional and recoverable from its backup.
+On first version-2 start, migration transaction-locks injected legacy paths, rejects symbolic links, reads regular sources through lstat/open-no-follow/fstat identity validation, and writes collision-safe byte-exact `0600` backups. It converts the flat upstream to an inactive and untested provider named `Default`, moves the key to an opaque credential reference, validates schema version 2, and only then scrubs legacy secret fields. Failure restores source bytes in reverse order and removes registry state only when the current identity and bytes match this transaction. Foreign replacements are preserved, committed mutation errors are reconciled from disk, and lock uncertainty restores a canonical blocker. Existing valid schema version 2 is idempotently preserved.

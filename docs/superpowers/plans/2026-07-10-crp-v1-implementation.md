@@ -666,19 +666,19 @@ Actual Node 22.19 Task 7 verification after review fixes: the strict-unhandled f
 - Create: `node/test/migration.test.mjs`
 - Create: `node/test/provider-service.test.mjs`
 
-- [ ] **Step 1: Write failing activity redaction tests**
+- [x] **Step 1: Write failing activity redaction tests**
 
 Append an event containing authorization, cookie, token, secret, API key, and nested error fields. Assert the persisted JSONL contains `[REDACTED]`, never the test values, and retention truncates to the newest 10,000 rows.
 
-- [ ] **Step 2: Write transactional migration tests**
+- [x] **Step 2: Write transactional migration tests**
 
 Given the current flat `config.json`, assert migration creates one `Default` provider, stores its key through the injected credential adapter, backs up original files, and removes the secret from provider metadata. Inject a credential-write failure and assert original bytes are restored and no schema-2 file remains.
 
-- [ ] **Step 3: Write provider-service tests**
+- [x] **Step 3: Write provider-service tests**
 
 Use two local mock upstreams and assert `testProvider(id, model)` classifies DNS/TLS/timeout/401/404/invalid-Responses errors, marks success, and that `activate(id)` rejects untested profiles, resolves only the selected credential, increments generation, persists active ID, and waits for worker acknowledgement.
 
-- [ ] **Step 4: Run tests and verify failure**
+- [x] **Step 4: Run tests and verify failure**
 
 ```bash
 cd node
@@ -687,7 +687,7 @@ node --test test/activity-store.test.mjs test/migration.test.mjs test/provider-s
 
 Expected: FAIL because the orchestration modules do not exist.
 
-- [ ] **Step 5: Implement the three services**
+- [x] **Step 5: Implement the three services**
 
 Use one safe recursive redactor shared by activity and errors. `ProviderService` exposes:
 
@@ -703,7 +703,7 @@ getStatus();
 
 `testProvider` sends a minimal `POST /responses` request with `stream: false`, `input: "Reply with OK."`, and the selected model. Store only stable result codes and timestamps.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 ```bash
 cd node
@@ -712,6 +712,8 @@ npm test
 git add node/src/supervisor/activity-store.mjs node/src/supervisor/migration.mjs node/src/supervisor/provider-service.mjs node/test/activity-store.test.mjs node/test/migration.test.mjs node/test/provider-service.test.mjs
 git commit -m "feat: orchestrate provider lifecycle"
 ```
+
+Actual Node 22.19 Task 8 verification after security review fixes: the focused activity/migration/provider-service suite passes 42/42; exact `npm test` passes 168/168 core assertions, 7/7 isolated capture assertions, and 12/12 integration tests; syntax checking covers 22 source files. Coverage includes redirect refusal, active-update rejection, expanded activity redaction, ownership-checked locks, descriptor-safe migration, exclusive final-path registry creation, symlink and foreign-state preservation, committed-state reconciliation, unknown worker-commit rollback, and replacement-secret rollback safety. All migration, credential, fetch, and worker boundaries are injected, temporary, or loopback-only. Real HOME migration, native keyrings, cross-platform permission/rename behavior, and live upstream activation remain L3 expert gates.
 
 ## Task 9: Build the Secured Loopback Admin API
 

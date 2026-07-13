@@ -6,7 +6,7 @@ V1 implementation: provider lifecycle end to end.
 
 ## In Progress
 
-- Sequential execution of the approved V1 plan; Tasks 1 through 7 are complete and Task 8 is next.
+- Sequential execution of the approved V1 plan; Tasks 1 through 8 are complete and Task 9 is next.
 
 ## Done
 
@@ -25,14 +25,15 @@ V1 implementation: provider lifecycle end to end.
 - Completed Task 5 monotonic immutable runtime settings and request-start snapshot capture. In-flight A remains internally consistent while new traffic switches to B; dynamic health, transport and timeout pinning, request/response short and custom authentication log masking, and bidirectional custom-auth capture redaction are covered by 13/13 focused and 102/102 full Node 22.19 tests; syntax checking covers 15 source files.
 - Completed Task 6 strict version-1 worker IPC and the proxy-worker child entrypoint. Configure enforces HTTPS-or-loopback upstreams, HTTP-token authentication fields, Node-compatible final authentication values, and sensitive/header-collision rejection; the worker remains unbound until valid configuration, rejects configure after drain begins without losing the pending drain acknowledgement, keeps repeated drain acknowledgements and status drained, bounds parent-disconnect cleanup when an upstream hangs before or during shutdown, uses a fixed correlation ID for invalid-message fatals, releases its port on shutdown, and emits only sanitized child messages. Coverage passes 21/21 focused and 11/11 integration tests; the full gate passes 112/112 top-level tests followed by 11/11 integration tests without duplication. Syntax checking covers 18 source files, including the sequential group runner that isolates real-fork load from watcher tests.
 - Completed Task 7 reliable worker lifecycle management and its review fixes. Startup requires ready, correlated configure acknowledgement, and matching health; snapshot generations advance only after matching acknowledgement; concurrent restart calls reuse the current operation before inspecting a new snapshot, while an unshared restart validates the complete snapshot before drain; send failures synchronously cancel observed acknowledgement waiters; stop and restart bound drain, TERM, and KILL, confirm exclusive fixed-port release, retain control after termination timeout, and isolate old child epochs. Unexpected exits recover with cancellable injected-clock backoff and fail immediately on the fifth crash in 60 seconds. Strict-unhandled coverage passes 22/22 focused tests; the exact full gate passes 126/126 non-capture unit assertions, 7/7 isolated capture assertions, and 12/12 integration tests; the all-top-level compatibility command passes 133/133. Syntax checking covers 19 source files, and the runtime audit reports zero vulnerabilities.
+- Completed Task 8 sanitized activity, transactional legacy migration, and provider orchestration. Activity uses an exact event allowlist, expanded recursive denylist, bounded retention, atomic replacement, and ownership-checked degraded locks. Migration uses descriptor-safe source/registry reads, symlink rejection, byte-exact exclusive backups, transaction locking, exclusive final-path registry creation, identity-checked rollback, committed-state reconciliation, and canonical blockers. Provider CRUD/test/activation rejects active edits, refuses redirects, reconciles committed mutations, serializes selected-credential operations, and deterministically rolls an uncertain candidate back with a newer generation. Focused coverage passes 42/42; exact full coverage passes 168/168 core, 7/7 capture, and 12/12 integration assertions; syntax covers 22 source files. All tests use temporary paths, injected adapters, and loopback mocks; real HOME/keyring/live-network migration remains an L3 gate.
 
 ## Blocked
 
-- No current blocker is recorded for Task 8.
+- No current blocker is recorded for Task 9.
 
 ## Next
 
-1. Execute Task 8: add activity, migration, and provider orchestration.
+1. Execute Task 9: build the secured loopback Admin API.
 2. Keep product implementation within the approved V1 task order and fixed provider/proxy invariants.
 
 ## Risks
