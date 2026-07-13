@@ -4,7 +4,7 @@
 
 | Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- | --- |
-| V1 sequential implementation | Primary Codex plus Task 6 implementation agent | Resolve the final Task 6 shutdown/disconnect escalation review finding with one writer | Task 6 owns `node/src/worker/worker-entry.mjs`, `node/test/integration/worker-entry.test.mjs`, and affected living docs; the completed protocol and grouped test runner remain unchanged | Task 6 bounded shutdown/disconnect escalation fix complete on `codex/harness-product-design`; Task 7 is next | Task 6 amended commit | Task 5 server/runtime settings and capture source/tests, test runner/package, supervisor/manager, providers, credentials, Codex, CLI/bin, Admin API, UI, and every other module; no simultaneous writable agent |
+| V1 sequential implementation | Primary Codex plus Task 7 implementation agent | Resolve Task 7 lifecycle review findings with one writer | Task 7 owns `node/src/supervisor/worker-manager.mjs`, `node/test/fixtures/fake-worker.mjs`, `node/test/worker-manager.test.mjs`, `node/test/integration/worker-restart.test.mjs`, `node/scripts/run-tests.mjs`, the minimal group selection in `node/scripts/run-test-group.mjs`, and affected living docs | Task 7 review fixes complete and deterministic gates pass; pending re-review | Task 7 commit `9129df281a3fb58724aeb5866d0bb08aabf2747d` | Task 6 protocol/worker entry, Task 5 server/runtime settings and capture source/tests, provider and credential stores, Codex, CLI/bin, Admin API, UI, package scripts, and every other module; no simultaneous writable agent |
 
 ## Shared Contracts
 

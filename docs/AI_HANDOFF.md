@@ -6,11 +6,11 @@ CRP preserves ChatGPT login/remote features while routing Codex model traffic to
 
 ## Current Scope
 
-V1 implementation is underway. Tasks 1 through 6 have landed, including atomic provider metadata, secure credential adapters, snapshot-based proxy settings, and the versioned proxy-worker IPC entrypoint. Task 7, reliable worker lifecycle management, is next. Read `docs/PRD.md`, the formal design spec, and `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` before changing code.
+V1 implementation is underway. Tasks 1 through 7 have landed, including atomic provider metadata, secure credential adapters, snapshot-based proxy settings, the versioned proxy-worker IPC entrypoint, and reliable fixed-port worker lifecycle management. Task 8, activity, migration, and provider orchestration, is next. Read `docs/PRD.md`, the formal design spec, and `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` before changing code.
 
 ## Architecture
 
-Landed: shared paths, safe public errors, idempotent Codex bootstrap with source-EOL preservation and atomic replacement, strict provider-schema validation, a lock-serialized atomic schema-version-2 provider registry, credential adapters with explicit-only file fallback, monotonic immutable runtime snapshots captured once per proxied request, and a strict version-1 child-process protocol whose worker listens only after valid configuration. Target: worker-manager orchestration, provider-service orchestration, and the long-lived supervisor control plane. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
+Landed: shared paths, safe public errors, idempotent Codex bootstrap with source-EOL preservation and atomic replacement, strict provider-schema validation, a lock-serialized atomic schema-version-2 provider registry, credential adapters with explicit-only file fallback, monotonic immutable runtime snapshots captured once per proxied request, a strict version-1 child-process protocol whose worker listens only after valid configuration, and a worker manager with acknowledged configuration, bounded drain/termination, fixed-port release confirmation, health verification, epoch isolation, and bounded crash recovery. Target: provider-service orchestration and the long-lived supervisor control plane. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
 
 ## Data and API
 
@@ -24,7 +24,7 @@ One authenticated local OS user. Admin API is loopback-only, origin/host checked
 
 ## Current Progress
 
-Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The written specification and detailed V1 plan are approved, subagent-driven sequential execution is selected, and Tasks 1 through 6 are complete.
+Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The written specification and detailed V1 plan are approved, subagent-driven sequential execution is selected, and Tasks 1 through 7 are complete.
 
 ## How To Run Current Code
 
@@ -47,12 +47,13 @@ Do not run `crp start` against a real home directory during tests because it mod
 - Node 22.19 Task 4 gate: `node --test test/credential-store.test.mjs` passes 41/41, the combined credential/provider focus passes 64/64, `npm test` passes 91/91, and `npm run lint` syntax-checks 14 source files. Coverage includes construction-only fallback without operation replay, explicit file-label restart continuity, descriptor identity, strict parent/file modes, degraded temp cleanup, canonical lock restoration, claim-before-delete gate release, foreign replacement preservation, and synchronous second-instance blocking while a gate claim is validated. Native tests inject the loader and never invoke the real addon loader or touch the OS credential store; real native verification remains L3 on every supported system, including Windows and Linux.
 - Node 22.19 Task 5 gate: `node --test test/runtime-settings.test.mjs test/server.test.mjs` passes 13/13, `npm test` passes 102/102, and `npm run lint` syntax-checks 15 source files. Coverage includes strict generations, clone-before-freeze replacement, public-state allowlisting, one snapshot read per request before body listeners, delayed A versus immediate B switching, transport/TLS and timeout pinning, unconfigured-source rejection, health secret scans, request/response dynamic auth-header log masking, and bidirectional custom-auth capture redaction.
 - Node 22.19 Task 6 gate: `node --test test/worker-protocol.test.mjs test/integration/worker-entry.test.mjs` passes 21/21, `npm run test:integration` passes 11/11, and `npm test` passes a nonduplicated 112/112 top-level group followed by 11/11 integration tests; `npm run lint` syntax-checks 18 source files. Coverage includes exact version-1 directional schemas, HTTPS-or-loopback upstreams, HTTP-token authentication fields, final authentication-value validation, sensitive and conflicting header rejection, parent-only configure secrets, fixed invalid-message fatal IDs, configure-before-listen, monotonic reconfiguration, configure rejection after drain begins, retained in-flight drain acknowledgement, idempotent duplicate drain, health/status, idle keep-alive closure, clean shutdown, bounded parent-disconnect cleanup with a hanging upstream before or during shutdown, safe startup failures, stale generations, port conflicts, port release, and child-process cleanup without fixed sleeps. Real-fork integration runs after the ordinary group so it cannot race watcher readiness in another test process.
+- Node 22.19 Task 7 gate: strict-unhandled `node --test test/worker-manager.test.mjs test/integration/worker-restart.test.mjs` passes 22/22; exact `npm test` passes 126/126 non-capture unit assertions, 7/7 isolated capture assertions, and 12/12 integration tests without duplication; `npm run test:unit` retains all-top-level coverage and passes 133/133. `npm run lint` syntax-checks 19 source files, and `npm audit --omit=dev` reports zero vulnerabilities. Coverage includes ready/configure/health startup, acknowledgement-atomic snapshot application, concurrent restart reuse before inspecting its snapshot, restart prevalidation before drain when no operation exists, immediate waiter observation and send-failure cancellation, graceful drain/shutdown, TERM/KILL escalation, retained child control after termination timeout, same-port real-worker restart with a changed PID, partial-start and port-release cleanup, correlated fatal and malformed-message sanitization, old-epoch isolation, cancellable injected-clock crash backoff, immediate failure on the fifth crash in 60 seconds, and idempotent retryable close without child, timer, listener, or port residue. The exact runner isolates the preexisting polling capture watcher between the core unit and real-fork integration groups so its registration baseline cannot race unrelated unit load.
 - Node 24.2 stability: `node --test test/capture-store.test.mjs` passes 7/7 without hanging after replacing fixed watcher sleeps with bounded condition waits and pre-assertion cleanup.
 - Future V1 gate: the full matrix and acceptance flow in `docs/TESTING.md`.
 
 ## Known Risks
 
-Credential migration, localhost browser security, worker-manager crash recovery and restart escalation, in-flight activation semantics, secret leakage, and cross-platform atomic rename and permission semantics.
+Credential migration, localhost browser security, in-flight activation semantics, secret leakage, cross-platform worker signal/port-release semantics, and cross-platform atomic rename and permission semantics.
 
 ## Recent Decisions
 
@@ -84,3 +85,10 @@ Credential migration, localhost browser security, worker-manager crash recovery 
 - Worker configure must validate the exact authentication header value that forwarding will send, without logging or returning the credential.
 - Repeated drain commands must reuse the same completion and acknowledge each request without moving a drained worker back to draining.
 - Parent IPC disconnect cleanup must start or reuse bounded escalation even when shutdown is already waiting on an upstream request.
+- Worker lifecycle operations must share the current operation, and messages or exits from an older child epoch must never alter the replacement state.
+- Lifecycle entrypoints must return the active shared operation before inspecting new call arguments.
+- Restart must confirm the fixed port is exclusively bindable after bounded drain, TERM, and KILL handling before spawning and health-checking a replacement.
+- The fifth crash inside a rolling 60-second window must enter `failed` immediately; the 250/500/1000/2000 ms delays are therefore used for the first four crashes, while 4000 ms remains the exponential cap rather than a fifth in-window retry.
+- Restart snapshots must pass complete configure validation before the current worker is drained or its state changes.
+- IPC acknowledgement promises must be observed at registration and cancelled synchronously when send fails.
+- A child reference and its listeners must remain owned after TERM/KILL timeout until a later lifecycle attempt confirms exit and fixed-port release.

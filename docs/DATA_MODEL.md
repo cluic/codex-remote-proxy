@@ -82,7 +82,7 @@ Configure settings use the exact runtime graph required by the forwarding server
 
 ## RuntimeState
 
-Runtime state includes supervisor PID, worker PID, worker status, snapshot generation, start timestamps, restart count, and the last sanitized error. It is observational and can be reconstructed.
+Runtime state includes supervisor PID plus the worker manager's exact public projection `{ phase, pid, generation, state, restartCount, startedAt, error }`. Nested `state` is the child protocol's public lifecycle state, and `error` is either null or a stable `{ code, message }`; snapshots, credentials, raw causes, argv, environment, stdout, and stderr are excluded. The state is observational and can be reconstructed.
 
 ## ActivityEvent
 

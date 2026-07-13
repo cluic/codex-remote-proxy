@@ -602,7 +602,7 @@ Actual Node 22.19 Task 6 verification: the focused protocol/entrypoint suite pas
 - Create: `node/test/worker-manager.test.mjs`
 - Create: `node/test/integration/worker-restart.test.mjs`
 
-- [ ] **Step 1: Write failing state-machine tests**
+- [x] **Step 1: Write failing state-machine tests**
 
 Assert transitions:
 
@@ -616,11 +616,11 @@ backoff -> failed after the configured crash threshold
 
 Use injected `forkWorker`, `clock`, and `waitForPortFree` functions so unit tests contain no sleeps.
 
-- [ ] **Step 2: Write the fixed-port restart test**
+- [x] **Step 2: Write the fixed-port restart test**
 
 Start a real worker on a chosen free port, call `restart(snapshot)`, assert the PID changes, the supervisor-side manager remains available, the port is rebound, and health returns generation 1.
 
-- [ ] **Step 3: Run and verify failures**
+- [x] **Step 3: Run and verify failures**
 
 ```bash
 cd node
@@ -629,7 +629,7 @@ node --test test/worker-manager.test.mjs test/integration/worker-restart.test.mj
 
 Expected: FAIL because `WorkerManager` does not exist.
 
-- [ ] **Step 4: Implement the lifecycle contract**
+- [x] **Step 4: Implement the lifecycle contract**
 
 Export a `WorkerManager` with:
 
@@ -644,7 +644,7 @@ close();
 
 Restart must wait for `drained`, escalate to `SIGTERM`, then `SIGKILL` after a bounded timeout, confirm port release by attempting an exclusive listen, spawn, configure, and require health before reporting success. Crash recovery uses delays 250ms, 500ms, 1000ms, 2000ms, 4000ms and enters `failed` after five crashes in 60 seconds.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 cd node
@@ -653,6 +653,8 @@ npm test
 git add node/src/supervisor/worker-manager.mjs node/test/worker-manager.test.mjs node/test/integration/worker-restart.test.mjs node/test/fixtures/fake-worker.mjs
 git commit -m "feat: manage proxy worker lifecycle"
 ```
+
+Actual Node 22.19 Task 7 verification after review fixes: the strict-unhandled focused manager/restart suite passes 22/22, the exact full gate passes 126/126 non-capture unit assertions, 7/7 isolated capture assertions, and 12/12 integration tests without duplication, and the all-top-level compatibility command passes 133/133. The portable syntax gate checks 19 source files, and the runtime audit reports zero vulnerabilities. Unit tests use injected process, clock, health, and port-probe boundaries without fixed sleeps. Coverage includes acknowledgement-atomic generations, shared-operation restart identity before any new snapshot inspection, restart prevalidation before drain when no operation exists, immediate waiter observation and send-failure cancellation, early acknowledgement retention, bounded partial-start cleanup with original-error preservation, graceful and forced termination, retained retryable control after termination timeout, fixed-port release failures, correlated and malformed child-message sanitization, epoch isolation, idempotent close, cancellable backoff stop, and immediate `failed` on the fifth crash in a rolling 60-second window. Because that threshold is immediate, the first four in-window delays are 250/500/1000/2000 ms and the 4000 ms exponential cap is not scheduled as a fifth retry. The real-worker integration changes PID, rebinds the same port, verifies generation-matched health, and proves final port release. The exact runner executes non-capture unit, isolated polling capture, and real-fork integration groups sequentially while preserving `npm run test:unit` as the all-top-level command.
 
 ## Task 8: Add Activity, Migration, and Provider Orchestration
 

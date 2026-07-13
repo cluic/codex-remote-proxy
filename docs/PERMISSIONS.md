@@ -40,6 +40,7 @@ Record provider creation/update/deletion, test result, activation, Codex bootstr
 - Redact authorization, cookie, token, secret, and API-key headers and fields.
 - Redact the exact active authentication header before debug logging or capture persistence; short secrets must never be emitted unchanged.
 - Validate parent-child IPC with exact directional version-1 schemas, HTTPS-or-loopback URL rules, HTTP-token authentication fields, Node-compatible final authentication values, and case-insensitive sensitive/authentication-header collision rejection. Resolved credentials may cross the process boundary only inside a parent `configure` message; child lifecycle/fatal messages, sanitizers, stdout, and stderr must never echo settings, causes, complete secrets, or an unvalidated request ID.
+- Validate every child message before lifecycle use, correlate acknowledgements to the current request and child epoch, and expose worker-manager status only through its positive allowlist.
 - Reject non-loopback admin binds.
 - Validate URL scheme and block accidental credential forwarding to an unvalidated target.
 - Treat diagnostics and capture content as sensitive local data.
