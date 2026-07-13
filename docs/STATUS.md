@@ -6,7 +6,7 @@ V1 implementation: provider lifecycle end to end.
 
 ## In Progress
 
-- Sequential execution of the approved V1 plan; Tasks 1 through 10 are complete and Task 11, the actual Web UI assets, is next.
+- Sequential execution of the approved V1 plan; Tasks 1 through 10 are complete. The Task 11 Overview visual and English/Simplified Chinese runtime-dictionary design are approved, its single-writer scope is claimed, and implementation has not started.
 
 ## Done
 
@@ -31,11 +31,11 @@ V1 implementation: provider lifecycle end to end.
 
 ## Blocked
 
-- No current blocker is recorded for Task 11.
+- No current blocker is recorded for the bounded Task 11 implementation.
 
 ## Next
 
-1. Execute Task 11: land the actual Web UI assets against the existing Admin API.
+1. Execute the approved Task 11 bilingual UI plan against the existing Admin API without changing backend contracts.
 2. Keep product implementation within the approved V1 task order and fixed provider/proxy invariants.
 
 ## Risks

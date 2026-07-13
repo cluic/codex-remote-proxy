@@ -6,7 +6,7 @@ CRP preserves ChatGPT login/remote features while routing Codex model traffic to
 
 ## Current Scope
 
-V1 implementation is underway. Tasks 1 through 10 have landed, including atomic provider metadata, secure credential adapters, snapshot-based proxy settings, versioned worker IPC, reliable fixed-port lifecycle management, sanitized activity, transactional migration, provider orchestration, the secured loopback Admin control plane, and supervisor-backed CLI routing. Task 11, the actual Web UI assets, is next. Read `docs/PRD.md`, the formal design spec, and `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` before changing code.
+V1 implementation is underway. Tasks 1 through 10 have landed, including atomic provider metadata, secure credential adapters, snapshot-based proxy settings, versioned worker IPC, reliable fixed-port lifecycle management, sanitized activity, transactional migration, provider orchestration, the secured loopback Admin control plane, and supervisor-backed CLI routing. Task 11 is now the claimed implementation slice, but no UI code has landed. Read `docs/PRD.md`, the formal design spec, `docs/superpowers/specs/2026-07-13-crp-ui-i18n-design.md`, and `docs/superpowers/plans/2026-07-13-crp-task11-ui-i18n-implementation.md` before changing UI code.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ One authenticated local OS user. Admin API is loopback-only, origin/host checked
 
 ## Current Progress
 
-Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The written specification and detailed V1 plan are approved, subagent-driven sequential execution is selected, and Tasks 1 through 10 are complete.
+Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The user approved the Task 11 Overview visual and required complete English/Simplified Chinese UI coverage on 2026-07-13. The runtime-dictionary design and bounded single-writer plan are recorded; Tasks 1 through 10 are complete and Task 11 implementation has not started.
 
 ## How To Run Current Code
 
