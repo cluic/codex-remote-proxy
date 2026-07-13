@@ -2,14 +2,14 @@
 
 ## Current Milestone
 
-M2: V1 implementation, with Tasks 1 through 10 landed and the approved bilingual Web UI implementation in progress.
+M2: V1 implementation, with Tasks 1 through 11 implemented, verified, and committed through `d114061` plus this documentation closeout; Task 12 release-readiness gates and L3 approval remain.
 
 ## MVP Vertical Slices
 
 | Slice | User Value | Status | Verification |
 | --- | --- | --- | --- |
 | V0: Harness and approved design | Shared product, architecture, security, UI, and test contracts | Approved | Doc self-review and user approval |
-| V1: Provider lifecycle end to end | Add, test, activate, switch, and restart through local UI without changing Codex provider | In progress: Tasks 1-10 complete; Overview visual and English/Simplified Chinese UI design approved; implementation and acceptance remain | Full acceptance flow in `docs/TESTING.md` |
+| V1: Provider lifecycle end to end | Add, test, activate, switch, and restart through local UI without changing Codex provider | In progress: Tasks 1-11 implemented and deterministically verified; Task 12 platform/release gates and L3 approval remain | Full acceptance flow in `docs/TESTING.md` |
 | V2: Existing-user migration | Upgrade v0.2.2 flat config without losing provider access | Core implementation landed; L3 platform verification pending | Migration/rollback fixtures on all platforms |
 | V3: Cross-platform hardening | Reliable macOS/Windows UI and Linux CLI | Planned | Platform CI, E2E, screenshots, accessibility |
 
@@ -18,8 +18,16 @@ M2: V1 implementation, with Tasks 1 through 10 landed and the approved bilingual
 1. Landed: supervisor/worker protocol and deterministic process tests.
 2. Landed: provider registry, credential adapters, and migration-safe storage.
 3. Landed: Admin API, security boundary, and supervisor-backed CLI routing.
-4. In progress: bounded onboarding and guided utility Web UI assets with `en`/`zh-CN` runtime dictionaries.
-5. Core behavior landed; UI acceptance and L3 platform verification remain for Codex bootstrap, end-to-end activation, and restart.
+4. Implemented and verified: bounded onboarding and guided utility Web UI assets with complete `en`/`zh-CN` runtime dictionaries.
+5. Next: Task 12 package-content verification, macOS/Windows/Linux gates, native credential smoke coverage, platform visual/security review, release documentation, and L3 expert confirmation.
+
+## Task 12 Entry Gate
+
+- Satisfied: exact eight-file Task 11 source commit `d114061` and this documentation closeout are complete, and local `output/` screenshots were not committed.
+- Pending: register one exact Task 12 writable scope and no-edit boundary in `docs/AGENT_COORDINATION.md`.
+- Preserve the stable `OpenAI` Codex provider and `http://127.0.0.1:15100` proxy invariants.
+- Use synthetic temporary credentials and platform runners; do not exercise a developer's real HOME or credential namespace.
+- Treat Task 12 as L3, attach macOS/Windows visual and security evidence, and obtain expert confirmation before merge.
 
 ## Later
 

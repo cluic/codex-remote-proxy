@@ -6,11 +6,11 @@ CRP preserves ChatGPT login/remote features while routing Codex model traffic to
 
 ## Current Scope
 
-V1 implementation is underway. Tasks 1 through 10 have landed, including atomic provider metadata, secure credential adapters, snapshot-based proxy settings, versioned worker IPC, reliable fixed-port lifecycle management, sanitized activity, transactional migration, provider orchestration, the secured loopback Admin control plane, and supervisor-backed CLI routing. Task 11 is now the claimed implementation slice, but no UI code has landed. Read `docs/PRD.md`, the formal design spec, `docs/superpowers/specs/2026-07-13-crp-ui-i18n-design.md`, and `docs/superpowers/plans/2026-07-13-crp-task11-ui-i18n-implementation.md` before changing UI code.
+V1 implementation is underway. Tasks 1 through 10 have landed, and Task 11's static guided utility UI is implemented, deterministically verified, and committed as `d114061` (`feat: add guided local management UI`) in exactly eight bounded files: `node/ui/index.html`, `node/ui/styles.css`, `node/ui/app.js`, `node/playwright.config.mjs`, `node/test/e2e/crp-ui-fixture.mjs`, `node/test/e2e/onboarding.spec.mjs`, `node/test/e2e/provider-switch.spec.mjs`, and `node/test/e2e/restart-and-errors.spec.mjs`. The completed closeout is included in this documentation commit, so Task 11 source and documentation commits are complete. The work is L3, unmerged, and unpushed. Task 12, "Complete Migration, Cross-Platform Gates, Docs, and Release Readiness," is next; its Task 11 source/documentation prerequisites are satisfied, but a new exact writer scope must be registered before implementation.
 
 ## Architecture
 
-Landed: shared paths, safe public errors, idempotent Codex bootstrap, strict provider storage, secure credential adapters, immutable request snapshots, strict worker IPC, reliable worker management, bounded sanitized activity, transactional v0.2.2 migration, serialized provider orchestration, private local sessions, the exact Admin route/security boundary, readiness-gated supervisor composition, and state-discovered CLI dispatch through the Admin API. Target: the actual Web UI. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
+Implemented: shared paths, safe public errors, idempotent Codex bootstrap, strict provider storage, secure credential adapters, immutable request snapshots, strict worker IPC, reliable worker management, bounded sanitized activity, transactional v0.2.2 migration, serialized provider orchestration, private local sessions, the exact Admin route/security boundary, readiness-gated supervisor composition, state-discovered CLI dispatch through the Admin API, and the actual three-file bilingual Web UI. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
 
 ## Data and API
 
@@ -24,7 +24,7 @@ One authenticated local OS user. Admin API is loopback-only, origin/host checked
 
 ## Current Progress
 
-Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The user approved the Task 11 Overview visual and required complete English/Simplified Chinese UI coverage on 2026-07-13. The runtime-dictionary design and bounded single-writer plan are recorded; Tasks 1 through 10 are complete and Task 11 implementation has not started.
+Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The user approved the Task 11 Overview visual and required complete English/Simplified Chinese UI coverage on 2026-07-13. On 2026-07-14 the implementation and deterministic acceptance completed: locale precedence is stored `crp.locale` then supported `navigator.languages` then English; only explicit selection persists; Settings is read-only; a valid cookie without a fragment opens a GET-only workspace; any failed session exchange and later session/CSRF authentication failure are terminal. Requirements and code-quality/security/accessibility reviews ended `APPROVED` after fixes, with no unresolved finding.
 
 ## How To Run Current Code
 
@@ -34,6 +34,7 @@ npm ci
 npm run lint
 npm test
 npm run test:unit
+npm run test:e2e -- --project=chromium --workers=1
 node bin/crp.mjs --help
 ```
 
@@ -51,12 +52,13 @@ Do not run `crp start` against a real home directory during tests because it mod
 - Node 22.19 Task 8 gate: `node --test test/activity-store.test.mjs test/migration.test.mjs test/provider-service.test.mjs` passes 42/42; exact `npm test` passes 168/168 core assertions, 7/7 isolated capture assertions, and 12/12 integration tests; `npm run lint` syntax-checks 22 source files. Tests use only temporary paths, injected credential adapters/fetch responses, fake worker boundaries, and loopback redirect servers. Coverage includes recursive lifecycle-field redaction, ownership-checked activity locks, descriptor-safe migration paths, exclusive final-path registry creation, symlink and foreign-replacement preservation, committed-state reconciliation, redirect refusal, active-update rejection, replacement-secret compensation, selected credentials, explicit operation serialization, and conservative activation rollback `1 -> 2 -> 3` after health or lost-ACK uncertainty. Real HOME migration, native keyrings, cross-platform filesystem semantics, and live upstreams remain prohibited until L3 platform review.
 - Node 22.19 Task 9 gate: `node --test test/session-auth.test.mjs test/provider-service.test.mjs test/integration/admin-server.test.mjs` passes 42/42; exact `npm test` passes 179/179 core assertions, 7/7 isolated capture assertions, and 23/23 integration tests; `npm run lint` syntax-checks 26 source files and `npm audit --omit=dev` reports zero vulnerabilities. Coverage includes descriptor-safe private control tokens, expiring browser sessions/CSRF, exact Host/Origin/CORS rules, bounded request schemas, every Admin route, response/error secret scans, static allowlisting without actual UI files, active-only lifecycle credentials with in-flight command reuse, migration-before-registry composition, readiness-gated private state, startup compensation, separate Codex/state adapters, and signal cleanup. Real HOME, native keyring, external provider traffic, actual UI assets, and cross-platform browser behavior remain prohibited until their later gates.
 - Node 22.19 Task 10 gate: `node --test test/crp.test.mjs test/integration/crp-lifecycle.test.mjs` passes 27/27; exact `npm test` passes 202/202 core assertions, 7/7 isolated capture assertions, and 24/24 integration assertions; `npm run lint` syntax-checks 27 source files and `npm audit --omit=dev` reports zero vulnerabilities. Coverage includes state discovery, authenticated lifecycle and provider dispatch, `ui` browser-session discovery, legacy secret-bearing flag rejection, owner-identity-checked shutdown, startup waiting, and failed-spawn cleanup without process or state residue. `git diff --check` and the static secret-pattern scan pass. Tests use temporary homes and injected spawn/client boundaries; real HOME, native keyrings, external provider traffic, browser launch behavior, and cross-platform process identity and signal handling remain L3.
+- Task 11 gate on Chrome for Testing 149.0.7827.55 with Playwright 1.61.1: `npm run test:e2e -- --project=chromium --workers=1` passes 40/40; `node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs` passes 16/16; exact `npm test` passes 202/202 core, 7/7 isolated capture, and 24/24 integration assertions, 233 total; `npm run lint` syntax-checks 28 source files; `npm audit --omit=dev` reports zero vulnerabilities. Browser coverage includes both locales, locale/storage rules, onboarding, provider CRUD/test/activation, real activity enums, lifecycle, degraded errors, GET-only re-entry, terminal session/CSRF failure, semantic keyboard/focus behavior, 1440x900 visual evidence, 390x844 automatic layout, fixture cleanup, and deep scans across browser/network/state/diagnostic surfaces. The exact eight-file result is committed as `d114061`; explicit sanitized screenshots remain under `output/playwright/task11/` for local review and were not committed.
 - Node 24.2 stability: `node --test test/capture-store.test.mjs` passes 7/7 without hanging after replacing fixed watcher sleeps with bounded condition waits and pre-assertion cleanup.
 - Future V1 gate: the full matrix and acceptance flow in `docs/TESTING.md`.
 
 ## Known Risks
 
-Credential migration, localhost browser security, in-flight activation semantics, secret leakage, cross-platform worker signal/port-release semantics, and cross-platform atomic rename and permission semantics.
+Credential migration, real localhost browser launch/security, native credential backends, live upstream behavior, in-flight activation semantics, secret leakage, cross-platform worker signal/port-release semantics, cross-platform atomic rename/permission semantics, and macOS/Windows visual behavior remain Task 12 L3 gates.
 
 ## Recent Decisions
 
@@ -66,6 +68,9 @@ Credential migration, localhost browser security, in-flight activation semantics
 - Use Supervisor + Proxy Worker.
 - Keep Codex provider and proxy URL stable.
 - Use guided utility console UI.
+- Ship complete `en` and `zh-CN` runtime dictionaries in `app.js`; only explicit `crp.locale` selection may persist.
+- Permit valid-cookie, missing-fragment re-entry only as a GET-only workspace; failed exchange and later session/CSRF authentication failures are terminal.
+- Keep Task 11 screenshots as explicit sanitized local `output/` review attachments, not source files; Task 12 owns macOS/Windows review attachments.
 - Classify future V1 implementation as L3.
 - Execute the approved design through the task sequence in `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md`.
 - Keep file-watcher tests condition-based and cleanup-safe across supported Node versions.

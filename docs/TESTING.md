@@ -29,6 +29,8 @@
 - Task 9 focused suite: `cd node && node --test test/session-auth.test.mjs test/provider-service.test.mjs test/integration/admin-server.test.mjs`
 - Task 8 focused suite: `cd node && node --test test/activity-store.test.mjs test/migration.test.mjs test/provider-service.test.mjs`
 - Task 10 focused suite: `cd node && node --test test/crp.test.mjs test/integration/crp-lifecycle.test.mjs`
+- Task 11 browser suite: `cd node && npm run test:e2e -- --project=chromium --workers=1`
+- Task 11 session/Admin regression: `cd node && node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs`
 - Worker integration suite: `cd node && npm run test:integration`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
@@ -48,7 +50,18 @@ The Node 22.19 Task 8 focused suite passes 42/42. Exact `npm test` passes 168/16
 
 The Node 22.19 Task 10 focused suite passes 27/27. Exact `npm test` passes 202/202 core assertions, 7/7 isolated capture assertions, and 24/24 integration assertions; `npm run lint` syntax-checks 27 source files and `npm audit --omit=dev` reports zero vulnerabilities. Coverage verifies private state discovery, authenticated CLI dispatch for lifecycle and provider commands, browser-session discovery for `ui`, explicit legacy secret-bearing flag rejection, startup readiness and owner cleanup, `pid` plus `startedAt` shutdown identity, and bounded failed-spawn cleanup without child or state residue. `git diff --check` and the static secret-pattern scan pass. Tests use temporary homes and injected spawn/client boundaries; real HOME, native keyrings, external provider traffic, browser launch behavior, and cross-platform process identity and signal handling remain L3.
 
-`npm run test:unit` retains its public behavior and runs all top-level `test/*.test.mjs` files. The exact `npm test` gate runs the same top-level set without duplication as two sequential groups: every non-capture unit file first, then `capture-store.test.mjs` alone, followed by recursively discovered `test/integration/**/*.test.mjs`. This isolates the polling watcher registration baseline from unrelated unit load and keeps real child-process integration after watcher cleanup. `test:e2e` and the combined `test:all` command are not current gates until the UI, Playwright configuration, and E2E specs land.
+The 2026-07-14 Task 11 gate uses Playwright 1.61.1 and Chrome for Testing 149.0.7827.55. `npm run test:e2e -- --project=chromium --workers=1` passes 40/40, the focused session/Admin regression passes 16/16, exact `npm test` passes 202/202 core plus 7/7 isolated capture plus 24/24 integration assertions (233 total), `npm run lint` syntax-checks 28 source files, and `npm audit --omit=dev` reports zero vulnerabilities. Coverage verifies complete `en`/`zh-CN` dictionary parity and locale precedence, only explicit `crp.locale` persistence, onboarding, provider CRUD/test/activation and production invalidation rules, production activity values (`proxy`, `start`/`stop`/`restart`, and `failed`/`degraded`), validated mock-upstream HTTP/auth/Responses contracts, lifecycle confirmation, degraded/committed errors, read-only Settings, GET-only valid-cookie re-entry without a fragment, terminal exchange/session/CSRF failures, keyboard/focus semantics, fixture failure cleanup, and 390x844 automatic layout. Full-secret collectors await and scan console/page errors, request and response bodies, activity, diagnostics, DOM/input values, URL/history, local/session storage, IndexedDB, attachments, and screenshot bytes after the visible DOM scan. Requirements review and the subsequent quality/security/accessibility reviews ended `APPROVED` with no unresolved finding.
+
+`npm run test:unit` retains its public behavior and runs all top-level `test/*.test.mjs` files. The exact `npm test` gate runs the same top-level set without duplication as two sequential groups: every non-capture unit file first, then `capture-store.test.mjs` alone, followed by recursively discovered `test/integration/**/*.test.mjs`. This isolates the polling watcher registration baseline from unrelated unit load and keeps real child-process integration after watcher cleanup. `test:e2e` is now a required UI gate; Task 12 owns the combined final-tree and cross-platform release gates.
+
+## Task 11 Visual Evidence
+
+The Task 11 suite explicitly writes sanitized English and Simplified Chinese Overview images at 1440x900 after clearing launch-token and credential state:
+
+- `output/playwright/task11/onboarding-onboards-in-Eng-57b0b-ce-and-finishes-on-Overview-chromium/overview-en.png`
+- `output/playwright/task11/onboarding-onboards-in-Eng-57b0b-ce-and-finishes-on-Overview-chromium/overview-zh-CN.png`
+
+These files are local review attachments under untracked `output/`, not source inputs and not part of the exact eight-file Task 11 commit. Do not stage or relocate them during Task 11 closeout. Automatic screenshots, traces, video, and failure artifacts remain disabled. The repository-retained evidence is the accepted visual contract and deterministic test that regenerates the images. Task 12 must attach fresh macOS and Windows screenshots to the L3 review record; no current rule requires committing PNGs to Git.
 
 ## Test Authoring Rules
 
@@ -95,6 +108,10 @@ The Node 22.19 Task 10 focused suite passes 27/27. Exact `npm test` passes 202/2
 - Committed/degraded mutation tests must reconcile registry and credential facts without inverse compensation, and replacement rollback must never restore `passed` unless the old secret was restored successfully.
 - Lifecycle fake waits must advance the injected clock and simulate owner cleanup.
 - Before signaling a process, verify `pid` plus `startedAt` and never mutate state first.
+- UI fixtures must mirror production enum, invalidation, wire-request, and public-response contracts.
+- Secret submissions must clear state and the current DOM before validation, request dispatch, or re-rendering.
+- Delayed focus restoration must cancel stale callbacks and preserve newer user focus.
+- Temporary-resource leak checks must stay inside the current `$TMPDIR` and must not traverse all of `/var/folders`.
 
 ## Test Matrix
 

@@ -6,7 +6,7 @@ V1 implementation: provider lifecycle end to end.
 
 ## In Progress
 
-- Sequential execution of the approved V1 plan; Tasks 1 through 10 are complete. The Task 11 Overview visual and English/Simplified Chinese runtime-dictionary design are approved, its single-writer scope is claimed, and implementation has not started.
+- Sequential execution of the approved V1 plan; Tasks 1 through 11 are implemented and verified, the exact eight-file Task 11 source commit is `d114061`, and the completed documentation closeout is included in this documentation commit. Task 11 source and documentation commits are complete; Task 12 has not yet been claimed.
 
 ## Done
 
@@ -28,15 +28,17 @@ V1 implementation: provider lifecycle end to end.
 - Completed Task 8 sanitized activity, transactional legacy migration, and provider orchestration. Activity uses an exact event allowlist, expanded recursive denylist, bounded retention, atomic replacement, and ownership-checked degraded locks. Migration uses descriptor-safe source/registry reads, symlink rejection, byte-exact exclusive backups, transaction locking, exclusive final-path registry creation, identity-checked rollback, committed-state reconciliation, and canonical blockers. Provider CRUD/test/activation rejects active edits, refuses redirects, reconciles committed mutations, serializes selected-credential operations, and deterministically rolls an uncertain candidate back with a newer generation. Focused coverage passes 42/42; exact full coverage passes 168/168 core, 7/7 capture, and 12/12 integration assertions; syntax covers 22 source files. All tests use temporary paths, injected adapters, and loopback mocks; real HOME/keyring/live-network migration remains an L3 gate.
 - Completed Task 9 secured loopback Admin API and supervisor composition. Private 32-byte control/session/CSRF tokens, exact Host/Origin and disabled-CORS enforcement, bounded exact request contracts, positive public/error projections, every approved Admin route, activity pagination, read-only settings, static-asset allowlisting, active-only proxy lifecycle facades with in-flight command reuse, migration-before-registry composition, readiness-gated `0600` state, construction/listen rollback, separate Codex/state filesystem adapters, and idempotent signal cleanup are covered. Focused coverage passes 42/42; exact full coverage passes 179/179 core, 7/7 capture, and 23/23 integration assertions; syntax checks 26 source files and the runtime audit reports zero vulnerabilities. Actual UI assets, CLI routing, real HOME/keyring/network use, and cross-platform browser security remain later gates.
 - Completed Task 10 supervisor-backed CLI routing. State discovery and authenticated Admin API dispatch now cover `ui`, lifecycle commands, and provider commands; legacy secret-bearing flags are rejected, owner identity is checked before shutdown signaling, and failed supervisor spawns receive bounded cleanup. Focused coverage passes 27/27; the exact full gate passes 202/202 core, 7/7 capture, and 24/24 integration assertions; syntax checks 27 source files, the runtime audit reports zero vulnerabilities, and diff plus static secret-pattern checks pass. Actual Web UI assets and real HOME/keyring/network, browser, signal, and cross-platform behavior remain later L3 gates.
+- Completed Task 11 static guided utility UI and its deterministic browser acceptance in exactly eight source files, committed as `d114061` (`feat: add guided local management UI`, 5973 insertions): `node/ui/index.html`, `node/ui/styles.css`, `node/ui/app.js`, `node/playwright.config.mjs`, `node/test/e2e/crp-ui-fixture.mjs`, `node/test/e2e/onboarding.spec.mjs`, `node/test/e2e/provider-switch.spec.mjs`, and `node/test/e2e/restart-and-errors.spec.mjs`. Complete `en`/`zh-CN` dictionaries, locale precedence and persistence, onboarding, daily pages, provider/lifecycle operations, localized errors, read-only Settings, GET-only valid-cookie re-entry, terminal session failures, accessibility, 1440x900 visual evidence, 390x844 layout safety, and deep secret scans pass 40/40 E2E tests. The 16/16 focused session/Admin regression, exact 233/233 full suite, syntax checks across 28 source files, and runtime audit with zero vulnerabilities pass; two-stage independent review ended `APPROVED` with no unresolved finding.
 
 ## Blocked
 
-- No current blocker is recorded for the bounded Task 11 implementation.
+- No implementation blocker is recorded. Task 11 remains L3 and cannot merge until expert confirmation; Task 12 platform gates and release-readiness work are still pending.
 
 ## Next
 
-1. Execute the approved Task 11 bilingual UI plan against the existing Admin API without changing backend contracts.
-2. Keep product implementation within the approved V1 task order and fixed provider/proxy invariants.
+1. Task 11 source and documentation prerequisites are complete; claim Task 12 in `docs/AGENT_COORDINATION.md` with exact write and no-edit scopes.
+2. Add package-content checks, the macOS/Windows/Linux workflow matrix, platform screenshots/security evidence, release docs, and the minor Changeset.
+3. Re-run the Task 12 final tree gates, obtain L3 expert confirmation, and do not auto-merge or push.
 
 ## Risks
 
@@ -45,3 +47,4 @@ V1 implementation: provider lifecycle end to end.
 - Provider-registry atomic rename and permission semantics remain unverified on real Windows and Linux hosts.
 - Task 4 tests inject the native loader and never invoke the real addon loader or touch an OS credential store; native verification remains L3 on every supported system, including Windows and Linux.
 - Task 10 tests use temporary homes and injected process/client boundaries; real HOME, native keyrings, external provider traffic, browser launch behavior, and cross-platform process identity and signal handling remain L3.
+- Task 11 browser tests use an injected loopback Admin server, in-memory services, temporary roots, and mock upstreams; real `crp ui`, native keyrings, real HOME, external providers, browser launch, and macOS/Windows platform behavior remain Task 12 L3 gates.

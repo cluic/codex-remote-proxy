@@ -18,6 +18,10 @@
 - Update affected API, data, permissions, UI/UX, testing, status, and handoff docs with behavior changes.
 - Do not run parallel writable agents without scopes and no-edit areas in `docs/AGENT_COORDINATION.md`.
 - Record reusable work mistakes as one concise required or prohibited sentence.
+- Clear secret state and its current DOM value before validation, requests, or re-rendering.
+- Cancel stale asynchronous focus callbacks and preserve newer user focus.
+- Browser fixtures must mirror production enum values and response contracts.
+- Temporary-resource checks must stay within the current `$TMPDIR`; traversing all of `/var/folders` is prohibited.
 
 ## Required Checks
 

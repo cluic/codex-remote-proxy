@@ -31,7 +31,8 @@ The admin UI is not designed for mobile or remote access.
 - First-run provider setup persists the provider before testing it, then permits activation only after a passing test.
 - Permission-restricted file credential fallback requires a dedicated, unchecked consent checkbox.
 - Settings is read-only in V1; fixed ports, capture state, credential backend, and Codex bootstrap state are informational.
-- An expired browser session becomes a read-only instruction to close the tab and run `crp ui` again; Task 11 does not refresh sessions.
+- A valid session cookie without a launch fragment opens a GET-only workspace with mutation controls disabled and a banner to reopen with `crp ui` for changes.
+- A failed session exchange or later session/CSRF authentication failure becomes a terminal read-only instruction to close the tab and run `crp ui` again; Task 11 does not refresh sessions.
 
 ## Visual Direction
 
@@ -51,7 +52,7 @@ Approved direction: **guided utility console**.
 
 ## Internationalization
 
-- Task 11 ships complete `en` and `zh-CN` runtime dictionaries inside `app.js`; separate locale assets are outside the static-file allowlist.
+- Task 11 ships complete `en` and `zh-CN` runtime dictionaries inside `app.js`; separate locale assets remain outside the static-file allowlist.
 - Locale priority is `localStorage["crp.locale"]`, then the first supported `navigator.languages` entry after skipping unsupported entries, then English. Browser-derived/default selection does not write storage; explicit selector use writes the preference, and invalid stored values are removed.
 - The language menu offers `English` and `简体中文`, has a minimum 44px target, and updates `document.documentElement.lang` immediately.
 - Dates and numbers use `Intl` with the active locale. Stable IDs, ports, URLs, request IDs, and error codes remain literal.
@@ -72,4 +73,6 @@ The full decision is recorded in `docs/superpowers/specs/2026-07-13-crp-ui-i18n-
 
 Low-fidelity architecture, provider flow, UI direction, and dashboard/error-state screens were reviewed and approved in the local visual companion on 2026-07-10. The user approved the Task 11 Overview visual and bilingual direction on 2026-07-13. The reviewed prototype lived under `/tmp`, so it is intentionally described rather than linked as durable evidence: a light guided utility console with a compact sidebar, restrained neutral surfaces, strong operational hierarchy, clear blue primary actions, and text-plus-icon status.
 
-Implementation acceptance must clear token and credential state before explicitly generating fresh English and Simplified Chinese Overview screenshots at 1440x900. Automatic Playwright trace, video, and failure screenshots stay disabled. Those sanitized screenshots, keyboard checks, and browser inspection become the durable visual evidence; the temporary prototype is not a repository dependency.
+Task 11 acceptance cleared token and credential state before explicitly generating English and Simplified Chinese Overview screenshots at 1440x900. The canonical local review artifacts are `output/playwright/task11/onboarding-onboards-in-Eng-57b0b-ce-and-finishes-on-Overview-chromium/overview-en.png` and `overview-zh-CN.png`; both are 1440x900, and automated layout coverage also exercises 390x844 without redefining the product as mobile. Automatic Playwright trace, video, failure screenshots, and other sensitive browser artifacts stay disabled.
+
+The PNGs under `output/` are explicit, sanitized local review attachments, not repository source and not part of the exact eight-file Task 11 commit. The durable repository evidence is this accepted visual contract plus the deterministic test that regenerates the images. Task 12 must attach fresh macOS and Windows screenshots to the L3 review record; neither Task 11 nor `docs/TESTING.md` requires committing PNGs to Git.

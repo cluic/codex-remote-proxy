@@ -2,11 +2,13 @@
 
 Date: 2026-07-13
 
-Status: Approved by user
+Status: Approved by user; implemented and verified on 2026-07-14
 
 Mode: Cluic Harness Builder `iterate`
 
 Base: `7a87466`
+
+Implementation remains L3 and is not merged or pushed.
 
 ## Approved Context
 
@@ -77,13 +79,19 @@ The English dictionary is the layout stress reference because its action and war
 
 Only `crp.locale` may be written to `localStorage`. The application must not write any other local-storage key and must not use `sessionStorage` or IndexedDB.
 
-The control token is read once from the URL fragment into memory, the fragment is removed with `history.replaceState`, and the token is used for a single `/api/v1/session` exchange. The returned CSRF token remains in memory. API credentials are held only in the active secret input until submission and are cleared after the request settles. Provider drafts, test models, API responses, activity, error details, control/session tokens, CSRF tokens, and credentials are never persisted by client code.
+When present, the control token is read once from the URL fragment into a narrow local variable, the fragment is removed with `history.replaceState`, and the token is used for a single `/api/v1/session` exchange before the variable is cleared. The returned CSRF token remains in memory. API credentials are held only in the active secret input until submission and are cleared from both state and the current DOM before validation, request dispatch, or re-rendering can expose them. Provider drafts, test models, API responses, activity, error details, control/session tokens, CSRF tokens, and credentials are never persisted by client code.
 
 The server-owned HttpOnly session cookie is outside JavaScript access and remains governed by the existing Admin API contract.
 
 ## Session Expiry and Re-entry
 
-Task 11 adds no refresh endpoint and no implicit session renewal. A failed initial session exchange, missing fragment token, or later Admin-session authentication failure transitions the application to a localized read-only re-entry screen. It:
+Task 11 adds no refresh endpoint and no implicit session renewal. Startup follows these fail-closed branches:
+
+- A present fragment token is exchanged exactly once; any failed exchange transitions to the terminal localized re-entry screen.
+- A missing fragment with a still-valid server-owned session cookie opens the workspace in GET-only read-only mode. Reads and pagination remain available, every provider/lifecycle/diagnostic mutation is disabled, and a localized banner instructs the user to reopen with `crp ui` for changes.
+- A missing fragment without a valid cookie, or any later Admin session/CSRF authentication failure, transitions to the terminal localized re-entry screen.
+
+The terminal re-entry state:
 
 - explains that the local management session ended;
 - instructs the user to close the tab and run `crp ui` again;
@@ -131,13 +139,13 @@ Duplicate mutations are disabled while pending. Activation completes only after 
 
 ## Deterministic Browser-Test Boundary
 
-Task 11 browser tests do not launch `crp ui`, a supervisor process, a native credential backend, or any external network service. The shared fixture calls `createAdminServer` directly on loopback port `0`, uses the real `SessionAuth` contract, serves a temporary `uiRoot`, and injects in-memory provider, activity, settings, Codex, diagnostics, and worker services. Compatible behavior and `PROVIDER_TEST_AUTH` classification come from deterministic ephemeral loopback mock upstreams.
+Task 11 browser tests do not launch `crp ui`, a supervisor process, a native credential backend, or any external network service. The shared fixture calls `createAdminServer` directly on loopback port `0`, uses the real `SessionAuth` contract, serves a temporary `uiRoot`, and injects in-memory provider, activity, settings, Codex, diagnostics, and worker services. Its activity enums, provider invalidation rules, upstream request validation, response shapes, and stable failures mirror production contracts. Compatible behavior and `PROVIDER_TEST_AUTH` classification come from deterministic ephemeral loopback mock upstreams.
 
 The fixture supplies a fragment-token URL shaped like the CLI contract without executing the CLI. Chromium is an environment prerequisite. Installing a browser may be documented as environment preparation, but offline Task 11 verification never downloads Chromium.
 
 ## Visual Approval Evidence
 
-The user approved the Overview visual on 2026-07-13. The reviewed prototype existed under a temporary `/tmp` path, which is not a durable repository artifact and must not be linked as long-term evidence. The durable decision is the visual description in this document and `docs/UIUX.md`. Task 11 browser verification must generate fresh English and Simplified Chinese Overview screenshots at 1440x900 for review attachment.
+The user approved the Overview visual on 2026-07-13. The reviewed prototype existed under a temporary `/tmp` path, which is not a durable repository artifact and must not be linked as long-term evidence. The durable repository record is the visual description in this document and `docs/UIUX.md` plus the deterministic screenshot-producing test. Task 11 browser verification generated fresh English and Simplified Chinese Overview screenshots at 1440x900 under `output/playwright/task11/` for local review attachment. These explicit sanitized artifacts are not part of the eight-file source commit and must not be staged; automatic screenshots, traces, videos, and failure artifacts remain disabled. Task 12 still requires macOS and Windows platform screenshots attached to the L3 review record.
 
 ## Scope and Non-Goals
 
@@ -151,7 +159,7 @@ This design changes only static UI assets, Playwright configuration, and Task 11
 4. A clean user completes create -> test -> activate -> bootstrap in either locale.
 5. File fallback requires an unchecked, explicit-consent checkbox.
 6. Settings is visibly read-only.
-7. Session expiry becomes a localized read-only instruction to reopen with `crp ui`; no refresh is attempted.
+7. A valid cookie without a fragment provides a GET-only workspace, while a failed exchange or later session/CSRF failure becomes a localized terminal instruction to reopen with `crp ui`; no refresh is attempted.
 8. After tokens and credentials are cleared from UI state, explicit English and Simplified Chinese 1440x900 Overview screenshots match the approved guided utility direction without overflow or overlap.
 9. Keyboard, semantic-role, live-region, reduced-motion, and secret-storage checks pass.
 10. No Admin API, data, permission, CLI, credential, or lifecycle contract changes are required.

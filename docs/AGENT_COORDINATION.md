@@ -2,9 +2,14 @@
 
 ## Active Workstreams
 
-| Workstream | Owner | Scope | Files/Areas | Status | Depends On | No-Edit Areas |
-| --- | --- | --- | --- | --- | --- | --- |
-| Task 11 guided bilingual Web UI | `/root/task11_ui` | Implement the user-approved English/Simplified Chinese static UI and deterministic browser acceptance from base `7a87466` | `node/ui/index.html`; `node/ui/styles.css`; `node/ui/app.js`; `node/playwright.config.mjs`; `node/test/e2e/onboarding.spec.mjs`; `node/test/e2e/provider-switch.spec.mjs`; `node/test/e2e/restart-and-errors.spec.mjs`; only if shared setup is required, `node/test/e2e/crp-ui-fixture.mjs` | Claimed; implementation not started | Completed Tasks 1-10; approved 2026-07-13 UI/i18n addendum and Task 11 plan | All `node/src/**`, `node/bin/**`, existing tests outside `node/test/e2e/**`, package manifests, root release docs, API/data/security contracts, credential/migration/lifecycle code, and every file not listed in Files/Areas; no simultaneous writable agent |
+None. Task 12 must be claimed here with an exact writable scope and no-edit areas before implementation begins.
+
+## Completed Workstreams
+
+| Workstream | Owner | Scope | Files/Areas | Status | No-Edit Areas |
+| --- | --- | --- | --- | --- | --- |
+| Task 11 guided bilingual Web UI | `/root/task11_ui` | Implement and verify the user-approved English/Simplified Chinese static UI | `node/ui/index.html`; `node/ui/styles.css`; `node/ui/app.js`; `node/playwright.config.mjs`; `node/test/e2e/crp-ui-fixture.mjs`; `node/test/e2e/onboarding.spec.mjs`; `node/test/e2e/provider-switch.spec.mjs`; `node/test/e2e/restart-and-errors.spec.mjs` | Completed, committed as `d114061`, and released on 2026-07-14; no active write authority | All backend, CLI, manifest, existing non-E2E test, contract, and release files |
+| Task 11 documentation closeout | `/root/task11_docs_closeout` | Synchronize verified Task 11 facts and hand off Task 12 | `AGENTS.md`; `docs/AGENT_COORDINATION.md`; `docs/AI_HANDOFF.md`; `docs/STATUS.md`; `docs/ROADMAP.md`; `docs/TESTING.md`; `docs/UIUX.md`; existing Task 11 design/plan docs | Completed and released on 2026-07-14; no active write authority | `node/**`; `output/**`; manifests; implementation and release workflow files |
 
 ## Shared Contracts
 
@@ -23,12 +28,12 @@
 
 ## Locks / Avoid Editing
 
-- `/root/task11_ui` is the only authorized Task 11 implementation writer. Review agents remain read-only.
+- No Task 11 source or documentation writer remains active; both completed writer scopes are permanently released.
 - `node/package.json` and `node/package-lock.json` are no-edit by default because Playwright and the E2E scripts landed in Task 1; a discovered manifest defect must return to the coordinator for a separate scope decision.
-- The optional shared E2E helper, if needed, must use the exact path `node/test/e2e/crp-ui-fixture.mjs`; no other fixture file is authorized.
+- The Task 11 shared E2E helper is `node/test/e2e/crp-ui-fixture.mjs`; no second fixture file was added.
 - Future agents must not change shared contracts without first updating the owning doc and coordination row.
 - Credential, migration, and lifecycle work must be isolated from UI styling work until contracts pass review.
 
 ## Decisions Needed
 
-Subagent-driven execution is selected. The Task 11 writer must follow `docs/superpowers/specs/2026-07-13-crp-ui-i18n-design.md` and `docs/superpowers/plans/2026-07-13-crp-task11-ui-i18n-implementation.md`, return verification evidence to the coordinator, and must not expand the file boundary. Work remains on the dedicated branch `codex/harness-product-design`; no linked worktree or parallel writable work is in use.
+Task 11 source and documentation writer scopes are closed; the exact source commit prerequisite is satisfied by `d114061`, and the completed closeout is included in this documentation commit. The next authorized slice is Task 12, "Complete Migration, Cross-Platform Gates, Docs, and Release Readiness," after a new coordination row assigns its workflow, packaging, release-documentation, and platform-test files. Work remains on the dedicated branch `codex/harness-product-design`; Task 11 has not been merged or pushed, and cross-platform evidence, packaging/release checks, and L3 expert confirmation remain outstanding.
