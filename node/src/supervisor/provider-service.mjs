@@ -151,7 +151,7 @@ export class ProviderService {
     return await Promise.all(profiles.map((profile) => this.#toPublic(profile)));
   }
 
-  createProvider(input, secret, { fallbackConsent = false } = {}) {
+  createProvider(input, secret) {
     return this.#runExclusive(async () => {
       let credentialRef = null;
       let credentialWritten = false;
@@ -161,7 +161,7 @@ export class ProviderService {
         assertSecret(secret);
         credentialRef = this.createCredentialRef();
         try {
-          await this.credentialStore.set(credentialRef, secret, { fallbackConsent });
+          await this.credentialStore.set(credentialRef, secret);
           credentialWritten = true;
         } catch (error) {
           if (isCommittedError(error)) {

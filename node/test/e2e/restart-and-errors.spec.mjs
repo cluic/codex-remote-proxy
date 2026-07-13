@@ -85,7 +85,7 @@ test("folds localized allowlisted technical error details without raw reasons", 
   });
   await openCrp(page, crp);
   await page.getByRole("link", { name: "Activity" }).click();
-  await page.getByRole("button", { name: "Export diagnostics" }).click();
+  await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
   const alert = page.getByRole("alert");
   const technical = alert.locator("details");
   await expect(technical).not.toHaveAttribute("open", "");
@@ -131,8 +131,8 @@ test("detects a secret in raw API response bytes before display redaction", asyn
   });
   await openCrp(page, crp);
   await page.getByRole("link", { name: "Activity" }).click();
-  await page.getByRole("button", { name: "Export diagnostics" }).click();
-  await expect(page.locator("#main-content").getByText("Diagnostics exported", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
+  await expect(page.locator("#main-content").getByText("Summary ready", { exact: true })).toBeVisible();
   await crp.collectors.flush();
   const displayRecord = crp.collectors.records.findLast((record) => (
     record.type === "response" && record.url === "/api/v1/diagnostics/export"
@@ -159,7 +159,7 @@ test("renders migration rollback degraded errors as stop-and-repair guidance in 
   });
   await openCrp(page, crp);
   await page.getByRole("link", { name: "Activity" }).click();
-  await page.getByRole("button", { name: "Export diagnostics" }).click();
+  await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
   await expect(page.getByText("CRP state needs repair")).toBeVisible();
   await expect(page.getByText("Stop CRP, review Activity, and repair local state before any further operation.")).toBeVisible();
   await expect(page.getByText("CRP could not complete the operation")).toHaveCount(0);
@@ -304,8 +304,8 @@ test("supports keyboard navigation, live announcements, diagnostics, and 1024px 
   await expect(page.locator("#main-content")).toBeFocused();
 
   await page.getByRole("link", { name: "Activity" }).click();
-  await page.getByRole("button", { name: "Export diagnostics" }).click();
-  await expect(page.getByRole("status")).toContainText("Diagnostics exported");
+  await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
+  await expect(page.getByRole("status")).toContainText("Summary ready");
   expect(crp.calls.filter((call) => call.operation === "diagnostics")).toHaveLength(1);
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(hasOverflow).toBe(false);

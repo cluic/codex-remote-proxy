@@ -521,18 +521,16 @@ export function createAdminServer({
     }
     if (url.pathname === `${API_PREFIX}/providers` && request.method === "POST") {
       const body = exactObject(await readJsonBody(request, maxBodyBytes), {
-        allowed: ["provider", "credential", "fallbackConsent"],
+        allowed: ["provider", "credential"],
         required: ["provider", "credential"]
       });
       if (!isPlainObject(body.provider)
-        || typeof body.credential !== "string" || body.credential.length === 0
-        || (body.fallbackConsent !== undefined && typeof body.fallbackConsent !== "boolean")) {
+        || typeof body.credential !== "string" || body.credential.length === 0) {
         throw bodyError("API_BODY_INVALID");
       }
       const provider = await providerService.createProvider(
         body.provider,
-        body.credential,
-        { fallbackConsent: body.fallbackConsent === true }
+        body.credential
       );
       sendJson(response, 201, { provider: projectProvider(provider) });
       return;

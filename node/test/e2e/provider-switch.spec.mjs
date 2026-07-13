@@ -49,7 +49,7 @@ test("switches providers and exposes all four workspace pages", async ({ page, c
 
   await page.getByRole("link", { name: "Activity" }).click();
   await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Export diagnostics" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Generate diagnostic summary" })).toBeVisible();
 
   await page.getByRole("link", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
@@ -61,6 +61,29 @@ test("switches providers and exposes all four workspace pages", async ({ page, c
 
   await page.getByRole("link", { name: "Overview" }).click();
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+  await assertNoSecrets(page, crp);
+});
+
+test("omits public fallback-storage controls and help from provider editors", async ({ page, crp }) => {
+  await openCrp(page, crp);
+  await page.getByRole("link", { name: "Providers" }).click();
+
+  await page.getByRole("button", { name: "Add provider" }).click();
+  const createDialog = page.getByRole("dialog", { name: "Add provider" });
+  await expect(createDialog.locator("input[name='fallbackConsent']")).toHaveCount(0);
+  await expect(createDialog.getByText("Allow fallback credential storage")).toHaveCount(0);
+  await createDialog.getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByRole("button", { name: "Edit Provider Beta" }).click();
+  const editDialog = page.getByRole("dialog", { name: "Edit provider" });
+  await expect(editDialog.getByText(/Fallback consent/)).toHaveCount(0);
+  await editDialog.getByRole("button", { name: "Cancel" }).click();
+
+  await page.locator("#locale-select").selectOption("zh-CN");
+  await page.getByRole("button", { name: "添加提供商" }).click();
+  const zhDialog = page.getByRole("dialog", { name: "添加提供商" });
+  await expect(zhDialog.locator("input[name='fallbackConsent']")).toHaveCount(0);
+  await expect(zhDialog.getByText("允许回退凭据存储")).toHaveCount(0);
   await assertNoSecrets(page, crp);
 });
 
@@ -302,7 +325,7 @@ test("keeps a fragmentless cookie session GET-only and disables every mutation",
   await page.getByRole("link", { name: "Providers" }).click();
   await expect(page.locator(".provider-actions button:enabled")).toHaveCount(0);
   await page.getByRole("link", { name: "Activity" }).click();
-  await expect(page.getByRole("button", { name: "Export diagnostics" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Generate diagnostic summary" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
   await page.getByRole("button", { name: "Next" }).click();
   await expect(page.locator(".activity-row")).toHaveCount(5);
@@ -409,8 +432,8 @@ test("paginates sanitized activity in both directions without duplicate loads an
     await expect(page.getByText(`类别：${category}`).first()).toBeVisible();
   }
 
-  await page.getByRole("button", { name: "导出诊断信息" }).click();
-  await expect(page.locator("#main-content").getByText("诊断信息已导出", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "生成诊断摘要" }).click();
+  await expect(page.locator("#main-content").getByText("摘要已生成", { exact: true })).toBeVisible();
   await expect(page.getByText("105 条已脱敏事件")).toBeVisible();
   await assertNoSecrets(page, crp);
 });

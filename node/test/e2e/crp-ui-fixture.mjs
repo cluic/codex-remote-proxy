@@ -101,14 +101,13 @@ function createServices({ upstream }) {
       calls.push({ operation: "listProviders" });
       return structuredClone(state.providers);
     },
-    async createProvider(input, credential, options) {
+    async createProvider(input, credential) {
       rejectNextMutation("createProvider");
       assert.equal(typeof credential, "string");
       assert.ok(credential.length > 0);
       calls.push({
         operation: "createProvider",
-        credentialLength: credential.length,
-        fallbackConsent: options?.fallbackConsent === true
+        credentialLength: credential.length
       });
       const provider = publicProvider({
         ...input,

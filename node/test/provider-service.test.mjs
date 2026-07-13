@@ -23,10 +23,12 @@ class MemoryCredentials {
   constructor() {
     this.values = new Map();
     this.operations = [];
+    this.setCalls = [];
   }
 
-  async set(ref, secret) {
+  async set(ref, secret, ...extraArguments) {
     this.operations.push(["set", ref]);
+    this.setCalls.push([ref, secret, ...extraArguments]);
     this.values.set(ref, secret);
   }
 
@@ -194,9 +196,7 @@ test("CRUD returns only public provider fields and removes inactive credentials"
   const secret = makeSecret();
   const { service, credentials, activity } = makeHarness(t);
 
-  const created = await service.createProvider(providerInput(), secret, {
-    fallbackConsent: false
-  });
+  const created = await service.createProvider(providerInput(), secret);
   assert.equal(created.id, "provider-1");
   assert.equal(created.credentialConfigured, true);
   assert.equal("credentialRef" in created, false);
@@ -212,6 +212,18 @@ test("CRUD returns only public provider fields and removes inactive credentials"
   assert.equal(credentials.values.size, 0);
   assert.deepEqual(activity.events.map((event) => event.action), ["create", "update", "delete"]);
   assert.equal(JSON.stringify(activity.events).includes(secret), false);
+});
+
+test("create does not forward a public fallback-consent option to credential storage", async (t) => {
+  const secret = makeSecret("no-public-fallback");
+  const { service, credentials } = makeHarness(t);
+
+  await service.createProvider(providerInput(), secret, { fallbackConsent: true });
+
+  assert.equal(credentials.setCalls.length, 1);
+  assert.equal(credentials.setCalls[0].length, 2);
+  assert.equal(credentials.setCalls[0][0], "credential-1");
+  assert.equal(credentials.setCalls[0][1], secret);
 });
 
 test("CRUD compensates credential changes and rejects active delete before credential access", async (t) => {

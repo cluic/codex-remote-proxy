@@ -39,6 +39,7 @@ const ENV_KEYS = {
   captureEnabled: "CRP_CAPTURE_ENABLED",
   captureDbPath: "CRP_CAPTURE_DB_PATH"
 };
+const BOOLEAN_OPTIONS = new Set(["json", "no-open", "capture", "no-capture", "debug"]);
 
 function parseCommandLine(argv) {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
@@ -52,9 +53,13 @@ function parseCommandLine(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token.startsWith("--")) {
-      throw new Error(`Unexpected argument: ${token}`);
+      throw new Error("Unexpected positional argument.");
     }
     const key = token.slice(2);
+    if (BOOLEAN_OPTIONS.has(key)) {
+      options[key] = true;
+      continue;
+    }
     const next = argv[index + 1];
     if (!next || next.startsWith("--")) {
       options[key] = true;
@@ -70,7 +75,7 @@ function parseCommandLine(argv) {
 function printHelp(writeLine = (line) => console.log(line)) {
   writeLine("Usage:");
   writeLine("  crp check [--json] [--codex-config PATH] [--auth PATH]");
-  writeLine("  crp init [--json] [--upstream-base-url URL] [--api-key KEY]");
+  writeLine("  crp init [--no-open] [--json] (alias of ui)");
   writeLine("  crp ui [--no-open] [--json]");
   writeLine("  crp start [--json]");
   writeLine("  crp install [same as start]");
@@ -254,16 +259,6 @@ function detectNodeRuntime() {
     installHint: depCheck.status === 0 ? null : "Run `npm install` in the package directory first.",
     error: null
   };
-}
-
-function maskSecret(value) {
-  if (!value) {
-    return "(empty)";
-  }
-  if (value.length <= 8) {
-    return value;
-  }
-  return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
 function quoteShell(value) {
@@ -875,48 +870,6 @@ async function installCommand(options) {
 
 const startCommandAction = installCommand;
 
-async function initCommand(options) {
-  const resolved = resolveUserSettings(options);
-  const upstreamBaseUrl = resolved.upstreamBaseUrl.value || await promptValue("Upstream base URL", "");
-  const apiKey = resolved.apiKey.value || await promptSecret("Upstream API key", "");
-  const listenHost = resolved.listenHost.value || "127.0.0.1";
-  const listenPort = resolved.listenPort.value ? Number.parseInt(resolved.listenPort.value, 10) : undefined;
-  const captureEnabled = Boolean(resolved.captureEnabled.value);
-  const captureDbPath = ensureCaptureDbPath(resolved.captureDbPath.value);
-
-  if (!upstreamBaseUrl || !apiKey) {
-    throw new Error("Upstream base URL and API key are required");
-  }
-
-  writeUserConfig({
-    upstreamBaseUrl,
-    apiKey,
-    listenHost,
-    listenPort,
-    captureEnabled,
-    captureDbPath
-  });
-
-  const payload = {
-    ok: true,
-    configPath: USER_CONFIG_FILE,
-    saved: {
-      upstreamBaseUrl,
-      apiKeyPreview: maskSecret(apiKey),
-      listenHost,
-      listenPort: listenPort ?? null,
-      captureEnabled,
-      captureDbPath
-    }
-  };
-
-  if (!maybePrintJson(options, payload)) {
-    console.log("Saved CRP configuration.");
-    console.log(`Config path: ${USER_CONFIG_FILE}`);
-    console.log("You can now run: crp start");
-  }
-}
-
 function checkCommand(options) {
   const data = buildCheckData(options);
   if (!maybePrintJson(options, data)) {
@@ -978,7 +931,7 @@ async function statusCommand(options) {
 
 async function captureCommand(options, action) {
   if (!["on", "off", "status"].includes(action)) {
-    throw new Error(`Unknown capture action: ${action}`);
+    throw new Error("Unknown capture action.");
   }
 
   if (action === "status") {
@@ -1164,8 +1117,7 @@ function parseProviderOptions(argv) {
       "auth-header",
       "auth-scheme",
       "model-mode",
-      "model-override",
-      "fallback-consent"
+      "model-override"
     ]),
     test: new Set(["json", "id", "model"]),
     activate: new Set(["json", "id"]),
@@ -1214,8 +1166,7 @@ async function dispatchProviderCommand(argv, dependencies) {
     }
     body = {
       provider,
-      credential: requiredOption(options, "api-key"),
-      fallbackConsent: options["fallback-consent"] === true
+      credential: requiredOption(options, "api-key")
     };
   } else {
     const id = encodeURIComponent(requiredOption(options, "id"));
@@ -1242,6 +1193,7 @@ async function dispatchProviderCommand(argv, dependencies) {
 function parseSupervisorOptions(argv) {
   const { command, options } = parseCommandLine(argv);
   const allowed = {
+    init: new Set(["json", "no-open"]),
     ui: new Set(["json", "no-open"]),
     start: new Set(["json"]),
     install: new Set(["json"]),
@@ -1259,6 +1211,7 @@ function parseSupervisorOptions(argv) {
 
 async function dispatchSupervisorCommand(argv, dependencies) {
   const supervisorCommands = new Set([
+    "init",
     "ui",
     "start",
     "install",
@@ -1291,7 +1244,7 @@ async function dispatchSupervisorCommand(argv, dependencies) {
   } = dependencies;
   const discoveryOptions = { paths, adminPort };
 
-  if (command === "ui") {
+  if (command === "ui" || command === "init") {
     const context = await ensureSupervisorImpl(discoveryOptions);
     const token = readControlTokenImpl({ path: paths.controlTokenPath });
     const url = `${context.origin}/#token=${token}`;
@@ -1413,9 +1366,13 @@ async function main(argv = process.argv.slice(2)) {
     for (let index = 2; index < argv.length; index += 1) {
       const token = argv[index];
       if (!token.startsWith("--")) {
-        throw new Error(`Unexpected argument: ${token}`);
+        throw new Error("Unexpected positional argument.");
       }
       const key = token.slice(2);
+      if (BOOLEAN_OPTIONS.has(key)) {
+        options[key] = true;
+        continue;
+      }
       const next = argv[index + 1];
       if (!next || next.startsWith("--")) {
         options[key] = true;
@@ -1429,13 +1386,12 @@ async function main(argv = process.argv.slice(2)) {
 
   const { command, options } = parseCommandLine(argv);
   if (command === "check") return checkCommand(options);
-  if (command === "init") return await initCommand(options);
   if (command === "guide") return guideCommand(options);
   if (command === "start" || command === "install" || command === "setup") return await startCommandAction(options);
   if (command === "status") return await statusCommand(options);
   if (command === "stop") return await stopCommand(options);
   if (command === "install-cli") return await installCliCommand(options);
-  throw new Error(`Unknown command: ${command}`);
+  throw new Error("Unknown command.");
 }
 
 export async function runCli(argv, {

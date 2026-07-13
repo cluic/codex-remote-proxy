@@ -85,6 +85,89 @@ function runCrp(args, env) {
   });
 }
 
+function containsSecret(value, secret, seen = new Set()) {
+  if (typeof value === "string" || Buffer.isBuffer(value)) return value.includes(secret);
+  if (value === null || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  return Reflect.ownKeys(value).some((key) => (
+    String(key).includes(secret) || containsSecret(value[key], secret, seen)
+  ));
+}
+
+function assertSecretAbsent(secret, {
+  stdout = "",
+  stderr = "",
+  files = [],
+  objects = []
+} = {}) {
+  assert.equal(containsSecret(stdout, secret), false);
+  assert.equal(containsSecret(stderr, secret), false);
+  for (const path of files) {
+    if (existsSync(path)) {
+      assert.equal(containsSecret(readFileSync(path), secret), false);
+    }
+  }
+  for (const value of objects) {
+    assert.equal(containsSecret(value, secret), false);
+  }
+}
+
+function invokeCliInTempHome(args, homeDir, secrets = []) {
+  const marker = "__CRP_RESULT__";
+  const source = `
+    const stdout = [];
+    const stderr = [];
+    let ensureCalls = 0;
+    let discoverCalls = 0;
+    let openCalls = 0;
+    const { runCli } = await import(${JSON.stringify(CLI_URL)});
+    const status = await runCli(${JSON.stringify(args)}, {
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+      ensureSupervisorImpl: async () => {
+        ensureCalls += 1;
+        return {
+          origin: "http://127.0.0.1:15101",
+          state: { supervisorPid: 4242 },
+          status: {},
+          client: { request: async () => { throw new Error("unexpected Admin request"); } },
+          spawned: false
+        };
+      },
+      discoverSupervisorImpl: async () => {
+        discoverCalls += 1;
+        return null;
+      },
+      readControlTokenImpl: () => ${JSON.stringify(CONTROL_TOKEN)},
+      openManagementUrlImpl: () => { openCalls += 1; }
+    });
+    process.stdout.write(${JSON.stringify(marker)} + JSON.stringify({
+      status,
+      stdout: stdout.join(""),
+      stderr: stderr.join(""),
+      ensureCalls,
+      discoverCalls,
+      openCalls
+    }));
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", source], {
+    cwd: PACKAGE_ROOT,
+    env: {
+      ...makeHomeEnv(homeDir),
+      CRP_UPSTREAM_BASE_URL: "",
+      CRP_UPSTREAM_API_KEY: ""
+    },
+    encoding: "utf8"
+  });
+  for (const secret of secrets) {
+    assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
+  }
+  assert.equal(result.status, 0);
+  const markerIndex = result.stdout.lastIndexOf(marker);
+  assert.notEqual(markerIndex, -1);
+  return JSON.parse(result.stdout.slice(markerIndex + marker.length));
+}
+
 async function invokeCli(args, overrides = {}) {
   const stdout = [];
   const stderr = [];
@@ -135,15 +218,53 @@ test("check does not emit sqlite experimental warnings", () => {
   }
 });
 
-test("init without config fails cleanly without sqlite warnings", () => {
+test("init is a no-open ui alias and never writes legacy secret config", () => {
   const homeDir = makeTempHome();
   try {
-    const result = runCrp(["init"], makeHomeEnv(homeDir));
-    const output = `${result.stdout}\n${result.stderr}`;
+    const result = invokeCliInTempHome(["init", "--no-open", "--json"], homeDir);
+    const legacyConfigPath = join(homeDir, ".codex-remote-proxy", "config.json");
 
+    assert.equal(result.stdout.includes("apiKeyPreview"), false);
+    assert.equal(existsSync(legacyConfigPath), false);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      opened: false,
+      origin: "http://127.0.0.1:15101",
+      supervisorPid: 4242,
+      url: `http://127.0.0.1:15101/#token=${CONTROL_TOKEN}`
+    });
+    assert.equal(result.ensureCalls, 1);
+    assert.equal(result.discoverCalls, 0);
+    assert.equal(result.openCalls, 0);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("init rejects legacy secret options before supervisor discovery or disk writes", () => {
+  const homeDir = makeTempHome();
+  const secret = "init-complete-secret-sentinel";
+  try {
+    const result = invokeCliInTempHome([
+      "init",
+      "--api-key", secret,
+      "--upstream-base-url", "https://provider.example/v1",
+      "--no-open"
+    ], homeDir, [secret]);
+    const legacyConfigPath = join(homeDir, ".codex-remote-proxy", "config.json");
+
+    assertSecretAbsent(secret, {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      files: [legacyConfigPath]
+    });
     assert.equal(result.status, 1);
-    assert.match(output, /Error: Upstream base URL is required/);
-    assert.doesNotMatch(output, /ExperimentalWarning: SQLite/);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "Error: The init command contains an unsupported option.\n");
+    assert.equal(result.ensureCalls, 0);
+    assert.equal(result.discoverCalls, 0);
+    assert.equal(existsSync(legacyConfigPath), false);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
@@ -183,6 +304,7 @@ test("prints the approved supervisor CLI help without discovery", async () => {
   assert.equal(result.status, 0);
   assert.equal(result.stderr, "");
   for (const line of [
+    "crp init [--no-open] [--json]",
     "crp ui [--no-open] [--json]",
     "crp restart [--json]",
     "crp shutdown [--json]",
@@ -190,7 +312,46 @@ test("prints the approved supervisor CLI help without discovery", async () => {
   ]) {
     assert.match(result.stdout, new RegExp(line.replace(/[|[\]]/g, "\\$&")));
   }
+  assert.doesNotMatch(result.stdout, /crp init[^\n]*--(?:api-key|upstream-base-url)/);
   assert.equal(discovered, false);
+});
+
+test("positional argument errors never echo the original value", async () => {
+  const secret = "positional-complete-secret-sentinel";
+  let ensureCalls = 0;
+  let discoverCalls = 0;
+  for (const args of [
+    ["status", secret],
+    ["status", "--json", secret],
+    ["init", secret],
+    ["init", "--no-open", secret],
+    ["provider", "list", secret],
+    ["provider", "list", "--json", secret],
+    ["capture", "status", secret],
+    ["capture", "status", "--json", secret]
+  ]) {
+    const result = await invokeCli(args, {
+      ensureSupervisorImpl: async () => { ensureCalls += 1; },
+      discoverSupervisorImpl: async () => { discoverCalls += 1; }
+    });
+    assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "Error: Unexpected positional argument.\n");
+  }
+  assert.equal(ensureCalls, 0);
+  assert.equal(discoverCalls, 0);
+
+  for (const [args, expectedError] of [
+    [[secret], "Error: Unknown command.\n"],
+    [["capture", secret], "Error: Unknown capture action.\n"]
+  ]) {
+    const result = await invokeCli(args);
+    assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, expectedError);
+  }
 });
 
 test("guide JSON describes the V1 supervisor flow without legacy mutations", () => {
@@ -270,13 +431,14 @@ test("status never starts a missing supervisor", async () => {
 });
 
 test("rejects legacy start options before supervisor discovery or mutation", async () => {
+  const secret = "legacy-complete-secret";
   const clientCalls = [];
   let ensureCalls = 0;
   let discoverCalls = 0;
   const result = await invokeCli([
     "start",
     "--upstream-base-url", "https://provider.example/v1",
-    "--api-key", "legacy-complete-secret",
+    "--api-key", secret,
     "--json"
   ], {
     ensureSupervisorImpl: async () => {
@@ -294,10 +456,14 @@ test("rejects legacy start options before supervisor discovery or mutation", asy
     }
   });
 
+  assertSecretAbsent(secret, {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    objects: [clientCalls]
+  });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "Error: The start command contains an unsupported option.\n");
-  assert.doesNotMatch(result.stderr, /legacy-complete-secret/);
   assert.equal(ensureCalls, 0);
   assert.equal(discoverCalls, 0);
   assert.deepEqual(clientCalls, []);
@@ -548,12 +714,10 @@ test("routes automation-safe provider commands without returning the write-only 
     ["add", [
       "--name", "Primary",
       "--base-url", "https://provider.example/v1",
-      "--api-key", secret,
-      "--fallback-consent"
+      "--api-key", secret
     ], ["POST", "/providers", {
       provider: { name: "Primary", baseUrl: "https://provider.example/v1" },
-      credential: secret,
-      fallbackConsent: true
+      credential: secret
     }]],
     ["test", ["--id", "provider/1", "--model", "test-model"], [
       "POST", "/providers/provider%2F1/test", { model: "test-model" }
@@ -568,11 +732,39 @@ test("routes automation-safe provider commands without returning the write-only 
 
   for (const [action, args, expectedCall] of commands) {
     const result = await invokeCli(["provider", action, ...args, "--json"], dependencies);
+    assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
     assert.equal(result.status, 0, `${action}: ${result.stderr}`);
-    assert.deepEqual(calls.shift(), expectedCall);
-    assert.equal(result.stdout.includes(secret), false);
+    const actualCall = calls.shift();
+    if (action === "add") {
+      assert.deepEqual(Object.keys(actualCall[2]).sort(), ["credential", "provider"]);
+      assert.deepEqual(actualCall[2].provider, expectedCall[2].provider);
+      assert.equal(actualCall[2].credential, secret);
+    } else {
+      assert.deepEqual(actualCall, expectedCall);
+    }
   }
   assert.deepEqual(calls, []);
+});
+
+test("provider add rejects public fallback consent before supervisor discovery", async () => {
+  const secret = "fallback-option-complete-secret-sentinel";
+  let ensureCalls = 0;
+  const result = await invokeCli([
+    "provider", "add",
+    "--name", "Primary",
+    "--base-url", "https://provider.example/v1",
+    "--api-key", secret,
+    "--fallback-consent",
+    "--json"
+  ], {
+    ensureSupervisorImpl: async () => { ensureCalls += 1; }
+  });
+
+  assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Error: The provider command contains an unsupported option.\n");
+  assert.equal(ensureCalls, 0);
 });
 
 test("check and capture JSON positively project legacy config without complete keys", () => {
@@ -610,9 +802,13 @@ test("check and capture JSON positively project legacy config without complete k
 
     for (const args of [["check", "--json"], ["capture", "status", "--json"]]) {
       const result = runCrp(args, env);
+      const payload = JSON.parse(result.stdout);
+      assertSecretAbsent(secret, {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        objects: [payload]
+      });
       assert.equal(result.status, 0, result.stderr);
-      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(secret));
-      JSON.parse(result.stdout);
     }
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
@@ -742,14 +938,15 @@ test("SupervisorClient pins the Admin origin, bearer, JSON bodies, and safe publ
       details: { field: "name", unknown: secret, authorization: "[REDACTED]" }
     }
   }), { status: 400, headers: { "content-type": "application/json" } });
-  await assert.rejects(
-    () => client.request("POST", "/providers", {}),
-    (error) => error?.code === "PROVIDER_INPUT_INVALID"
-      && error.status === 400
-      && error.details.field === "name"
-      && error.details.authorization === "[REDACTED]"
-      && JSON.stringify(error).includes(secret) === false
+  const publicError = await client.request("POST", "/providers", {}).then(
+    () => null,
+    (error) => error
   );
+  assertSecretAbsent(secret, { objects: [publicError] });
+  assert.equal(publicError?.code, "PROVIDER_INPUT_INVALID");
+  assert.equal(publicError.status, 400);
+  assert.equal(publicError.details.field, "name");
+  assert.equal(publicError.details.authorization, "[REDACTED]");
 });
 
 test("spawns one detached supervisor and shares concurrent bounded discovery", async (t) => {

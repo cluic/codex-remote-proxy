@@ -50,13 +50,31 @@ test("onboards in English, exchanges the fragment once, and finishes on Overview
   await expect(page.getByRole("heading", { name: "Set up your first provider" })).toBeVisible();
   await expect(page).toHaveURL(`${crp.origin}/`);
   await expect(page).toHaveTitle("Set up your first provider | CRP Local Control");
-  await expect(page.getByRole("checkbox", { name: "Allow fallback credential storage" })).not.toBeChecked();
+  await expect(page.locator("input[name='fallbackConsent']")).toHaveCount(0);
+  await expect(page.getByText("Allow fallback credential storage")).toHaveCount(0);
 
   await page.getByLabel("Provider name").fill("Primary OpenAI");
   await page.getByLabel("Base URL").fill(crp.upstreamBaseUrl);
   await page.getByLabel("API key").fill(crp.credential);
   await page.getByLabel("Test model").fill("gpt-5.1-codex-mini");
   await page.getByRole("button", { name: "Save provider" }).click();
+
+  const createRequest = requests.find((request) => (
+    request.path === "/api/v1/providers" && request.method === "POST"
+  ));
+  expect(createRequest).toBeDefined();
+  expect(JSON.parse(createRequest.body)).toEqual({
+    provider: {
+      name: "Primary OpenAI",
+      baseUrl: crp.upstreamBaseUrl,
+      authHeader: "authorization",
+      authScheme: "Bearer",
+      extraHeaders: {},
+      modelMode: "passthrough",
+      modelOverride: null
+    },
+    credential: crp.credential
+  });
 
   await expect(page.getByLabel("API key")).toHaveValue("");
   await expect(page.getByText("Provider saved. Test compatibility next.")).toBeVisible();
@@ -260,7 +278,7 @@ test("preserves the complete advanced draft and supports retry after authenticat
   await page.getByLabel("Base URL").fill(crp.upstreamBaseUrl);
   await page.getByLabel("API key").fill(crp.credential);
   await page.getByLabel("Test model").fill("gpt-5.1-codex-mini");
-  await page.getByLabel("Allow fallback credential storage").check();
+  await expect(page.getByText("Allow fallback credential storage")).toHaveCount(0);
   await page.getByLabel("Advanced provider settings").check();
   await expect(page.getByLabel("Provider name")).toHaveValue("Advanced Provider");
   await expect(page.getByLabel("API key")).toHaveValue(crp.credential);
@@ -275,7 +293,7 @@ test("preserves the complete advanced draft and supports retry after authenticat
   await expect(page.getByLabel("基础地址")).toHaveValue(crp.upstreamBaseUrl);
   await expect(page.getByLabel("API 密钥")).toHaveValue(crp.credential);
   await expect(page.getByLabel("测试模型")).toHaveValue("gpt-5.1-codex-mini");
-  await expect(page.getByLabel("允许回退凭据存储")).toBeChecked();
+  await expect(page.getByText("允许回退凭据存储")).toHaveCount(0);
   await expect(page.getByLabel("认证请求头")).toHaveValue("x-api-key");
   await expect(page.getByLabel("额外请求头（JSON）")).toHaveValue('{"x-region":"cn"}');
   await expect(page.getByLabel("覆盖模型")).toHaveValue("provider-model");

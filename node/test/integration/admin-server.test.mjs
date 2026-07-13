@@ -69,8 +69,8 @@ function createServices() {
       calls.push(["listProviders"]);
       return providers.map((provider) => ({ ...provider }));
     },
-    async createProvider(input, secret, options) {
-      calls.push(["createProvider", input, secret, options]);
+    async createProvider(input, secret, ...extraArguments) {
+      calls.push(["createProvider", input, secret, ...extraArguments]);
       const created = publicProvider({ id: "provider-2", name: input.name });
       providers.push(created);
       return created;
@@ -368,8 +368,7 @@ test("routes every approved Admin API operation through injected services", asyn
     ["GET", "/api/v1/providers", undefined, 200],
     ["POST", "/api/v1/providers", {
       provider: { name: "Backup", baseUrl: "https://backup.example/v1" },
-      credential: SECRET,
-      fallbackConsent: false
+      credential: SECRET
     }, 201],
     ["GET", "/api/v1/providers/provider-2", undefined, 200],
     ["PATCH", "/api/v1/providers/provider-2", {
@@ -404,7 +403,7 @@ test("routes every approved Admin API operation through injected services", asyn
   assert.deepEqual(activityCall, ["activity", 6]);
   const createCall = harness.calls.find((call) => call[0] === "createProvider");
   assert.equal(createCall[2], SECRET);
-  assert.deepEqual(createCall[3], { fallbackConsent: false });
+  assert.equal(createCall.length, 3);
   assert.ok(harness.calls.some((call) => call[0] === "restartProxy"));
   assert.ok(harness.calls.some((call) => call[0] === "bootstrap"));
   assert.ok(harness.calls.some((call) => call[0] === "diagnostics"));
@@ -419,8 +418,7 @@ test("enforces JSON content type, exact shape, and a bounded request body", asyn
     headers: { ...headers, "content-type": "application/json; charset=utf-8" },
     body: JSON.stringify({
       provider: { name: "Bounded", baseUrl: "https://bounded.example/v1" },
-      credential: "write-only-test-value",
-      fallbackConsent: false
+      credential: "write-only-test-value"
     })
   });
   assert.equal(valid.response.status, 201, valid.text);
@@ -445,6 +443,15 @@ test("enforces JSON content type, exact shape, and a bounded request body", asyn
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify({ provider: {}, credential: "x", unexpected: true })
+    }, 400, "API_BODY_INVALID"],
+    [{
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: { name: "Rejected fallback", baseUrl: "https://fallback.example/v1" },
+        credential: SECRET,
+        fallbackConsent: true
+      })
     }, 400, "API_BODY_INVALID"]
   ];
   for (const [options, status, code] of cases) {

@@ -89,8 +89,6 @@
       "onboarding.passthrough": "Pass through requested model",
       "onboarding.override": "Override every requested model",
       "onboarding.modelOverride": "Override model",
-      "onboarding.fallback": "Allow fallback credential storage",
-      "onboarding.fallbackHelp": "Allow only if the native credential store cannot be constructed; CRP may use its private file fallback.",
       "onboarding.save": "Save provider",
       "onboarding.saved": "Provider saved. Test compatibility next.",
       "onboarding.testTitle": "Verify the Responses API",
@@ -113,7 +111,6 @@
       "providers.replacement": "Replacement API key",
       "providers.replacementHelp": "Leave blank to keep the saved credential.",
       "providers.activeEditReason": "Activate another provider before editing this active provider.",
-      "providers.fallbackEditHelp": "Fallback consent applies only when a credential is first stored; this update keeps the configured credential backend.",
       "providers.testTitle": "Test provider",
       "providers.runTest": "Run test",
       "providers.deleteTitle": "Delete provider?",
@@ -121,7 +118,7 @@
       "providers.deleteConfirm": "Delete provider",
       "providers.empty": "No providers are configured.",
       "activity.subtitle": "Sanitized local lifecycle events and diagnostics.",
-      "activity.export": "Export diagnostics",
+      "activity.export": "Generate diagnostic summary",
       "activity.empty": "No sanitized activity is available.",
       "activity.previous": "Previous",
       "activity.next": "Next",
@@ -136,7 +133,7 @@
       "activity.category.unknown": "Other",
       "activity.providerId": "Provider ID: {value}",
       "activity.errorCode": "Error: {value}",
-      "activity.diagnosticsTitle": "Diagnostics exported",
+      "activity.diagnosticsTitle": "Summary ready",
       "activity.diagnosticsCreatedAt": "Created at {value}",
       "activity.diagnosticsCount": "{value} sanitized events",
       "settings.subtitle": "Fixed local runtime settings and Codex integration state.",
@@ -186,7 +183,7 @@
       "announcements.workerStopped": "Proxy stopped",
       "announcements.providerActivated": "Provider activated",
       "announcements.activityPage": "Activity page loaded",
-      "announcements.diagnostics": "Diagnostics exported",
+      "announcements.diagnostics": "Summary ready",
       "errors.auth.title": "Provider authentication failed",
       "errors.auth.action": "Check the API key and authorization scheme, then test again.",
       "errors.dns.title": "Provider address could not be resolved",
@@ -327,8 +324,6 @@
       "onboarding.passthrough": "透传请求的模型",
       "onboarding.override": "覆盖所有请求模型",
       "onboarding.modelOverride": "覆盖模型",
-      "onboarding.fallback": "允许回退凭据存储",
-      "onboarding.fallbackHelp": "仅当原生凭据存储无法构造时允许；CRP 可能使用其私有文件回退。",
       "onboarding.save": "保存提供商",
       "onboarding.saved": "提供商已保存。下一步请测试兼容性。",
       "onboarding.testTitle": "验证 Responses API",
@@ -351,7 +346,6 @@
       "providers.replacement": "替换 API 密钥",
       "providers.replacementHelp": "留空可保留已保存的凭据。",
       "providers.activeEditReason": "请先激活其他提供商，再编辑当前提供商。",
-      "providers.fallbackEditHelp": "回退授权仅适用于首次存储凭据；本次更新沿用已配置的凭据后端。",
       "providers.testTitle": "测试提供商",
       "providers.runTest": "运行测试",
       "providers.deleteTitle": "删除提供商？",
@@ -359,7 +353,7 @@
       "providers.deleteConfirm": "删除提供商",
       "providers.empty": "尚未配置提供商。",
       "activity.subtitle": "查看已脱敏的本地生命周期事件和诊断信息。",
-      "activity.export": "导出诊断信息",
+      "activity.export": "生成诊断摘要",
       "activity.empty": "暂无已脱敏的活动记录。",
       "activity.previous": "上一页",
       "activity.next": "下一页",
@@ -374,7 +368,7 @@
       "activity.category.unknown": "其他",
       "activity.providerId": "提供商 ID：{value}",
       "activity.errorCode": "错误：{value}",
-      "activity.diagnosticsTitle": "诊断信息已导出",
+      "activity.diagnosticsTitle": "摘要已生成",
       "activity.diagnosticsCreatedAt": "创建时间：{value}",
       "activity.diagnosticsCount": "{value} 条已脱敏事件",
       "settings.subtitle": "查看固定的本地运行设置和 Codex 集成状态。",
@@ -424,7 +418,7 @@
       "announcements.workerStopped": "代理已停止",
       "announcements.providerActivated": "提供商已激活",
       "announcements.activityPage": "活动页面已加载",
-      "announcements.diagnostics": "诊断信息已导出",
+      "announcements.diagnostics": "摘要已生成",
       "errors.auth.title": "提供商认证失败",
       "errors.auth.action": "请检查 API 密钥和认证方案，然后重新测试。",
       "errors.dns.title": "无法解析提供商地址",
@@ -650,7 +644,6 @@
       baseUrl: "",
       credential: "",
       testModel: "gpt-5.1-codex-mini",
-      fallbackConsent: false,
       advanced: false,
       authHeader: "authorization",
       authScheme: "Bearer",
@@ -1213,7 +1206,6 @@
     credentialLabelKey,
     credentialHelpKey,
     credentialRequired,
-    includeFallback,
     onDirty,
     onStructureChange
   }) {
@@ -1260,26 +1252,6 @@
     ]) bindDraftControl(control, draft, key, onDirty);
 
     const controls = [name.wrapper, baseUrl.wrapper, credential.wrapper, testModel.wrapper];
-    if (includeFallback) {
-      const fallback = node("input", {
-        attributes: { name: "fallbackConsent", type: "checkbox" }
-      });
-      fallback.disabled = !state.mutationAllowed || state.pending;
-      fallback.checked = draft.fallbackConsent;
-      bindDraftControl(fallback, draft, "fallbackConsent", onDirty);
-      const fallbackLabel = node("span", { text: t("onboarding.fallback") });
-      fallbackLabel.dataset.copyKey = "onboarding.fallback";
-      const fallbackHelp = node("small", { text: t("onboarding.fallbackHelp") });
-      fallbackHelp.dataset.copyKey = "onboarding.fallbackHelp";
-      controls.push(node("label", { className: "checkbox-field" }, [
-        fallback,
-        node("span", {}, [fallbackLabel, fallbackHelp])
-      ]));
-    } else {
-      const fallbackHelp = node("p", { className: "form-field is-wide", text: t("providers.fallbackEditHelp") });
-      fallbackHelp.dataset.copyKey = "providers.fallbackEditHelp";
-      controls.push(fallbackHelp);
-    }
 
     const advanced = node("input", { attributes: { type: "checkbox", name: "advanced" } });
     advanced.disabled = !state.mutationAllowed || state.pending;
@@ -1404,7 +1376,6 @@
       credentialLabelKey: phase === "create" ? "onboarding.apiKey" : "providers.replacement",
       credentialHelpKey: phase === "create" ? "onboarding.apiKeyHelp" : "providers.replacementHelp",
       credentialRequired: phase === "create",
-      includeFallback: phase === "create",
       onDirty,
       onStructureChange: render
     });
@@ -1425,8 +1396,7 @@
           method: "POST",
           body: {
             provider: providerInputFromDraft(draft),
-            credential,
-            fallbackConsent: draft.fallbackConsent
+            credential
           }
         }));
         if (payload && !state.authTerminal) {
@@ -1893,7 +1863,6 @@
         credentialLabelKey: editing ? "providers.replacement" : "onboarding.apiKey",
         credentialHelpKey: editing ? "providers.replacementHelp" : "onboarding.apiKeyHelp",
         credentialRequired: !editing,
-        includeFallback: !editing,
         onDirty: () => {},
         onStructureChange: rebuildFields
       });
@@ -1958,8 +1927,7 @@
             method: "POST",
             body: {
               provider: providerInputFromDraft(draft),
-              credential: replacementCredential,
-              fallbackConsent: draft.fallbackConsent
+              credential: replacementCredential
             }
           });
         }
