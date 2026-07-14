@@ -7,6 +7,7 @@ Core-first CLI acceptance: Web refinement and Task 12 release execution are paus
 ## In Progress
 
 - Implement the user-approved core-first design in `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`: safe missing-file Codex bootstrap, CLI `en`/`zh-CN`, stable JSON and start-stage errors, a production-component integration gate, and a separately authorized real live smoke.
+- Execute the pending TDD tasks in `docs/superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md`; no implementation or new acceptance evidence is recorded yet.
 - Keep the existing Admin API, registry schema, `OpenAI` provider identity, `127.0.0.1:15100` proxy address, package allowlist, and Web source/tests unchanged.
 
 ## Done

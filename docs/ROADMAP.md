@@ -12,7 +12,7 @@ M2A: core-first CLI acceptance. The user paused Web refinement and Task 12 relea
 | V1: Provider lifecycle end to end | Add, test, activate, switch, and restart through local UI without changing Codex provider | Local implementation and release gates prepared; external platform evidence and L3 approval pending | Full acceptance flow in `docs/TESTING.md` |
 | V2: Existing-user migration | Upgrade v0.2.2 flat config without losing provider access | Transactional implementation and local rollback fixtures landed; real-home L3 platform verification pending | Migration/rollback fixtures plus real-platform review |
 | V3: Cross-platform hardening | Reliable macOS/Windows UI and Linux CLI | Workflow and native-smoke harness landed; remote runner results and platform visuals pending | Platform CI run URLs, E2E artifacts, native services, accessibility |
-| V4: Core-first CLI proof | Clean-home setup and a verified real provider path before further Web work | Design approved; TDD plan, implementation, and live evidence pending | Production-component integration plus authorized real provider/native-keyring smoke and cleanup evidence |
+| V4: Core-first CLI proof | Clean-home setup and a verified real provider path before further Web work | Design and [executable TDD plan](superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md) approved; implementation and live evidence pending | Production-component integration plus authorized real provider/native-keyring smoke and cleanup evidence |
 
 ## Active Core-First Delivery Order
 

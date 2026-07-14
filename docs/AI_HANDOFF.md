@@ -6,7 +6,7 @@ CRP preserves ChatGPT login/remote features while routing Codex model traffic to
 
 ## Current Scope
 
-Tasks 1 through 11 are implemented and documented in `d114061` and `dd4de3f`. Task 12 package/platform gates are `af918d5`; safety commit `210cb71` removes public fallback inputs, makes `init` a strict `ui` alias, and aligns diagnostic summary behavior; `5fecf45` closes the release-documentation preparation. On 2026-07-14 the user paused Web and release work and approved the core-first design in `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`. Its implementation is pending. Task 12 remains parked, not complete.
+Tasks 1 through 11 are implemented and documented in `d114061` and `dd4de3f`. Task 12 package/platform gates are `af918d5`; safety commit `210cb71` removes public fallback inputs, makes `init` a strict `ui` alias, and aligns diagnostic summary behavior; `5fecf45` closes the release-documentation preparation. On 2026-07-14 the user paused Web and release work and approved the core-first design in `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`; the executable TDD plan is `docs/superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md`. Its implementation and evidence are pending. Task 12 remains parked, not complete.
 
 Do not describe workflow definitions as platform results. Remote macOS/Windows/Linux run URLs, real Keychain/Credential Manager/Secret Service evidence, macOS/Windows screenshots, real-home migration/rollback, and expert approval are still pending.
 
@@ -94,7 +94,7 @@ The current `provider add --api-key <KEY>` interface remains an explicitly defer
 - Require package tests to match the exact reviewed allowlist and platform native-keyring gates to probe the intended service without fallback.
 - Require tests to use declared direct dependencies and every checkout before pull-request code to disable persisted credentials.
 - Keep V1 release, platform, and real-home migration approval classified as L3.
-- Treat `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` as the historical Tasks 1-12 plan, not the active core-first execution plan. A new core-first TDD plan is pending; once generated and approved, it becomes the active implementation plan.
+- Treat `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` as the historical Tasks 1-12 plan, not the active core-first execution plan. The created and active core-first TDD plan is `docs/superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md`; implementation and evidence remain pending.
 - Keep file-watcher tests condition-based and cleanup-safe across supported Node versions.
 - Atomic configuration writes must compare content first and preserve source file permissions.
 - Registry mutation must persist successfully before replacing in-memory state.
