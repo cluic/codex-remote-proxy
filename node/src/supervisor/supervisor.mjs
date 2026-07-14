@@ -21,6 +21,7 @@ import { basename, dirname, resolve } from "node:path";
 import { bootstrapCodexConfig, patchCodexConfigText } from "../codex/codex-config.mjs";
 import { createCredentialStore } from "../credentials/credential-store.mjs";
 import { ProviderRegistry } from "../providers/provider-registry.mjs";
+import { CrpError } from "../shared/errors.mjs";
 import { getPaths } from "../shared/paths.mjs";
 import { ActivityStore } from "./activity-store.mjs";
 import { createAdminServer } from "./admin-server.mjs";
@@ -84,6 +85,45 @@ function publicWorkerState(state) {
   };
 }
 
+const CODEX_BOOTSTRAP_ERROR_CONTRACTS = new Map([
+  ["CODEX_CONFIG_PARENT_UNSAFE", {
+    message: "The Codex configuration directory is unsafe.",
+    action: "Repair the Codex configuration directory and retry.",
+    status: 500
+  }],
+  ["CODEX_CONFIG_BUSY", {
+    message: "Codex configuration is already being updated.",
+    action: "Wait for the current update to finish and retry.",
+    status: 409
+  }],
+  ["CODEX_CONFIG_CHANGED", {
+    message: "Codex configuration changed during bootstrap.",
+    action: "Review the current Codex configuration and retry.",
+    status: 409
+  }],
+  ["CODEX_CONFIG_READ_FAILED", {
+    message: "Codex configuration could not be read safely.",
+    action: "Repair local filesystem access and retry.",
+    status: 500
+  }],
+  ["CODEX_CONFIG_WRITE_FAILED", {
+    message: "Codex configuration could not be written safely.",
+    action: "Repair local filesystem access and retry.",
+    status: 500
+  }]
+]);
+
+function projectCodexBootstrapError(error) {
+  const code = CODEX_BOOTSTRAP_ERROR_CONTRACTS.has(error?.code)
+    ? error.code
+    : "CODEX_CONFIG_WRITE_FAILED";
+  const contract = CODEX_BOOTSTRAP_ERROR_CONTRACTS.get(code);
+  return new CrpError(code, contract.message, contract.action, {
+    status: contract.status,
+    cause: error
+  });
+}
+
 function createCodexService({
   paths,
   proxyUrl,
@@ -97,7 +137,11 @@ function createCodexService({
         proxyUrl
       };
       if (fileOperations !== undefined) options.fileOperations = fileOperations;
-      return bootstrapImpl(options);
+      try {
+        return bootstrapImpl(options);
+      } catch (error) {
+        throw projectCodexBootstrapError(error);
+      }
     },
     getStatus() {
       let configured = false;

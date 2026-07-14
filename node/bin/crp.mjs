@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_CAPTURE_DB_PATH } from "../src/capture-config.mjs";
 import { bootstrapCodexConfig } from "../src/codex/codex-config.mjs";
+import { CrpError } from "../src/shared/errors.mjs";
 import { getPaths } from "../src/shared/paths.mjs";
 import {
   discoverSupervisor,
@@ -40,8 +41,324 @@ const ENV_KEYS = {
   captureDbPath: "CRP_CAPTURE_DB_PATH"
 };
 const BOOLEAN_OPTIONS = new Set(["json", "no-open", "capture", "no-capture", "debug"]);
+const SAFE_CLI_COMMANDS = new Set([
+  "init", "ui", "start", "install", "setup", "status", "stop", "restart", "shutdown",
+  "provider", "check", "capture", "guide", "install-cli"
+]);
+const SAFE_ERROR_DETAIL_FIELDS = new Set([
+  "field", "reason", "committed", "degraded", "generation", "httpStatus"
+]);
+const CLI_ERROR_CONTRACTS = Object.freeze({
+  CLI_INPUT_INVALID: Object.freeze({
+    message: "The command input is invalid.",
+    action: "Review the command options and try again."
+  }),
+  CLI_COMMAND_FAILED: Object.freeze({
+    message: "CRP could not complete the command.",
+    action: "Review CRP activity and try again."
+  })
+});
+export const CLI_MESSAGES = Object.freeze({
+  en: Object.freeze({
+    "error.prefix": "Error: {message}",
+    "error.commandFailed": "CRP could not complete the command. Review CRP activity and try again.",
+    "error.public": "{message} {action}",
+    "help.usage": "Usage:",
+    "help.check": "  crp check [--json] [--codex-config PATH] [--auth PATH]",
+    "help.init": "  crp init [--no-open] [--json] (alias of ui)",
+    "help.ui": "  crp ui [--no-open] [--json]",
+    "help.start": "  crp start [--json]",
+    "help.install": "  crp install [same as start]",
+    "help.capture": "  crp capture <on|off|status> [--json]",
+    "help.status": "  crp status [--json]",
+    "help.stop": "  crp stop [--json]",
+    "help.restart": "  crp restart [--json]",
+    "help.shutdown": "  crp shutdown [--json]",
+    "help.provider": "  crp provider list|add|test|activate|delete [--json]",
+    "help.setup": "  crp setup [same as start]",
+    "help.guide": "  crp guide [--json]",
+    "help.installCli": "  crp install-cli [--json]",
+    "validation.unexpectedPositional": "Unexpected positional argument.",
+    "validation.providerAction": "Unknown provider action.",
+    "validation.providerOption": "The provider command contains an unsupported option.",
+    "validation.providerRequired": "The provider {name} option is required.",
+    "validation.commandOption": "The {command} command contains an unsupported option.",
+    "validation.localeDuplicate": "The --locale option may only be provided once.",
+    "validation.localeRequired": "The --locale option requires en or zh-CN.",
+    "validation.localeUnsupported": "The --locale option supports only en or zh-CN.",
+    "validation.captureAction": "Unknown capture action.",
+    "validation.captureOption": "The capture command contains an unsupported option.",
+    "common.yes": "yes",
+    "common.no": "no",
+    "common.unknown": "(unknown)",
+    "common.missing": "(missing)",
+    "common.notConfigured": "(not configured)",
+    "check.codexConfigPath": "Codex config path: {value}",
+    "check.authPath": "Codex auth path:   {value}",
+    "check.authMode": "auth_mode: {value}",
+    "check.configured": "{name} configured: {value}",
+    "check.section": "Codex [{name}]:",
+    "check.field": "  {name}: {value}",
+    "check.runtimeStatus": "Runtime status:",
+    "check.node": "  node: {value}",
+    "check.installHint": "        Run `npm install` in the package directory first.",
+    "check.globalHome": "Global home: {value}",
+    "check.globalCommand": "Global command: {value}",
+    "check.proxySection": "Codex proxy section: {value}",
+    "check.savedConfig": "Saved config: {value}",
+    "guide.header": "CRP V1 guide:",
+    "guide.add": "  Add a provider with `{command}`.",
+    "guide.test": "  Validate it with `{command}`.",
+    "guide.activate": "  Activate it with `{command}`.",
+    "guide.start": "  Start the proxy through the supervisor with `{command}`.",
+    "guide.status": "  Confirm supervisor and worker health with `{command}`.",
+    "guide.ui": "  Open the local management UI with `{command}`.",
+    "guide.shutdown": "  When finished, stop the supervisor with `{command}`.",
+    "capture.running": "Capture running: {value}",
+    "capture.persistedEnabled": "Persisted capture enabled: {value}",
+    "capture.persistedDb": "Persisted capture DB: {value}",
+    "capture.runtimeEnabled": "Runtime capture enabled: {value}",
+    "capture.runtimeDb": "Runtime capture DB: {value}",
+    "capture.savedNextStart": "Capture preference saved. It will apply the next time the proxy starts.",
+    "capture.savedRuntime": "Capture preference saved and runtime config updated.",
+    "installCli.installed": "Legacy local shim installed.",
+    "installCli.prefer": "For public distribution, prefer:",
+    "ui.opened": "CRP management UI opened.",
+    "status.running": "CRP supervisor is running.",
+    "provider.add.completed": "Provider add completed.",
+    "provider.activate.completed": "Provider activate completed.",
+    "provider.delete.completed": "Provider delete completed.",
+    "provider.list.completed": "Provider list completed.",
+    "provider.test.completed": "Provider test completed.",
+    "start.ready": "Codex Remote Proxy is ready.",
+    "status.notRunning": "CRP supervisor is not running.",
+    "stop.notRunning": "No running proxy worker to stop.",
+    "stop.completed": "Proxy worker stopped.",
+    "restart.completed": "Proxy worker restarted.",
+    "shutdown.notRunning": "CRP supervisor is not running.",
+    "shutdown.identityChanged": "Supervisor identity changed; shutdown was cancelled.",
+    "shutdown.timeout": "The supervisor did not stop in time.",
+    "shutdown.stateTimeout": "The supervisor state was not cleaned up in time.",
+    "shutdown.completed": "CRP supervisor stopped.",
+    "stage.supervisor_start.failed": "Supervisor startup failed. Review the supervisor log and try again.",
+    "stage.codex_bootstrap.failed": "Codex configuration bootstrap failed. Review CRP activity and retry before starting the proxy.",
+    "stage.proxy_start.failed": "Proxy startup failed. Review CRP activity and try again."
+  }),
+  "zh-CN": Object.freeze({
+    "error.prefix": "错误：{message}",
+    "error.commandFailed": "CRP 无法完成该命令。请查看 CRP 活动记录后重试。",
+    "error.public": "命令失败（{code}）。请查看 CRP 活动记录后重试。",
+    "help.usage": "用法：",
+    "help.check": "  crp check [--json] [--codex-config PATH] [--auth PATH]",
+    "help.init": "  crp init [--no-open] [--json]（ui 的别名）",
+    "help.ui": "  crp ui [--no-open] [--json]",
+    "help.start": "  crp start [--json]",
+    "help.install": "  crp install [等同于 start]",
+    "help.capture": "  crp capture <on|off|status> [--json]",
+    "help.status": "  crp status [--json]",
+    "help.stop": "  crp stop [--json]",
+    "help.restart": "  crp restart [--json]",
+    "help.shutdown": "  crp shutdown [--json]",
+    "help.provider": "  crp provider list|add|test|activate|delete [--json]",
+    "help.setup": "  crp setup [等同于 start]",
+    "help.guide": "  crp guide [--json]",
+    "help.installCli": "  crp install-cli [--json]",
+    "validation.unexpectedPositional": "出现了意外的位置参数。",
+    "validation.providerAction": "未知的提供商操作。",
+    "validation.providerOption": "提供商命令包含不支持的选项。",
+    "validation.providerRequired": "提供商选项 {name} 为必填项。",
+    "validation.commandOption": "{command} 命令包含不支持的选项。",
+    "validation.localeDuplicate": "--locale 选项只能提供一次。",
+    "validation.localeRequired": "--locale 选项需要 en 或 zh-CN。",
+    "validation.localeUnsupported": "--locale 选项仅支持 en 或 zh-CN。",
+    "validation.captureAction": "未知的 capture 操作。",
+    "validation.captureOption": "capture 命令包含不支持的选项。",
+    "common.yes": "是",
+    "common.no": "否",
+    "common.unknown": "（未知）",
+    "common.missing": "（缺失）",
+    "common.notConfigured": "（未配置）",
+    "check.codexConfigPath": "Codex 配置路径：{value}",
+    "check.authPath": "Codex 认证路径：{value}",
+    "check.authMode": "auth_mode：{value}",
+    "check.configured": "{name} 已配置：{value}",
+    "check.section": "Codex [{name}]：",
+    "check.field": "  {name}：{value}",
+    "check.runtimeStatus": "运行时状态：",
+    "check.node": "  node：{value}",
+    "check.installHint": "        请先在软件包目录中运行 `npm install`。",
+    "check.globalHome": "全局目录：{value}",
+    "check.globalCommand": "全局命令：{value}",
+    "check.proxySection": "Codex 代理配置段：{value}",
+    "check.savedConfig": "已保存配置：{value}",
+    "guide.header": "CRP V1 指南：",
+    "guide.add": "  使用 `{command}` 添加提供商。",
+    "guide.test": "  使用 `{command}` 验证提供商。",
+    "guide.activate": "  使用 `{command}` 激活提供商。",
+    "guide.start": "  使用 `{command}` 通过监督进程启动代理。",
+    "guide.status": "  使用 `{command}` 确认监督进程和工作进程状态。",
+    "guide.ui": "  使用 `{command}` 打开本地管理页面。",
+    "guide.shutdown": "  完成后使用 `{command}` 停止监督进程。",
+    "capture.running": "抓取功能运行中：{value}",
+    "capture.persistedEnabled": "持久化抓取设置已启用：{value}",
+    "capture.persistedDb": "持久化抓取数据库：{value}",
+    "capture.runtimeEnabled": "运行时抓取已启用：{value}",
+    "capture.runtimeDb": "运行时抓取数据库：{value}",
+    "capture.savedNextStart": "抓取偏好已保存，将在代理下次启动时生效。",
+    "capture.savedRuntime": "抓取偏好已保存，运行时配置已更新。",
+    "installCli.installed": "旧版本地命令入口已安装。",
+    "installCli.prefer": "公开分发请优先使用：",
+    "ui.opened": "CRP 管理页面已打开。",
+    "status.running": "CRP 监督进程正在运行。",
+    "provider.add.completed": "提供商添加操作已完成。",
+    "provider.activate.completed": "提供商激活操作已完成。",
+    "provider.delete.completed": "提供商删除操作已完成。",
+    "provider.list.completed": "提供商列表操作已完成。",
+    "provider.test.completed": "提供商测试操作已完成。",
+    "start.ready": "Codex Remote Proxy 已就绪。",
+    "status.notRunning": "CRP 监督进程未运行。",
+    "stop.notRunning": "没有正在运行的代理工作进程可停止。",
+    "stop.completed": "代理工作进程已停止。",
+    "restart.completed": "代理工作进程已重启。",
+    "shutdown.notRunning": "CRP 监督进程未运行。",
+    "shutdown.identityChanged": "监督进程身份已变化，已取消关闭操作。",
+    "shutdown.timeout": "监督进程未能及时停止。",
+    "shutdown.stateTimeout": "监督进程状态未能及时清理。",
+    "shutdown.completed": "CRP 监督进程已停止。",
+    "stage.supervisor_start.failed": "启动监督进程失败。请检查监督进程日志后重试。",
+    "stage.codex_bootstrap.failed": "引导 Codex 配置失败。请查看 CRP 活动记录，修复后再启动代理。",
+    "stage.proxy_start.failed": "启动代理失败。请查看 CRP 活动记录后重试。"
+  })
+});
 
-function parseCommandLine(argv) {
+function normalizeLocale(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().split(/[.@]/, 1)[0].replaceAll("_", "-").toLowerCase();
+  if (normalized.startsWith("zh")) return "zh-CN";
+  if (normalized.startsWith("en")) return "en";
+  return null;
+}
+
+function cliInputError(messageKey, values = {}) {
+  const contract = CLI_ERROR_CONTRACTS.CLI_INPUT_INVALID;
+  const error = new CrpError(
+    "CLI_INPUT_INVALID",
+    contract.message,
+    contract.action,
+    { status: 400 }
+  );
+  error.cliMessageKey = messageKey;
+  error.cliMessageValues = values;
+  return error;
+}
+
+function resolveCliLocale(argv, environment) {
+  const stripped = [];
+  let explicit = null;
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== "--locale") {
+      stripped.push(argv[index]);
+      continue;
+    }
+    if (explicit !== null) throw cliInputError("validation.localeDuplicate");
+    const value = argv[index + 1];
+    if (typeof value !== "string" || value.startsWith("--")) {
+      throw cliInputError("validation.localeRequired");
+    }
+    explicit = value;
+    index += 1;
+  }
+  if (explicit !== null) {
+    const locale = normalizeLocale(explicit);
+    if (locale === null) throw cliInputError("validation.localeUnsupported");
+    return { argv: stripped, locale };
+  }
+  for (const key of ["CRP_LOCALE", "LC_ALL", "LC_MESSAGES", "LANG"]) {
+    const locale = normalizeLocale(environment?.[key]);
+    if (locale !== null) return { argv: stripped, locale };
+  }
+  return { argv: stripped, locale: "en" };
+}
+
+function cliMessage(locale, key, values = {}) {
+  let message = CLI_MESSAGES[locale][key];
+  for (const [name, value] of Object.entries(values)) {
+    message = message.replaceAll(`{${name}}`, String(value));
+  }
+  return message;
+}
+
+function safeCommandName(argv) {
+  return SAFE_CLI_COMMANDS.has(argv[0]) ? argv[0] : "unknown";
+}
+
+function sanitizeCliErrorDetails(details) {
+  if (details === null || typeof details !== "object" || Array.isArray(details)) return {};
+  const safe = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (!SAFE_ERROR_DETAIL_FIELDS.has(key)) continue;
+    if (typeof value === "boolean" || value === null
+      || (typeof value === "number" && Number.isFinite(value))
+      || (typeof value === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(value))) {
+      safe[key] = value;
+    }
+  }
+  return safe;
+}
+
+function projectCliError(error) {
+  if (error instanceof CrpError
+    && typeof error.code === "string" && /^[A-Z][A-Z0-9_]*$/.test(error.code)
+    && typeof error.message === "string" && error.message.length > 0
+    && typeof error.action === "string" && error.action.length > 0) {
+    const projected = {
+      code: error.code,
+      message: error.message,
+      action: error.action,
+      details: sanitizeCliErrorDetails(error.details)
+    };
+    if (typeof error.requestId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(error.requestId)) {
+      projected.requestId = error.requestId;
+    }
+    return projected;
+  }
+  return {
+    code: "CLI_COMMAND_FAILED",
+    ...CLI_ERROR_CONTRACTS.CLI_COMMAND_FAILED,
+    details: {}
+  };
+}
+
+function withCliStage(error, stage) {
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    try {
+      Object.defineProperty(error, "cliStage", { value: stage, configurable: true });
+      return error;
+    } catch {
+      // Fall through to a static wrapper when the original error is not extensible.
+    }
+  }
+  const wrapper = new Error();
+  wrapper.cliStage = stage;
+  return wrapper;
+}
+
+function humanCliError(error, locale) {
+  if (["supervisor_start", "codex_bootstrap", "proxy_start"].includes(error?.cliStage)) {
+    return cliMessage(locale, `stage.${error.cliStage}.failed`);
+  }
+  if (error instanceof CrpError && typeof error.cliMessageKey === "string") {
+    return cliMessage(locale, error.cliMessageKey, error.cliMessageValues);
+  }
+  if (error instanceof CrpError) {
+    return locale === "en"
+      ? cliMessage(locale, "error.public", { message: error.message, action: error.action })
+      : cliMessage(locale, "error.public", { code: error.code });
+  }
+  return cliMessage(locale, "error.commandFailed");
+}
+
+function parseCommandLine(argv, locale = "en") {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
     printHelp();
     process.exit(0);
@@ -53,7 +370,7 @@ function parseCommandLine(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token.startsWith("--")) {
-      throw new Error("Unexpected positional argument.");
+      throw cliInputError("validation.unexpectedPositional");
     }
     const key = token.slice(2);
     if (BOOLEAN_OPTIONS.has(key)) {
@@ -72,27 +389,29 @@ function parseCommandLine(argv) {
   return { command, options };
 }
 
-function printHelp(writeLine = (line) => console.log(line)) {
-  writeLine("Usage:");
-  writeLine("  crp check [--json] [--codex-config PATH] [--auth PATH]");
-  writeLine("  crp init [--no-open] [--json] (alias of ui)");
-  writeLine("  crp ui [--no-open] [--json]");
-  writeLine("  crp start [--json]");
-  writeLine("  crp install [same as start]");
-  writeLine("  crp capture <on|off|status> [--json]");
-  writeLine("  crp status [--json]");
-  writeLine("  crp stop [--json]");
-  writeLine("  crp restart [--json]");
-  writeLine("  crp shutdown [--json]");
-  writeLine("  crp provider list|add|test|activate|delete [--json]");
-  writeLine("  crp setup [same as start]");
-  writeLine("  crp guide [--json]");
-  writeLine("  crp install-cli [--json]");
+function printHelp(writeLine = (line) => console.log(line), locale = "en") {
+  for (const key of [
+    "help.usage",
+    "help.check",
+    "help.init",
+    "help.ui",
+    "help.start",
+    "help.install",
+    "help.capture",
+    "help.status",
+    "help.stop",
+    "help.restart",
+    "help.shutdown",
+    "help.provider",
+    "help.setup",
+    "help.guide",
+    "help.installCli"
+  ]) writeLine(cliMessage(locale, key));
 }
 
-function maybePrintJson(options, payload) {
+function maybePrintJson(options, payload, stdout = (text) => process.stdout.write(text)) {
   if (options.json) {
-    console.log(JSON.stringify(payload, null, 2));
+    stdout(`${JSON.stringify(payload, null, 2)}\n`);
     return true;
   }
   return false;
@@ -600,35 +919,72 @@ function buildCheckData(options) {
   };
 }
 
-function printHumanCheck(data) {
-  console.log(`Codex config path: ${data.codexConfigPath}`);
-  console.log(`Codex auth path:   ${data.authPath}`);
-  console.log("");
-  console.log(`auth_mode: ${data.auth.authMode || "(unknown)"}`);
-  console.log(`OPENAI_API_KEY configured: ${data.auth.openAiApiKeyConfigured ? "yes" : "no"}`);
-  console.log(`tokens.access_token configured: ${data.auth.accessTokenConfigured ? "yes" : "no"}`);
-  console.log("");
-  console.log("Codex [model_providers.OpenAI]:");
-  console.log(`  base_url: ${data.codexOpenAiProvider.baseUrl || "(missing)"}`);
-  console.log(`  wire_api: ${data.codexOpenAiProvider.wireApi || "(missing)"}`);
-  console.log(`  requires_openai_auth: ${data.codexOpenAiProvider.requiresOpenAiAuth ?? "(missing)"}`);
-  console.log("");
-  console.log("Codex [codex_remote_proxy]:");
-  console.log(`  upstream_base_url: ${data.codexRemoteProxy.upstreamBaseUrl || "(missing)"}`);
-  console.log(`  credential configured: ${data.codexRemoteProxy.credentialConfigured ? "yes" : "no"}`);
-  console.log(`  capture_enabled: ${data.codexRemoteProxy.captureEnabled ?? "(missing)"}`);
-  console.log(`  capture_db_path: ${data.codexRemoteProxy.captureDbPath || "(missing)"}`);
-  console.log("");
-  console.log("Runtime status:");
-  console.log(`  node: ${data.runtimeStatus.node.available ? data.runtimeStatus.node.version : data.runtimeStatus.node.error}`);
+function printHumanCheck(data, locale, stdout) {
+  const writeLine = (line = "") => stdout(`${line}\n`);
+  const value = (key) => cliMessage(locale, key);
+  const yesNo = (enabled) => value(enabled ? "common.yes" : "common.no");
+  const missing = (candidate) => candidate ?? value("common.missing");
+  writeLine(cliMessage(locale, "check.codexConfigPath", { value: data.codexConfigPath }));
+  writeLine(cliMessage(locale, "check.authPath", { value: data.authPath }));
+  writeLine();
+  writeLine(cliMessage(locale, "check.authMode", {
+    value: data.auth.authMode || value("common.unknown")
+  }));
+  writeLine(cliMessage(locale, "check.configured", {
+    name: "OPENAI_API_KEY",
+    value: yesNo(data.auth.openAiApiKeyConfigured)
+  }));
+  writeLine(cliMessage(locale, "check.configured", {
+    name: "tokens.access_token",
+    value: yesNo(data.auth.accessTokenConfigured)
+  }));
+  writeLine();
+  writeLine(cliMessage(locale, "check.section", { name: "model_providers.OpenAI" }));
+  writeLine(cliMessage(locale, "check.field", { name: "base_url", value: missing(data.codexOpenAiProvider.baseUrl) }));
+  writeLine(cliMessage(locale, "check.field", { name: "wire_api", value: missing(data.codexOpenAiProvider.wireApi) }));
+  writeLine(cliMessage(locale, "check.field", {
+    name: "requires_openai_auth",
+    value: missing(data.codexOpenAiProvider.requiresOpenAiAuth)
+  }));
+  writeLine();
+  writeLine(cliMessage(locale, "check.section", { name: "codex_remote_proxy" }));
+  writeLine(cliMessage(locale, "check.field", {
+    name: "upstream_base_url",
+    value: missing(data.codexRemoteProxy.upstreamBaseUrl)
+  }));
+  writeLine(cliMessage(locale, "check.field", {
+    name: "credential configured",
+    value: yesNo(data.codexRemoteProxy.credentialConfigured)
+  }));
+  writeLine(cliMessage(locale, "check.field", {
+    name: "capture_enabled",
+    value: missing(data.codexRemoteProxy.captureEnabled)
+  }));
+  writeLine(cliMessage(locale, "check.field", {
+    name: "capture_db_path",
+    value: missing(data.codexRemoteProxy.captureDbPath)
+  }));
+  writeLine();
+  writeLine(cliMessage(locale, "check.runtimeStatus"));
+  writeLine(cliMessage(locale, "check.node", {
+    value: data.runtimeStatus.node.available ? data.runtimeStatus.node.version : data.runtimeStatus.node.error
+  }));
   if (data.runtimeStatus.node.available && !data.runtimeStatus.node.dependenciesReady) {
-    console.log(`        ${data.runtimeStatus.node.installHint}`);
+    writeLine(cliMessage(locale, "check.installHint"));
   }
-  console.log("");
-  console.log(`Global home: ${data.globalHome}`);
-  console.log(`Global command: ${data.globalCommand}`);
-  console.log(`Codex proxy section: ${data.configSources.codexConfigSectionPresent ? data.codexConfigPath : "(not configured)"}`);
-  console.log(`Saved config: ${data.configSources.savedConfigPresent ? data.configSources.savedConfigPath : "(not configured)"}`);
+  writeLine();
+  writeLine(cliMessage(locale, "check.globalHome", { value: data.globalHome }));
+  writeLine(cliMessage(locale, "check.globalCommand", { value: data.globalCommand }));
+  writeLine(cliMessage(locale, "check.proxySection", {
+    value: data.configSources.codexConfigSectionPresent
+      ? data.codexConfigPath
+      : value("common.notConfigured")
+  }));
+  writeLine(cliMessage(locale, "check.savedConfig", {
+    value: data.configSources.savedConfigPresent
+      ? data.configSources.savedConfigPath
+      : value("common.notConfigured")
+  }));
 }
 
 function writeProxyConfig(path, config) {
@@ -870,19 +1226,27 @@ async function installCommand(options) {
 
 const startCommandAction = installCommand;
 
-function checkCommand(options) {
+function checkCommand(options, locale, stdout) {
   const data = buildCheckData(options);
-  if (!maybePrintJson(options, data)) {
-    printHumanCheck(data);
+  if (!maybePrintJson(options, data, stdout)) {
+    printHumanCheck(data, locale, stdout);
   }
 }
 
-function guideCommand(options) {
+function guideCommand(options, locale, stdout) {
   const data = buildGuideData();
-  if (!maybePrintJson(options, data)) {
-    console.log("CRP V1 guide:");
-    for (const step of data.expectedFlow) {
-      console.log(`  ${step}`);
+  if (!maybePrintJson(options, data, stdout)) {
+    stdout(`${cliMessage(locale, "guide.header")}\n`);
+    for (const [key, command] of [
+      ["guide.add", data.commands.providerAdd],
+      ["guide.test", data.commands.providerTest],
+      ["guide.activate", data.commands.providerActivate],
+      ["guide.start", data.commands.start],
+      ["guide.status", data.commands.status],
+      ["guide.ui", data.commands.ui],
+      ["guide.shutdown", data.commands.shutdown]
+    ]) {
+      stdout(`${cliMessage(locale, key, { command })}\n`);
     }
   }
 }
@@ -929,11 +1293,7 @@ async function statusCommand(options) {
   }
 }
 
-async function captureCommand(options, action) {
-  if (!["on", "off", "status"].includes(action)) {
-    throw new Error("Unknown capture action.");
-  }
-
+async function captureCommand(options, action, locale, stdout) {
   if (action === "status") {
     const runtime = loadRuntimeProxyConfig();
     const state = loadManagedState();
@@ -960,13 +1320,22 @@ async function captureCommand(options, action) {
         payload.healthError = error.message;
       }
     }
-    if (!maybePrintJson(options, payload)) {
-      console.log(`Capture running: ${payload.running ? "yes" : "no"}`);
-      console.log(`Persisted capture enabled: ${payload.persistedConfig.captureEnabled ? "yes" : "no"}`);
-      console.log(`Persisted capture DB: ${payload.persistedConfig.captureDbPath || DEFAULT_CAPTURE_DB_PATH}`);
+    if (!maybePrintJson(options, payload, stdout)) {
+      const yesNo = (enabled) => cliMessage(locale, enabled ? "common.yes" : "common.no");
+      stdout(`${cliMessage(locale, "capture.running", { value: yesNo(payload.running) })}\n`);
+      stdout(`${cliMessage(locale, "capture.persistedEnabled", {
+        value: yesNo(payload.persistedConfig.captureEnabled)
+      })}\n`);
+      stdout(`${cliMessage(locale, "capture.persistedDb", {
+        value: payload.persistedConfig.captureDbPath || DEFAULT_CAPTURE_DB_PATH
+      })}\n`);
       if (payload.runtimeConfig) {
-        console.log(`Runtime capture enabled: ${payload.runtimeConfig.enabled ? "yes" : "no"}`);
-        console.log(`Runtime capture DB: ${payload.runtimeConfig.dbPath || DEFAULT_CAPTURE_DB_PATH}`);
+        stdout(`${cliMessage(locale, "capture.runtimeEnabled", {
+          value: yesNo(payload.runtimeConfig.enabled)
+        })}\n`);
+        stdout(`${cliMessage(locale, "capture.runtimeDb", {
+          value: payload.runtimeConfig.dbPath || DEFAULT_CAPTURE_DB_PATH
+        })}\n`);
       }
     }
     return;
@@ -996,8 +1365,8 @@ async function captureCommand(options, action) {
   const running = Boolean(managedState?.pid && isProcessAlive(managedState.pid));
   if (!running) {
     payload.message = "Capture preference saved. It will apply the next time the proxy starts.";
-    if (!maybePrintJson(options, payload)) {
-      console.log(payload.message);
+    if (!maybePrintJson(options, payload, stdout)) {
+      stdout(`${cliMessage(locale, "capture.savedNextStart")}\n`);
     }
     return;
   }
@@ -1025,8 +1394,8 @@ async function captureCommand(options, action) {
     }
   }
 
-  if (!maybePrintJson(options, payload)) {
-    console.log(payload.message);
+  if (!maybePrintJson(options, payload, stdout)) {
+    stdout(`${cliMessage(locale, "capture.savedRuntime")}\n`);
   }
 }
 
@@ -1038,7 +1407,7 @@ async function stopCommand(options) {
   }
 }
 
-async function installCliCommand(options) {
+async function installCliCommand(options, locale, stdout) {
   const result = installCliShim();
   const payload = {
     ok: true,
@@ -1048,10 +1417,10 @@ async function installCliCommand(options) {
     deprecated: true,
     message: "install-cli is deprecated for public distribution; prefer npm global installation."
   };
-  if (!maybePrintJson(options, payload)) {
-    console.log("Legacy local shim installed.");
-    console.log("For public distribution, prefer:");
-    console.log("npm install -g @cluic/codex-remote-proxy");
+  if (!maybePrintJson(options, payload, stdout)) {
+    stdout(`${cliMessage(locale, "installCli.installed")}\n`);
+    stdout(`${cliMessage(locale, "installCli.prefer")}\n`);
+    stdout("npm install -g @cluic/codex-remote-proxy\n");
   }
 }
 
@@ -1101,12 +1470,12 @@ export function openManagementUrl(url, {
   return child;
 }
 
-function parseProviderOptions(argv) {
+function parseProviderOptions(argv, locale) {
   const action = argv[1];
   if (!["list", "add", "test", "activate", "delete"].includes(action)) {
-    throw new Error("Unknown provider action.");
+    throw cliInputError("validation.providerAction");
   }
-  const { options } = parseCommandLine(["provider", ...argv.slice(2)]);
+  const { options } = parseCommandLine(["provider", ...argv.slice(2)], locale);
   const allowed = {
     list: new Set(["json"]),
     add: new Set([
@@ -1124,25 +1493,21 @@ function parseProviderOptions(argv) {
     delete: new Set(["json", "id"])
   }[action];
   if (Object.keys(options).some((field) => !allowed.has(field))) {
-    throw new Error("The provider command contains an unsupported option.");
+    throw cliInputError("validation.providerOption");
   }
   return { action, options };
 }
 
-function requiredOption(options, name) {
+function requiredOption(options, name, locale) {
   const value = options[name];
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`The provider ${name} option is required.`);
+    throw cliInputError("validation.providerRequired", { name });
   }
   return value.trim();
 }
 
 async function dispatchProviderCommand(argv, dependencies) {
-  const { action, options } = parseProviderOptions(argv);
-  const context = await dependencies.ensureSupervisorImpl({
-    paths: dependencies.paths,
-    adminPort: dependencies.adminPort
-  });
+  const { action, options } = parseProviderOptions(argv, dependencies.locale);
   let method;
   let path;
   let body;
@@ -1153,8 +1518,8 @@ async function dispatchProviderCommand(argv, dependencies) {
     method = "POST";
     path = "/providers";
     const provider = {
-      name: requiredOption(options, "name"),
-      baseUrl: requiredOption(options, "base-url")
+      name: requiredOption(options, "name", dependencies.locale),
+      baseUrl: requiredOption(options, "base-url", dependencies.locale)
     };
     for (const [option, field] of [
       ["auth-header", "authHeader"],
@@ -1166,14 +1531,14 @@ async function dispatchProviderCommand(argv, dependencies) {
     }
     body = {
       provider,
-      credential: requiredOption(options, "api-key")
+      credential: requiredOption(options, "api-key", dependencies.locale)
     };
   } else {
-    const id = encodeURIComponent(requiredOption(options, "id"));
+    const id = encodeURIComponent(requiredOption(options, "id", dependencies.locale));
     if (action === "test") {
       method = "POST";
       path = `/providers/${id}/test`;
-      body = { model: requiredOption(options, "model") };
+      body = { model: requiredOption(options, "model", dependencies.locale) };
     } else if (action === "activate") {
       method = "POST";
       path = `/providers/${id}/activate`;
@@ -1182,16 +1547,20 @@ async function dispatchProviderCommand(argv, dependencies) {
       path = `/providers/${id}`;
     }
   }
+  const context = await dependencies.ensureSupervisorImpl({
+    paths: dependencies.paths,
+    adminPort: dependencies.adminPort
+  });
   const result = await context.client.request(method, path, body);
   writePayload(options, {
     ok: true,
     action,
     ...result
-  }, dependencies.stdout, `Provider ${action} completed.`);
+  }, dependencies.stdout, cliMessage(dependencies.locale, `provider.${action}.completed`));
 }
 
-function parseSupervisorOptions(argv) {
-  const { command, options } = parseCommandLine(argv);
+function parseSupervisorOptions(argv, locale) {
+  const { command, options } = parseCommandLine(argv, locale);
   const allowed = {
     init: new Set(["json", "no-open"]),
     ui: new Set(["json", "no-open"]),
@@ -1204,9 +1573,21 @@ function parseSupervisorOptions(argv) {
     shutdown: new Set(["json"])
   }[command];
   if (Object.keys(options).some((field) => !allowed.has(field))) {
-    throw new Error(`The ${command} command contains an unsupported option.`);
+    throw cliInputError("validation.commandOption", { command });
   }
   return { command, options };
+}
+
+function parseCaptureOptions(argv, locale) {
+  const action = argv[1];
+  if (!["on", "off", "status"].includes(action)) {
+    throw cliInputError("validation.captureAction");
+  }
+  const { options } = parseCommandLine(["capture", ...argv.slice(2)], locale);
+  if (Object.keys(options).some((field) => field !== "json")) {
+    throw cliInputError("validation.captureOption");
+  }
+  return { action, options };
 }
 
 async function dispatchSupervisorCommand(argv, dependencies) {
@@ -1227,7 +1608,7 @@ async function dispatchSupervisorCommand(argv, dependencies) {
     await dispatchProviderCommand(argv, dependencies);
     return true;
   }
-  const { command, options } = parseSupervisorOptions(argv);
+  const { command, options } = parseSupervisorOptions(argv, dependencies.locale);
   const {
     paths,
     adminPort,
@@ -1256,7 +1637,7 @@ async function dispatchSupervisorCommand(argv, dependencies) {
       origin: context.origin,
       supervisorPid: context.state.supervisorPid,
       url
-    }, stdout, opened ? "CRP management UI opened." : url);
+    }, stdout, opened ? cliMessage(dependencies.locale, "ui.opened") : url);
     return true;
   }
 
@@ -1266,8 +1647,8 @@ async function dispatchSupervisorCommand(argv, dependencies) {
       ? { ok: true, running: false, reason: "supervisor_not_running" }
       : { ok: true, running: true, ...context.status };
     writePayload(options, payload, stdout, payload.running
-      ? "CRP supervisor is running."
-      : "CRP supervisor is not running.");
+      ? cliMessage(dependencies.locale, "status.running")
+      : cliMessage(dependencies.locale, "status.notRunning"));
     return true;
   }
 
@@ -1278,7 +1659,7 @@ async function dispatchSupervisorCommand(argv, dependencies) {
         ok: true,
         stopped: false,
         reason: "supervisor_not_running"
-      }, stdout, "No running proxy worker to stop.");
+      }, stdout, cliMessage(dependencies.locale, "stop.notRunning"));
       return true;
     }
     const result = await context.client.request("POST", "/proxy/stop");
@@ -1287,7 +1668,7 @@ async function dispatchSupervisorCommand(argv, dependencies) {
       stopped: result?.worker?.phase === "stopped",
       worker: result?.worker ?? null
     };
-    writePayload(options, payload, stdout, "Proxy worker stopped.");
+    writePayload(options, payload, stdout, cliMessage(dependencies.locale, "stop.completed"));
     return true;
   }
 
@@ -1298,14 +1679,14 @@ async function dispatchSupervisorCommand(argv, dependencies) {
         ok: true,
         shutdown: false,
         reason: "supervisor_not_running"
-      }, stdout, "CRP supervisor is not running.");
+      }, stdout, cliMessage(dependencies.locale, "shutdown.notRunning"));
       return true;
     }
     const latest = await context.client.request("GET", "/status");
     const supervisorPid = context.state.supervisorPid;
     if (latest?.supervisor?.pid !== supervisorPid
       || latest?.supervisor?.startedAt !== context.state.startedAt) {
-      throw new Error("Supervisor identity changed; shutdown was cancelled.");
+      throw new Error(cliMessage(dependencies.locale, "shutdown.identityChanged"));
     }
     killProcess(supervisorPid, "SIGTERM");
     const deadline = now() + shutdownTimeoutMs;
@@ -1313,21 +1694,29 @@ async function dispatchSupervisorCommand(argv, dependencies) {
       await wait(Math.min(100, deadline - now()));
     }
     if (isProcessAliveImpl(supervisorPid)) {
-      throw new Error("The supervisor did not stop in time.");
+      throw new Error(cliMessage(dependencies.locale, "shutdown.timeout"));
     }
     if (existsSync(paths.statePath)) {
-      throw new Error("The supervisor state was not cleaned up in time.");
+      throw new Error(cliMessage(dependencies.locale, "shutdown.stateTimeout"));
     }
     writePayload(options, {
       ok: true,
       shutdown: true,
       supervisorPid,
       workerStopped: true
-    }, stdout, "CRP supervisor stopped.");
+    }, stdout, cliMessage(dependencies.locale, "shutdown.completed"));
     return true;
   }
 
-  const context = await ensureSupervisorImpl(discoveryOptions);
+  let context;
+  try {
+    context = await ensureSupervisorImpl(discoveryOptions);
+  } catch (error) {
+    if (command === "start" || command === "install" || command === "setup") {
+      throw withCliStage(error, "supervisor_start");
+    }
+    throw error;
+  }
   if (command === "restart") {
     const result = await context.client.request("POST", "/proxy/restart");
     writePayload(options, {
@@ -1335,16 +1724,25 @@ async function dispatchSupervisorCommand(argv, dependencies) {
       command: "restart",
       supervisorPid: context.state.supervisorPid,
       worker: result?.worker ?? null
-    }, stdout, "Proxy worker restarted.");
+    }, stdout, cliMessage(dependencies.locale, "restart.completed"));
     return true;
   }
 
   let codexBootstrap = null;
   if (context.status?.codex?.configured !== true) {
-    const bootstrap = await context.client.request("POST", "/codex/bootstrap");
-    codexBootstrap = bootstrap?.result ?? null;
+    try {
+      const bootstrap = await context.client.request("POST", "/codex/bootstrap");
+      codexBootstrap = bootstrap?.result ?? null;
+    } catch (error) {
+      throw withCliStage(error, "codex_bootstrap");
+    }
   }
-  const result = await context.client.request("POST", "/proxy/start");
+  let result;
+  try {
+    result = await context.client.request("POST", "/proxy/start");
+  } catch (error) {
+    throw withCliStage(error, "proxy_start");
+  }
   const payload = {
     ok: true,
     command: "start",
@@ -1355,42 +1753,26 @@ async function dispatchSupervisorCommand(argv, dependencies) {
     codexBootstrap
   };
   if (command === "install" || command === "setup") payload.deprecated = true;
-  writePayload(options, payload, stdout, "Codex Remote Proxy is ready.");
+  writePayload(options, payload, stdout, cliMessage(dependencies.locale, "start.ready"));
   return true;
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2), {
+  locale = "en",
+  stdout = (text) => process.stdout.write(text)
+} = {}) {
   if (argv[0] === "capture") {
-    const action = argv[1];
-    const options = {};
-    for (let index = 2; index < argv.length; index += 1) {
-      const token = argv[index];
-      if (!token.startsWith("--")) {
-        throw new Error("Unexpected positional argument.");
-      }
-      const key = token.slice(2);
-      if (BOOLEAN_OPTIONS.has(key)) {
-        options[key] = true;
-        continue;
-      }
-      const next = argv[index + 1];
-      if (!next || next.startsWith("--")) {
-        options[key] = true;
-        continue;
-      }
-      options[key] = next;
-      index += 1;
-    }
-    return await captureCommand(options, action);
+    const { action, options } = parseCaptureOptions(argv, locale);
+    return await captureCommand(options, action, locale, stdout);
   }
 
-  const { command, options } = parseCommandLine(argv);
-  if (command === "check") return checkCommand(options);
-  if (command === "guide") return guideCommand(options);
+  const { command, options } = parseCommandLine(argv, locale);
+  if (command === "check") return checkCommand(options, locale, stdout);
+  if (command === "guide") return guideCommand(options, locale, stdout);
   if (command === "start" || command === "install" || command === "setup") return await startCommandAction(options);
   if (command === "status") return await statusCommand(options);
   if (command === "stop") return await stopCommand(options);
-  if (command === "install-cli") return await installCliCommand(options);
+  if (command === "install-cli") return await installCliCommand(options, locale, stdout);
   throw new Error("Unknown command.");
 }
 
@@ -1407,11 +1789,19 @@ export async function runCli(argv, {
   isProcessAlive: isProcessAliveImpl = isProcessAlive,
   wait = (milliseconds) => delay(milliseconds),
   now = () => Date.now(),
-  shutdownTimeoutMs = 8_000
+  shutdownTimeoutMs = 8_000,
+  environment = process.env
 } = {}) {
+  let locale = "en";
+  const jsonIntent = argv.includes("--json");
+  let commandName = safeCommandName(argv);
   try {
+    const resolved = resolveCliLocale(argv, environment);
+    argv = resolved.argv;
+    locale = resolved.locale;
+    commandName = safeCommandName(argv);
     if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
-      printHelp((line) => stdout(`${line}\n`));
+      printHelp((line) => stdout(`${line}\n`), locale);
       return 0;
     }
     const handled = await dispatchSupervisorCommand(argv, {
@@ -1426,12 +1816,26 @@ export async function runCli(argv, {
       now,
       shutdownTimeoutMs,
       readControlTokenImpl,
-      openManagementUrlImpl
+      openManagementUrlImpl,
+      locale
     });
-    if (!handled) await main(argv);
+    if (!handled) await main(argv, { locale, stdout });
     return 0;
   } catch (error) {
-    stderr(`Error: ${error?.message || "CRP could not complete the command."}\n`);
+    if (jsonIntent) {
+      stderr(`${JSON.stringify({
+        ok: false,
+        command: commandName,
+        stage: ["supervisor_start", "codex_bootstrap", "proxy_start"].includes(error?.cliStage)
+          ? error.cliStage
+          : null,
+        error: projectCliError(error)
+      }, null, 2)}\n`);
+    } else {
+      stderr(`${cliMessage(locale, "error.prefix", {
+        message: humanCliError(error, locale)
+      })}\n`);
+    }
     return 1;
   }
 }

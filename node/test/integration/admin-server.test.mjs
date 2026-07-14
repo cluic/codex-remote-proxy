@@ -628,7 +628,7 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
     }
   };
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  return { home, paths, order, worker, admin, listenGate, options };
+  return { home, paths, order, worker, admin, listenGate, registry, options };
 }
 
 test("supervisor migrates before registry construction and writes private state only after ready", async (t) => {
@@ -720,6 +720,124 @@ test("supervisor keeps Codex and state filesystem adapters independent", async (
   assert.equal(bootstrapInput.fileOperations, codexFileOperations);
   assert.equal(bootstrapInput.configPath, harness.paths.codexConfigPath);
   await supervisor.close();
+});
+
+test("real Supervisor and Admin project stable safe Codex bootstrap failures", async (t) => {
+  const harness = supervisorDependencies(t);
+  const originalSettings = harness.registry.getDocument().settings;
+  harness.registry.getDocument = () => ({ settings: { ...originalSettings, adminPort: 0 } });
+  let bootstrapFailure;
+  let requestId = "bootstrap-unset";
+  harness.options.bootstrapCodex = () => {
+    throw bootstrapFailure;
+  };
+  harness.options.authFactory = ({ controlTokenPath }) => {
+    harness.order.push("auth");
+    return new SessionAuth({ controlTokenPath });
+  };
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    return createAdminServer({
+      ...input,
+      createRequestId: () => requestId
+    });
+  };
+
+  const supervisor = await createSupervisor(harness.options);
+  const address = await supervisor.listen();
+  const controlToken = readFileSync(harness.paths.controlTokenPath, "utf8").trim();
+  t.after(() => supervisor.close());
+
+  const cases = [
+    [
+      "CODEX_CONFIG_PARENT_UNSAFE",
+      500,
+      "The Codex configuration directory is unsafe.",
+      "Repair the Codex configuration directory and retry."
+    ],
+    [
+      "CODEX_CONFIG_BUSY",
+      409,
+      "Codex configuration is already being updated.",
+      "Wait for the current update to finish and retry."
+    ],
+    [
+      "CODEX_CONFIG_CHANGED",
+      409,
+      "Codex configuration changed during bootstrap.",
+      "Review the current Codex configuration and retry."
+    ],
+    [
+      "CODEX_CONFIG_READ_FAILED",
+      500,
+      "Codex configuration could not be read safely.",
+      "Repair local filesystem access and retry."
+    ],
+    [
+      null,
+      500,
+      "Codex configuration could not be written safely.",
+      "Repair local filesystem access and retry."
+    ]
+  ];
+
+  for (const [code, status, message, action] of cases) {
+    const privateMarker = `private-bootstrap-${code ?? "unknown"}`;
+    const privateCause = new Error(`private-cause-${privateMarker}`);
+    bootstrapFailure = code === "CODEX_CONFIG_BUSY"
+      ? new CrpError(code, privateMarker, privateMarker, {
+        status,
+        details: { path: harness.paths.codexConfigPath },
+        cause: privateCause
+      })
+      : new Error(`${privateMarker} ${harness.paths.codexConfigPath}`, {
+        cause: privateCause
+      });
+    if (code !== null && !(bootstrapFailure instanceof CrpError)) {
+      bootstrapFailure.code = code;
+    }
+    requestId = `request-${code ?? "write"}`;
+
+    const received = await new Promise((resolvePromise, rejectPromise) => {
+      const outgoing = http.request({
+        host: address.host,
+        port: address.port,
+        path: "/api/v1/codex/bootstrap",
+        method: "POST",
+        headers: { authorization: `Bearer ${controlToken}` }
+      }, (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => resolvePromise({
+          status: response.statusCode,
+          text: Buffer.concat(chunks).toString("utf8")
+        }));
+      });
+      outgoing.once("error", rejectPromise);
+      outgoing.end();
+    });
+
+    const serialized = received.text;
+    for (const forbidden of [
+      privateMarker,
+      harness.paths.codexConfigPath,
+      "private-cause",
+      "cause",
+      "stack"
+    ]) {
+      assert.equal(serialized.includes(forbidden), false);
+    }
+    assert.equal(received.status, status);
+    assert.deepEqual(JSON.parse(serialized), {
+      error: {
+        code: code ?? "CODEX_CONFIG_WRITE_FAILED",
+        message,
+        action,
+        requestId,
+        details: {}
+      }
+    });
+  }
 });
 
 test("supervisor entry shares idempotent signal shutdown without exiting early", async () => {

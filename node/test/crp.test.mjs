@@ -279,7 +279,17 @@ test("start reports a safe supervisor failure and exit code without real spawn",
 
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "Error: The local supervisor could not be started.\n");
+  assert.deepEqual(JSON.parse(result.stderr), {
+    ok: false,
+    command: "start",
+    stage: "supervisor_start",
+    error: {
+      code: "CLI_COMMAND_FAILED",
+      message: "CRP could not complete the command.",
+      action: "Review CRP activity and try again.",
+      details: {}
+    }
+  });
 });
 
 test("imports the CLI module without executing a command", () => {
@@ -337,13 +347,21 @@ test("positional argument errors never echo the original value", async () => {
     assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
     assert.equal(result.status, 1);
     assert.equal(result.stdout, "");
-    assert.equal(result.stderr, "Error: Unexpected positional argument.\n");
+    if (args.includes("--json")) {
+      const payload = JSON.parse(result.stderr);
+      assert.equal(payload.ok, false);
+      assert.equal(payload.command, args[0]);
+      assert.equal(payload.stage, null);
+      assert.equal(payload.error.code, "CLI_INPUT_INVALID");
+    } else {
+      assert.equal(result.stderr, "Error: Unexpected positional argument.\n");
+    }
   }
   assert.equal(ensureCalls, 0);
   assert.equal(discoverCalls, 0);
 
   for (const [args, expectedError] of [
-    [[secret], "Error: Unknown command.\n"],
+    [[secret], "Error: CRP could not complete the command. Review CRP activity and try again.\n"],
     [["capture", secret], "Error: Unknown capture action.\n"]
   ]) {
     const result = await invokeCli(args);
@@ -411,6 +429,54 @@ test("guide human output presents the V1 flow without stale fields", () => {
   }
 });
 
+test("legacy human commands render English and Chinese without changing technical literals", () => {
+  for (const [args, englishSignal, chineseSignal, literal] of [
+    [["check"], "Codex config path:", "Codex 配置路径：", "model_providers.OpenAI"],
+    [["guide"], "CRP V1 guide:", "CRP V1 指南：", "crp start --json"],
+    [["capture", "status"], "Capture running:", "抓取功能运行中：", ".codex-remote-proxy"],
+    [["install-cli"], "Legacy local shim installed.", "旧版本地命令入口已安装。", "npm install -g @cluic/codex-remote-proxy"]
+  ]) {
+    const homeDir = makeTempHome();
+    try {
+      const english = runCrp([...args, "--locale", "en"], makeHomeEnv(homeDir));
+      const chinese = runCrp([...args, "--locale", "zh-CN"], makeHomeEnv(homeDir));
+      assert.equal(english.status, 0, `${args.join(" ")}: ${english.stderr}`);
+      assert.equal(chinese.status, 0, `${args.join(" ")}: ${chinese.stderr}`);
+      assert.equal(english.stdout.includes(englishSignal), true);
+      assert.equal(chinese.stdout.includes(chineseSignal), true);
+      assert.equal(english.stdout.includes(literal), true);
+      assert.equal(chinese.stdout.includes(literal), true);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("capture rejects invalid action, positional input, and unsupported options before mutation", () => {
+  const cases = [
+    ["capture", "unknown", "--json"],
+    ["capture", "on", "unexpected-value", "--json"],
+    ["capture", "on", "--unsupported", "value", "--json"]
+  ];
+  for (const args of cases) {
+    const homeDir = makeTempHome();
+    try {
+      const paths = getPaths(homeDir);
+      const result = runCrp(args, makeHomeEnv(homeDir));
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      const failure = JSON.parse(result.stderr);
+      assert.equal(failure.command, "capture");
+      assert.equal(failure.stage, null);
+      assert.equal(failure.error.code, "CLI_INPUT_INVALID");
+      assert.equal(existsSync(join(paths.globalHome, "config.json")), false);
+      assert.equal(existsSync(paths.statePath), false);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("status never starts a missing supervisor", async () => {
   let ensureCalls = 0;
   const result = await invokeCli(["status", "--json"], {
@@ -463,7 +529,7 @@ test("rejects legacy start options before supervisor discovery or mutation", asy
   });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "Error: The start command contains an unsupported option.\n");
+  assert.equal(JSON.parse(result.stderr).error.code, "CLI_INPUT_INVALID");
   assert.equal(ensureCalls, 0);
   assert.equal(discoverCalls, 0);
   assert.deepEqual(clientCalls, []);
@@ -632,7 +698,7 @@ test("shutdown refuses a same-PID replacement without mutating or signalling it"
   });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /identity changed/);
+  assert.equal(JSON.parse(result.stderr).error.code, "CLI_COMMAND_FAILED");
   assert.deepEqual(calls, [["GET", "/status", undefined]]);
   assert.deepEqual(signals, []);
 });
@@ -763,7 +829,7 @@ test("provider add rejects public fallback consent before supervisor discovery",
   assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "Error: The provider command contains an unsupported option.\n");
+  assert.equal(JSON.parse(result.stderr).error.code, "CLI_INPUT_INVALID");
   assert.equal(ensureCalls, 0);
 });
 
@@ -825,7 +891,7 @@ test("capture mutation refuses a V1 supervisor state without modifying legacy co
 
     const result = runCrp(["capture", "on", "--json"], makeHomeEnv(homeDir));
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /read-only in this version/);
+    assert.equal(JSON.parse(result.stderr).error.code, "CLI_COMMAND_FAILED");
     assert.equal(readFileSync(configPath, "utf8"), original);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
