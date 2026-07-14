@@ -3,7 +3,7 @@
 ## Environment Requirements
 
 - Node.js 22.13 or newer.
-- macOS runner with Keychain access for platform integration tests.
+- macOS runner with Keychain access for platform integration tests; local macOS D2 has passed, while remote-runner evidence remains required for release.
 - Windows runner with Credential Manager access for platform integration tests.
 - Linux runner for CLI and proxy regression coverage.
 - Chromium for browser E2E and screenshot comparison.
@@ -11,7 +11,7 @@
 ## Required and Mocked Services
 
 - Deterministic local mock upstreams for JSON responses, SSE, timeouts, TLS errors, 401, 404, compressed requests, and disconnects.
-- Native credential stores remain a platform integration target; Task 4 unit tests use injected entry loaders and an in-memory adapter without invoking the real addon loader or constructing a native entry.
+- Task 4 unit tests use injected entry loaders and an in-memory adapter without invoking the real addon loader or constructing a native entry. A separate authorized local macOS D2 has passed with the production native adapter and login Keychain; Windows, Linux, and remote macOS evidence remain platform targets.
 - No real API key is required in CI.
 
 ## Current Commands
@@ -35,6 +35,8 @@
 - Task 12 package dry run: `cd node && npm pack --dry-run --json --ignore-scripts`
 - Task 12 Changeset status: `cd node && npm run changeset -- status`
 - Task 12 post-security focus: `cd node && node --test test/crp.test.mjs test/provider-service.test.mjs test/integration/admin-server.test.mjs`
+- Core CLI/i18n/config focus: `cd node && node --test test/crp.test.mjs test/cli-i18n.test.mjs test/codex-config.test.mjs test/integration/admin-server.test.mjs`
+- Serial production-component D1: `cd node && node scripts/run-test-group.mjs core-chain`
 - Worker integration suite: `cd node && npm run test:integration`
 - Runtime audit: `cd node && npm audit --omit=dev`
 
@@ -58,9 +60,13 @@ The 2026-07-14 Task 11 gate uses Playwright 1.61.1 and Chrome for Testing 149.0.
 
 The 2026-07-14 Task 12 package/platform gate at `af918d5` passes the 21/21 focused package/native/workflow suite, exact 30-file package dry run, `actionlint`, and workflow policy checks. Safety commit `210cb71` then passes 67/67 post-security focused tests, 41/41 Chromium E2E, exact `npm test` with 227/227 core plus 7/7 isolated capture plus 24/24 integration assertions (258 total), `npm run lint` across 29 source files, `npm audit --omit=dev` with zero vulnerabilities, and diff checks. Coverage adds strict `init` alias rejection before discovery/writes, native-only public credential boundaries, rejected fallback fields, active-provider edit/delete blocking, metadata-only diagnostics, and secret-negative assertion ordering.
 
-This documentation commit records final local evidence: `npm run lint` checks 29 source files; `npm test` passes 258/258 (`227` core + `7` isolated capture + `24` integration); `npm run test:integration` passes 24/24; Chromium E2E passes 41/41; `npm audit --omit=dev` reports zero vulnerabilities; package-content passes 3/3 against the exact 30-file allowlist; Changeset status since `origin/main` is minor; and the cached diff check is clean. The workflow matrix is implemented but remote macOS/Windows/Linux run URLs do not yet exist in this review record. Real macOS Keychain, Windows Credential Manager, Linux Secret Service, Windows screenshots, real-home migration/rollback, and platform process/filesystem behavior remain pending L3 evidence. No real provider credential or external upstream is used by the local gate.
+The earlier Task 12 documentation tree records: `npm run lint` checks 29 source files; `npm test` passes 258/258 (`227` core + `7` isolated capture + `24` integration); `npm run test:integration` passes 24/24; Chromium E2E passes 41/41; `npm audit --omit=dev` reports zero vulnerabilities; package-content passes 3/3 against the exact 30-file allowlist; Changeset status since `origin/main` is minor; and the cached diff check is clean. The workflow matrix is implemented but remote macOS/Windows/Linux run URLs do not yet exist in this review record. Remote platform native services, Windows screenshots, real-home migration/rollback, and cross-platform process/filesystem behavior remain pending L3 evidence. That earlier Task 12 local gate used no real provider credential or external upstream; the later D2 evidence is recorded separately below.
 
-`npm run test:unit` retains its public behavior and runs all top-level `test/*.test.mjs` files. The exact `npm test` gate runs the same top-level set without duplication as two sequential groups: every non-capture unit file first, then `capture-store.test.mjs` alone, followed by recursively discovered `test/integration/**/*.test.mjs`. This isolates the polling watcher registration baseline from unrelated unit load and keeps real child-process integration after watcher cleanup. `test:e2e` is a required UI gate; Task 12 combines the final-tree gate with cross-platform release evidence.
+The latest core-first tree supersedes the full-suite counts above without changing Web files. `npm test` passes 295/295 as four serial groups: `unit-core` 262, isolated capture 7, ordinary integration 25, and `core-chain` 1. `npm run lint` syntax-checks 29 source files, `npm audit --omit=dev` reports zero vulnerabilities, and package-content still matches the exact reviewed 30-file allowlist. D1 runs `runCli -> SupervisorClient -> Admin -> registry/provider service -> WorkerManager -> real forked worker -> loopback upstreams`; it covers clean-home bootstrap, provider add/list/test/activate, actual Responses forwarding, A/B switching while A remains in flight, same-port restart with a new PID, status, stop, shutdown, secret scans, and process/state/port/temporary-root cleanup. Only credentials and upstreams are substituted, so this is deterministic composition evidence rather than native/external evidence. Added unit coverage proves a 2-second discovery probe returns a client with a separate 30-second operation timeout and proves structured proxy URL joining for root, `/v1`, trailing-slash, encoded-path, and combined-query cases.
+
+Final manual D2 evidence uses real CLI processes, the production native-keyring adapter and login Keychain, a real Dusapi upstream, and a detached Supervisor. CRP paths and `CRP_HOME` are isolated while the real `HOME` remains available to Keychain. Provider test succeeds, activate/start succeed, the real proxy `/responses` request returns HTTP `200 OK`, health succeeds, restart preserves the Supervisor PID and replaces the worker PID, and stop/shutdown plus process/state/port/temporary-state cleanup succeed. A separate isolated clean-home detached run proves private `.codex`/`config.toml` creation, fixed `OpenAI`/`15100`, and bootstrap behavior. D2 passes the local core gate; it is not remote or cross-platform release evidence.
+
+`npm run test:unit` retains its public behavior and runs all top-level `test/*.test.mjs` files. The exact `npm test` gate runs without duplication as four sequential groups: every non-capture top-level unit file, `capture-store.test.mjs` alone, recursively discovered ordinary integration tests excluding `core-real-chain.test.mjs`, then that fixed-port core chain alone. This isolates polling watcher registration and fixed-port process composition from unrelated load. `test:e2e` is a required UI gate; Task 12 combines the final-tree gate with cross-platform release evidence.
 
 ## Task 11 Visual Evidence
 
@@ -122,9 +128,12 @@ These files are local review attachments under untracked `output/`, not source i
 - Temporary-resource leak checks must stay inside the current `$TMPDIR` and must not traverse all of `/var/folders`.
 - Package-content tests must compare the complete tarball against the exact reviewed allowlist; presence-only checks are insufficient.
 - Native credential release jobs must probe the intended Keychain, Credential Manager, or Secret Service backend and must not accept file fallback as passing evidence.
+- macOS native-keyring tests must isolate CRP paths through `CRP_HOME` but preserve the real `HOME` required to access the login Keychain.
 - Tests must import only dependencies declared directly by this package.
 - Every workflow checkout before pull-request code executes must set `persist-credentials: false`.
 - Secret-bearing negative tests must assert absence before equality so a failing equality cannot print the sentinel.
+- D1 core-chain tests must run alone after ordinary integration, preflight both fixed ports, use observable bounded waits, scan every retained surface for complete secrets, and prove exact cleanup.
+- Loopback or injected D1 evidence and detached lifecycle-only evidence must never be labeled as a native-keyring or real-upstream D2 pass.
 
 ## Test Matrix
 
@@ -136,8 +145,10 @@ These files are local review attachments under untracked `output/`, not source i
 | Proxy behavior | Auth rewrite, HTTP/SSE, compression, timeout, disconnect, optional model override |
 | Activation | Failed test rejection, atomic new-request switch, in-flight old snapshot |
 | Restart | Drain timeout, SIGTERM escalation, port release, same-port spawn, health failure |
-| Codex bootstrap | Backup, idempotency, stable OpenAI provider, fixed URL, recovery |
+| Codex bootstrap | Missing private parent/file creation with no backup, repeat byte idempotency, existing-file backup/mode preservation, no-follow identity/race rejection, stable OpenAI provider/fixed URL, and stable public errors |
 | Admin API | Auth/session, CSRF, Host/Origin rejection, error contracts, secret write-only behavior |
+| Core composition | Real CLI/Admin/registry/provider/WorkerManager/forked-worker path, A/B in-flight switching, same-port restart, stable JSON, secret scans, and exact cleanup |
+| Native/upstream D2 | Locally passed on macOS: real detached Supervisor, production native Keychain retrieval, real Dusapi provider test and Responses request, fixed Codex config, redacted evidence, PID transition, and process/state/port cleanup; remote/cross-platform proof remains a release gate |
 | UI E2E | First-run flow, two-provider switch, restart, errors, keyboard and accessibility scan |
 | Cross-platform | Remote macOS and Windows UI artifacts; real native backend on macOS, Windows, and Linux; Linux CLI regression; workflow run URLs retained |
 
@@ -157,6 +168,6 @@ The existing migration suite uses injected temporary paths and adapters. Migrati
 
 ## Verification Gate
 
-Credential, config migration, lifecycle, browser-security, exact package, release-policy, and platform workflow tests must all pass before L3 expert review. Passing local tests or defining a workflow alone is insufficient; real platform results and native-service evidence are required.
+Credential, config migration, lifecycle, browser-security, exact package, release-policy, and platform workflow tests must all pass before L3 expert release review. Deterministic D1 and authorized production macOS D2 now both pass, completing the local core gate. Detached lifecycle alone, native entry metadata alone, or workflow definitions remain insufficient, and local D2 does not replace remote macOS/Windows/Linux native-service, filesystem/ACL, visual, migration, or human evidence.
 
 Tasks 2 and 3 do not remove the L3 requirement, and atomic rename and permission behavior remain unverified on real Windows and Linux hosts.

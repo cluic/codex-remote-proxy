@@ -2,13 +2,12 @@
 
 ## Current Milestone
 
-Core-first CLI acceptance: Web refinement and Task 12 release execution are paused while the clean-home CLI path is implemented and proven through production components plus an authorized real provider/native-keyring smoke run.
+Core-first CLI acceptance is COMPLETE on the local macOS gate: clean-home bootstrap, bilingual CLI contracts, deterministic D1, the reviewed timeout/URL corrections, and production native-keyring/real-upstream D2 pass. Web refinement remains frozen, and Task 12 release execution remains separately gated.
 
 ## In Progress
 
-- Implement the user-approved core-first design in `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`: safe missing-file Codex bootstrap, CLI `en`/`zh-CN`, stable JSON and start-stage errors, a production-component integration gate, and a separately authorized real live smoke.
-- Execute the pending TDD tasks in `docs/superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md`; no implementation or new acceptance evidence is recorded yet.
-- Keep the existing Admin API, registry schema, `OpenAI` provider identity, `127.0.0.1:15100` proxy address, package allowlist, and Web source/tests unchanged.
+- No local core implementation workstream remains active.
+- Keep the existing Admin API, registry schema, `OpenAI` provider identity, `127.0.0.1:15100` proxy address, package allowlist, and frozen Web source/tests unchanged unless a new scope is approved.
 
 ## Done
 
@@ -34,29 +33,34 @@ Core-first CLI acceptance: Web refinement and Task 12 release execution are paus
 - Prepared Task 12 package and platform gates in `af918d5` (`test: add release package and platform gates`): exact 30-file tarball allowlisting, injectable native-keyring smoke coverage, strict Changesets/release workflow policy tests, a Node 22 Linux/macOS/Windows workflow matrix, macOS/Windows Chromium artifacts, and platform-native credential jobs.
 - Completed public credential-boundary hardening in `210cb71` (`fix: enforce write-only credential boundaries`). Latest code evidence is 258/258 (`227` core + `7` isolated capture + `24` integration), 67/67 post-security focused tests, 41/41 Chromium E2E, 29 syntax-checked source files, zero runtime vulnerabilities, and passing diff checks. This evidence supersedes the earlier `af918d5` code counts without completing Task 12.
 - Prepared the Task 12 user, migration, architecture, security, testing, and release documentation plus the sole next-version Changeset source without running versioning or publication. Final-tree local verification passes: lint 29, `npm test` 258/258 (`227` core + `7` isolated capture + `24` integration), integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3 against the exact 30-file allowlist, minor Changeset status since `origin/main`, and a clean cached diff check.
-- Approved the 2026-07-14 core-first design. This is a planning fact only; clean-home creation, CLI localization/staged JSON failures, the production-component chain, and real live evidence are not yet implemented or complete.
+- Approved the 2026-07-14 core-first design and implemented Scopes A/B in `1183fb5` (`feat: harden bilingual core CLI startup`). A missing `.codex` directory/config now creates as `0700`/`0600` on POSIX with no backup and byte-identical repeat behavior; existing files retain no-follow identity/race checks, backup, mode preservation, and idempotency. Stable public bootstrap errors are `CODEX_CONFIG_PARENT_UNSAFE`, `CODEX_CONFIG_BUSY`, `CODEX_CONFIG_CHANGED`, `CODEX_CONFIG_READ_FAILED`, and `CODEX_CONFIG_WRITE_FAILED`.
+- Completed CLI human-output coverage for `en` and `zh-CN`, locale precedence `--locale` > `CRP_LOCALE` > `LC_ALL` > `LC_MESSAGES` > `LANG` > `en`, language-independent JSON error envelopes, pre-discovery input validation, and `supervisor_start` / `codex_bootstrap` / `proxy_start` staging. The user explicitly retained `provider add --api-key <KEY>` for this slice, so its argv/history exposure remains open.
+- Completed deterministic D1 in `f83c9d6` (`test: add serial core production chain`). The serial path runs `runCli` through real SupervisorClient/Admin/registry/provider service/WorkerManager/forked worker to loopback upstreams, including A/B activation with an A request in flight, fixed-port restart, stop, shutdown, cleanup, and complete-secret scans. D1 landed with 289/289 and remains deterministic loopback evidence.
+- Completed and reviewed `4bbb97c` (`fix: complete live core request path`). `discoverSupervisor` now keeps its 2-second liveness probe separate from the returned client's 30-second operation timeout, and proxy forwarding structurally joins root, `/v1`, trailing-slash, encoded-path, and query cases instead of producing `//responses`. Final evidence is 295/295 (`262` unit-core + `7` capture + `25` integration + `1` core-chain), lint across 29 source files, audit 0, and the exact 30-file package.
+- Completed production macOS D2 with the real CLI, production native-keyring/login Keychain, real Dusapi upstream, and detached Supervisor. Provider test, activate/start/restart/health/stop/shutdown, proxied `/responses` HTTP `200 OK`, stable Supervisor PID, changed worker PID, and cleanup all passed. A separate isolated clean-home detached run also passed private bootstrap with fixed `OpenAI`/`15100`.
 
 ## Blocked
 
-- No local implementation blocker is recorded. Final core acceptance requires operator-authorized real provider inputs, a working native credential service, free fixed ports, redacted evidence, and cleanup confirmation.
+- No local core blocker remains.
 - Release remains separately gated on remote platform runs, platform screenshots, real-home migration/rollback review, and L3 expert approval.
 
 ## Next
 
-1. Implement clean-home bootstrap and stable public Codex configuration errors with TDD.
-2. Implement complete CLI `en`/`zh-CN`, language-independent JSON failures, and explicit start stages.
-3. Pass the deterministic production-component chain, then execute and retain one authorized real provider/native-keyring smoke result with successful cleanup.
-4. Resume Web fixes only after core acceptance; resume Task 12 release gates only under separate authorization.
+1. Retain the completed local core evidence and keep Web frozen unless the user explicitly resumes it.
+2. Run Task 12 remote macOS/Windows/Linux native, visual, process, and filesystem gates on the final tree under a separate scope.
+3. Complete real-home migration/rollback review and obtain L3 expert confirmation before release execution.
 
 ## Risks
 
 - V1 release, platform confirmation, and real-home migration approval remain L3 because they cover credentials, local browser security, Codex configuration, and process lifecycle.
 - Cross-platform credential APIs and restart semantics require real macOS and Windows verification.
 - Provider-registry atomic rename and permission semantics remain unverified on real Windows and Linux hosts.
-- Task 4 tests inject the native loader and never invoke the real addon loader or touch an OS credential store; native verification remains L3 on every supported system, including Windows and Linux.
-- Task 10 tests use temporary homes and injected process/client boundaries; real HOME, native keyrings, external provider traffic, browser launch behavior, and cross-platform process identity and signal handling remain L3.
+- Task 4 tests inject the native loader and never invoke the real addon loader; the separate production macOS D2 supplies local native evidence, while GitHub-runner macOS, Windows, and Linux native evidence remains L3 release work.
+- Task 10 tests use temporary homes and injected process/client boundaries; local macOS D2 covers the real CLI/native/external path, while browser launch behavior and cross-platform process identity and signal handling remain L3.
 - Task 11 browser tests use an injected loopback Admin server, in-memory services, temporary roots, and mock upstreams; real `crp ui`, native keyrings, real HOME, external providers, browser launch, and macOS/Windows platform behavior remain Task 12 L3 gates.
-- Task 12 workflow definitions and injectable smoke tests are not remote runner results. No real Keychain, Credential Manager, or Secret Service claim is complete until the corresponding job URL and backend-specific evidence exist.
+- Task 12 workflow definitions and injectable smoke tests are not remote runner results. The local macOS Keychain D2 pass does not complete remote macOS, Windows Credential Manager, or Linux Secret Service release claims; each still requires its job URL and backend-specific evidence.
 - Version `0.2.2` remains published; the minor Changeset describes intended release impact but does not authorize or imply a version bump or npm publication.
-- `provider add --api-key <KEY>` remains intentionally unchanged for this slice and can expose credentials through shell history or process inspection.
+- `provider add --api-key <KEY>` remains intentionally unchanged by user decision and can expose credentials through shell history or process inspection; redesign is deferred.
 - Deterministic loopback/injected integration evidence must not be described as real provider or native-keyring evidence.
+- Cross-platform hardlink/`O_NOFOLLOW`/ACL behavior and general child-process environment minimization remain separate L3 hardening work and do not negate local core completion.
+- Web work remains intentionally paused: first-step field alignment, step-content residue, and the legacy bootstrap `INTERNAL_ERROR` flow have not been corrected or reverified on the core tree.

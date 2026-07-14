@@ -33,6 +33,8 @@ model_provider = "OpenAI"
 
 Its proxy address remains fixed at `http://127.0.0.1:15100`. CRP switches upstreams internally for new requests while in-flight requests retain their starting snapshot.
 
+On a clean home, explicit `crp start` privately and atomically creates a missing `.codex` directory and `config.toml`, with no backup for a source that did not exist. New POSIX directory/file modes are `0700`/`0600`; a repeated bootstrap is byte-identical. Existing-file locking, identity/race checks, adjacent backup, mode preservation, and idempotency remain in force.
+
 ## Credentials
 
 The public Supervisor requires the operating-system native store under service `org.cluic.codex-remote-proxy`. Native construction or operation failure fails closed. The UI, CLI, and Admin API expose no file-backend control. The lower-level private file adapter is limited to trusted dependency injection; a public startup-consent path remains future L3 work, and native operations never replay into the file namespace.
@@ -59,6 +61,10 @@ crp provider list|add|test|activate|delete [--json]
 crp guide [--json]
 ```
 
+Human CLI output supports `en` and `zh-CN`. A single global `--locale en|zh-CN` may appear anywhere; resolution is `--locale`, `CRP_LOCALE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, then `en`, and is never persisted. JSON keys, codes, enums, messages, and actions remain stable English contracts. JSON failures leave stdout empty and write exactly one parseable envelope to stderr.
+
+`start`, `install`, and `setup` identify failures as `supervisor_start`, `codex_bootstrap`, or `proxy_start`. Bootstrap failure short-circuits proxy startup, while a completed bootstrap remains durable if the proxy phase fails.
+
 `crp init` is a strict compatibility alias for `crp ui`. It accepts only `--no-open` and `--json`; legacy secret/upstream options, unknown options, and positional arguments fail before discovery or disk writes. It never creates the legacy flat secret configuration.
 
 `crp install` and `crp setup` are deprecated aliases for `crp start`. These three commands accept only `--json`. `check`, `capture on|off|status`, `guide`, and `install-cli` remain implemented compatibility/inspection commands; there are no provider-update, Activity, Settings, or diagnostics CLI commands.
@@ -79,6 +85,7 @@ Returning to `0.2.2` requires stopping CRP and restoring the complete pre-upgrad
 npm ci
 npm run lint
 npm test
+node scripts/run-test-group.mjs core-chain
 node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs
 npm run test:e2e -- --project=chromium --workers=1
 npm audit --omit=dev
@@ -87,5 +94,11 @@ npm pack --dry-run --json --ignore-scripts
 ```
 
 The package-content test requires the exact reviewed 30-file allowlist and rejects runtime state, credentials, tests, Changesets, logs, databases, and generated output. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
+
+The serial `core-chain` group uses the production CLI/Admin/registry/provider/WorkerManager/forked-worker path and proves switching, in-flight snapshots, restart, shutdown, cleanup, and secret scans. Its injected memory credential adapter and loopback upstreams do not satisfy the separate real native-keyring/external-provider gate.
+
+The current core tree passes 295/295 tests (`262` unit-core, `7` capture, `25` integration, and `1` core-chain), lint across 29 source files, a zero-vulnerability runtime audit, and the exact reviewed 30-file package. A separate local macOS D2 run passed production native Keychain access, detached Supervisor discovery, a real external provider test and proxied Responses request, activate/start/restart/health/stop/shutdown, HTTP `200 OK`, stable Supervisor PID, and worker PID replacement. A separate isolated clean-home run passed detached bootstrap. This completes the local core gate without replacing the cross-platform native, filesystem/ACL, visual, migration, and human L3 release gates.
+
+Supervisor discovery applies a 2-second liveness probe and returns a client with a separate 30-second operation timeout. Proxy forwarding joins base and incoming URLs structurally, preserving base paths and query parameters while avoiding duplicate path separators. The retained `provider add --api-key <KEY>` behavior and broader child-environment minimization remain explicit future follow-up work and do not block local core completion.
 
 This release requires a minor Changeset. Do not run `npm run version-packages` or `npm run release` during feature preparation. See [RELEASING.md](./RELEASING.md) for local evidence and remaining remote/human gates.

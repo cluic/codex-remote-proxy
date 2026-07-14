@@ -59,6 +59,8 @@ http://127.0.0.1:15100
 
 提供商切换发生在 CRP 内部。日常切换时不要为每个上游创建不同的 Codex `model_provider`，也不要修改固定代理地址。
 
+在全新 HOME 中，显式运行 `crp start` 会私有且原子地创建缺失的 `.codex` 目录和 `config.toml`，不会为原本不存在的文件创建备份。在支持的 POSIX 系统上，新目录权限为 `0700`，新文件权限为 `0600`。再次执行引导会保持文件字节完全不变。已有配置只有在内容确需改变时才会生成相邻私有备份，其无关设置、换行符和权限都会保留。
+
 ## 凭据安全
 
 公开 Supervisor 必须通过服务名 `org.cluic.codex-remote-proxy` 使用操作系统原生凭据存储：
@@ -94,6 +96,10 @@ crp shutdown [--json]
 crp provider list|add|test|activate|delete [--json]
 ```
 
+所有 CLI 人类可读路径都支持 English 和简体中文。一个全局 `--locale en|zh-CN` 可以出现在命令行任意位置。语言选择优先级依次为显式 `--locale`、`CRP_LOCALE`、`LC_ALL`、`LC_MESSAGES`、`LANG`，最后回退到 English；选择只对当前进程生效且不会持久化。语言只影响人类可读输出。使用 `--json` 时，失败不会写入 stdout，并且只向 stderr 写入一个语言无关的错误文档。
+
+`crp start` 及其弃用别名 `install`/`setup` 会用稳定阶段标识失败：`supervisor_start`、`codex_bootstrap` 或 `proxy_start`。引导失败时不会继续启动代理；如果引导已成功而代理启动失败，已写入的配置不会回滚。
+
 `crp init` 是 `crp ui` 的兼容别名，只接受 `--no-open` 和 `--json`，不会询问提供商，也不会写入旧的扁平配置。旧的 `--api-key`、`--upstream-base-url`、请求记录/主机/端口参数、未知参数和位置参数都会在发现 Supervisor 或写磁盘前被拒绝。
 
 `crp provider add` 支持高级鉴权和模型选项，但要求使用只写的 `--api-key` 参数。命令行密钥可能出现在 shell 历史或进程检查中，因此该路径仅适合受控自动化。可通过 `crp guide --json` 查看准确的机器可读命令格式。
@@ -122,11 +128,18 @@ cd node
 npm ci
 npm run lint
 npm test
+node scripts/run-test-group.mjs core-chain
 npm run test:e2e -- --project=chromium --workers=1
 npm audit --omit=dev
 npm pack --dry-run --json --ignore-scripts
 ```
 
 测试只使用临时 HOME、合成凭据、注入适配器和 loopback 模拟上游。不要让 Supervisor 启动或迁移测试操作真实 HOME。
+
+串行 `core-chain` 门禁会覆盖真实 CLI、Admin 服务、registry/provider service、WorkerManager、fork 出的代理 Worker、固定端口、存在进行中请求时的提供商切换、重启、关闭和密钥扫描。该门禁会有意替换为内存凭据适配器和 loopback 上游，因此不能证明原生凭据读取或真实外部提供商链路。
+
+当前核心代码树的测试为 295/295（`262` unit-core、`7` capture、`25` integration、`1` core-chain），lint 覆盖 29 个源文件，运行时审计为 0 个漏洞，包内容精确匹配审查过的 30 文件清单。另一次本机 macOS D2 使用生产原生 Keychain、detached Supervisor 和真实外部 Responses 链路，provider test、activate/start/restart/health/stop/shutdown 与 HTTP `200 OK` 全部通过；重启时 Supervisor PID 保持不变，Worker PID 完成更换。全新 HOME 的 detached bootstrap 也在独立隔离运行中通过。这些结果完成了本机核心门禁；发布仍需跨平台原生凭据、文件系统/ACL、视觉、迁移和人工 L3 证据。
+
+Supervisor 发现使用有界的 2 秒探活，普通 Admin 操作另用 30 秒超时，因此已经成功的 provider test 不会再被误报为 `SUPERVISOR_UNAVAILABLE`。代理目标通过结构化方式拼接，无论 base URL 是否带尾斜杠都只产生一个路径分隔符。
 
 发布准备及仍待完成的外部门禁见 [node/RELEASING.md](./node/RELEASING.md)。

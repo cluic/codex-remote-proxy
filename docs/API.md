@@ -52,7 +52,7 @@
 | GET | `/activity` | Page through sanitized lifecycle activity |
 | GET | `/settings` | Read non-secret local settings |
 | PATCH | `/settings` | Return `409 SETTINGS_READ_ONLY` while V1 fixed settings have no supported mutation |
-| POST | `/codex/bootstrap` | Back up and idempotently set the fixed Codex provider/proxy entry |
+| POST | `/codex/bootstrap` | Privately create or idempotently update the fixed Codex provider/proxy entry; only a changed existing file is backed up |
 | POST | `/diagnostics/export` | Return in-memory diagnostic summary metadata; no bundle, file, or download is created |
 
 ## Request Contracts
@@ -68,7 +68,11 @@
 
 Provider compatibility failures are successful HTTP exchanges: `POST /providers/:id/test` returns HTTP `200` with `{ "result": { "ok": false, "code": "PROVIDER_TEST_AUTH" } }` for upstream 401/403 authentication rejection. `PROVIDER_TEST_AUTH` is not an Admin error envelope.
 
+CLI Supervisor discovery uses a 2-second `/status` liveness probe, but the authenticated client returned after discovery uses a separate 30-second operation timeout. The probe deadline must not become the deadline for provider tests or other normal Admin operations.
+
 `POST /diagnostics/export` retains its compatibility path but returns only `{ "diagnostics": { "created": true, "generatedAt": "ISO timestamp", "eventCount": 0 } }`. The summary is generated in memory from sanitized Activity metadata and has no path, body content, bundle, persisted artifact, or download URL.
+
+`POST /codex/bootstrap` keeps the response shape `{ "result": { "changed": true|false, "backupCreated": true|false } }`. A missing private `.codex` parent/config is created atomically with no backup; on POSIX the new directory/file modes are `0700`/`0600`. Existing files retain lock, identity/race, changed-file backup, mode-preservation, and byte-idempotency behavior. The endpoint exposes only these stable failures: `CODEX_CONFIG_PARENT_UNSAFE`, `CODEX_CONFIG_BUSY`, `CODEX_CONFIG_CHANGED`, `CODEX_CONFIG_READ_FAILED`, and `CODEX_CONFIG_WRITE_FAILED`; messages, actions, details, and request IDs remain public allowlists and never include paths, bytes, backup names, temporary names, causes, stacks, or credentials.
 
 ## Static UI Boundary
 
@@ -85,3 +89,5 @@ The UI exchanges the `crp ui` launch fragment through `POST /session`, removes a
 ## Contract Change Rules
 
 Update this document and contract tests in the same change. Breaking API changes require a new `/api/vN` prefix and a migration path for the bundled UI and CLI.
+
+The completed core-first slice and `4bbb97c` corrections change no endpoint, request schema, response schema, registry schema, or API version. CLI locale, start-stage, and discovery/operation timeout behavior are adapter contracts, while structured proxy URL joining is a data-plane correction; none adds an Admin response field.

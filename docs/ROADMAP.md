@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-M2A: core-first CLI acceptance. The user paused Web refinement and Task 12 release execution on 2026-07-14. The active slice is safe clean-home bootstrap, CLI English/Simplified Chinese output, stable staged failures, a deterministic production-component chain, and an authorized real provider/native-keyring smoke. Existing release gates remain parked and incomplete.
+M2A: core-first CLI acceptance is complete locally. Safe clean-home bootstrap, CLI English/Simplified Chinese output, stable staged failures, deterministic D1, the reviewed timeout/URL corrections, and production macOS native-keyring/real-upstream D2 all pass. Web refinement remains frozen, and Task 12 release execution still requires a separate scope and its cross-platform/L3 gates.
 
 ## MVP Vertical Slices
 
@@ -12,15 +12,17 @@ M2A: core-first CLI acceptance. The user paused Web refinement and Task 12 relea
 | V1: Provider lifecycle end to end | Add, test, activate, switch, and restart through local UI without changing Codex provider | Local implementation and release gates prepared; external platform evidence and L3 approval pending | Full acceptance flow in `docs/TESTING.md` |
 | V2: Existing-user migration | Upgrade v0.2.2 flat config without losing provider access | Transactional implementation and local rollback fixtures landed; real-home L3 platform verification pending | Migration/rollback fixtures plus real-platform review |
 | V3: Cross-platform hardening | Reliable macOS/Windows UI and Linux CLI | Workflow and native-smoke harness landed; remote runner results and platform visuals pending | Platform CI run URLs, E2E artifacts, native services, accessibility |
-| V4: Core-first CLI proof | Clean-home setup and a verified real provider path before further Web work | Design and [executable TDD plan](superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md) approved; implementation and live evidence pending | Production-component integration plus authorized real provider/native-keyring smoke and cleanup evidence |
+| V4: Core-first CLI proof | Clean-home setup and a verified real provider path before further Web work | Complete locally: clean-home/CLI, deterministic D1, reviewed corrections, and production macOS D2 pass | Production-component integration plus authorized real provider/native-keyring smoke and cleanup evidence |
 
 ## Active Core-First Delivery Order
 
-1. Make missing `~/.codex/config.toml` creation private, atomic, idempotent, backup-free, and safely error-projected while preserving all existing-file behavior.
-2. Add independent CLI `en`/`zh-CN` dictionaries, locale precedence, stable JSON failures, and explicit `supervisor_start` / `codex_bootstrap` / `proxy_start` stages.
-3. Exercise the real CLI/Admin/registry/provider/WorkerManager/forked-worker/proxy composition with only an injected credential adapter and deterministic loopback upstreams.
-4. Execute one explicitly authorized live smoke with a real provider and native keyring; retain redacted result and cleanup evidence.
-5. Resume the parked Web defects only after steps 1 through 4 pass. Resume Task 12 external release evidence separately.
+1. Landed in `1183fb5`: private, atomic, idempotent, backup-free creation of a missing `~/.codex/config.toml`, with stable errors and preserved existing-file behavior.
+2. Landed in `1183fb5`: independent CLI `en`/`zh-CN` dictionaries, locale precedence, stable JSON failures, pre-discovery validation, and explicit `supervisor_start` / `codex_bootstrap` / `proxy_start` stages.
+3. Landed in `f83c9d6`: serial real CLI/Admin/registry/provider/WorkerManager/forked-worker/proxy composition with an injected memory credential adapter and deterministic loopback upstreams.
+4. Completed local D2: production native Keychain, real Dusapi provider test, activate/start/restart/health/stop/shutdown, proxied `/responses` HTTP `200 OK`, stable Supervisor PID, changed worker PID, and cleanup pass; separate clean-home detached bootstrap evidence also passes.
+5. Keep the parked Web defects frozen by explicit user decision. Resume Web or Task 12 external release evidence only under a separate scope.
+
+The parked Web defects are first-step field alignment, step-content residue, and the legacy bootstrap `INTERNAL_ERROR` flow. No Web source, E2E, or visual evidence changed in the core-first slice.
 
 ## V1 Internal Delivery Order
 
@@ -32,13 +34,14 @@ M2A: core-first CLI acceptance. The user paused Web refinement and Task 12 relea
 
 ## Task 12 Release Gate
 
-Task 12 is parked during the core-first slice. Its prior local evidence remains valid for the `5fecf45` tree but must be rerun against any later implementation tree before release review.
+Task 12 remains parked after local core completion. Its prior local evidence remains valid for the `5fecf45` tree, while final release review must use the later implementation tree and fresh cross-platform evidence.
 
-- Satisfied locally: Task 11 source `d114061`, Task 11 docs `dd4de3f`, Task 12 gate source `af918d5`, safety source `210cb71`, exact 30-file package allowlist, and ordinary minor Changeset status. Final-tree evidence is lint 29, `npm test` 258/258 (`227` core + `7` isolated capture + `24` integration), integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3 against the exact 30-file allowlist, minor Changeset status since `origin/main`, and a clean cached diff check.
-- Pending externally: remote macOS/Windows/Linux workflow URLs, real Keychain/Credential Manager/Secret Service evidence, macOS/Windows sanitized screenshots, real-home migration/rollback evidence, human L3 confirmation, and pull request, push, merge, versioning, publication, and release. Task 12 is not complete.
+The current core tree passes `npm test` with 295 assertions (`262` unit-core + `7` isolated capture + `25` ordinary integration + `1` serial core-chain), lint across 29 source files, runtime audit with zero vulnerabilities, and the exact reviewed 30-file package check. The previous 41/41 Chromium E2E result remains evidence for the unchanged Web tree, not a newly rerun core-tree browser gate.
+
+- Satisfied locally at the earlier Task 12 documentation tree: Task 11 source `d114061`, Task 11 docs `dd4de3f`, Task 12 gate source `af918d5`, safety source `210cb71`, exact 30-file package allowlist, ordinary minor Changeset status, lint 29, `npm test` 258/258, integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3, and a clean cached diff check. The later core tree supersedes the Node count with 295/295.
+- Pending externally: remote macOS/Windows/Linux workflow URLs and native-service results, macOS/Windows sanitized screenshots, real-home migration/rollback evidence, cross-platform hardlink/`O_NOFOLLOW`/ACL and process evidence, human L3 confirmation, and pull request, push, merge, versioning, publication, and release. Task 12 is not complete.
 - Preserve the stable `OpenAI` Codex provider and `http://127.0.0.1:15100` proxy invariants.
 - Use synthetic temporary credentials and platform runners; do not exercise a developer's real HOME or credential namespace.
-- Pending externally: remote macOS/Windows/Linux workflow URLs, real Keychain/Credential Manager/Secret Service proof, macOS/Windows visual attachments, real-home migration/rollback evidence, and L3 expert confirmation.
 - Push, pull request, merge, versioning, publishing, and release remain prohibited until those gates pass.
 
 ## Later

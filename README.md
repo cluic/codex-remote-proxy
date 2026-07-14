@@ -59,6 +59,8 @@ http://127.0.0.1:15100
 
 Provider switching happens inside CRP. Do not create a different Codex `model_provider` for each upstream and do not change the fixed proxy address during routine switching.
 
+On a clean home, explicit `crp start` creates the missing `.codex` directory and `config.toml` privately and atomically, without creating a backup for a file that did not exist. On supported POSIX systems the new directory is `0700` and the new file is `0600`. Repeating the bootstrap is a byte-identical no-op. An existing config still receives an adjacent private backup only when its content must change, and its unrelated settings, line endings, and mode are preserved.
+
 ## Credential Safety
 
 The public Supervisor requires the native operating-system credential store through service `org.cluic.codex-remote-proxy`:
@@ -94,6 +96,10 @@ crp shutdown [--json]
 crp provider list|add|test|activate|delete [--json]
 ```
 
+Every human CLI path supports English and Simplified Chinese. One global `--locale en|zh-CN` may appear anywhere in the command line. Resolution is explicit `--locale`, then `CRP_LOCALE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, and finally English; the choice is process-local and never persisted. Locale changes human output only. With `--json`, a failure writes nothing to stdout and exactly one language-independent error document to stderr.
+
+`crp start` and its deprecated `install`/`setup` aliases report failures at one stable stage: `supervisor_start`, `codex_bootstrap`, or `proxy_start`. A failed bootstrap prevents proxy startup; a successful bootstrap is not rolled back if proxy startup later fails.
+
 `crp init` is a compatibility alias for `crp ui`; it accepts only `--no-open` and `--json`, never prompts for a provider, and never writes the legacy flat configuration. Legacy `--api-key`, `--upstream-base-url`, capture/host/port options, unknown options, and positional arguments are rejected before supervisor discovery or disk mutation.
 
 `crp provider add` supports advanced authentication and model options, but it requires a write-only `--api-key` argument. Command-line secrets may be visible in shell history or process inspection, so this path is intended only for controlled automation. Use `crp guide --json` for the exact machine-readable command shapes.
@@ -122,11 +128,18 @@ cd node
 npm ci
 npm run lint
 npm test
+node scripts/run-test-group.mjs core-chain
 npm run test:e2e -- --project=chromium --workers=1
 npm audit --omit=dev
 npm pack --dry-run --json --ignore-scripts
 ```
 
 Tests use temporary homes, synthetic credentials, injected adapters, and loopback mock upstreams. Do not run supervisor startup or migration tests against a real home directory.
+
+The serial `core-chain` gate exercises the real CLI, Admin server, registry/provider service, WorkerManager, forked proxy worker, fixed ports, provider switching with an in-flight request, restart, shutdown, and secret scans. It deliberately substitutes an in-memory credential adapter and loopback upstreams, so it does not prove native credential access or a real external provider.
+
+The current core tree passes 295/295 tests (`262` unit-core, `7` capture, `25` integration, and `1` core-chain), with lint across 29 source files, zero runtime audit findings, and the exact reviewed 30-file package. A separate local macOS D2 run passed the production native Keychain, detached Supervisor, and real external Responses path, including provider test, activate/start/restart/health/stop/shutdown, HTTP `200 OK`, stable Supervisor PID, and a replaced worker PID after restart. Clean-home detached bootstrap passed in a separate isolated run. These results complete the local core gate; cross-platform native credential, filesystem/ACL, visual, migration, and human L3 evidence still gate release.
+
+Supervisor discovery uses a bounded 2-second liveness probe while normal Admin operations use a separate 30-second timeout, so a successful provider test is not misreported as `SUPERVISOR_UNAVAILABLE`. Proxy targets are joined structurally, so base URLs with or without a trailing slash produce one path separator.
 
 Release preparation and remaining external gates are documented in [node/RELEASING.md](./node/RELEASING.md).

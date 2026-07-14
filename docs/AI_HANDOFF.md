@@ -2,19 +2,19 @@
 
 ## Product Summary
 
-CRP preserves ChatGPT login/remote features while routing Codex model traffic to a selected OpenAI-compatible upstream. Named providers, lifecycle management, the local Admin API, and a bilingual Web UI are implemented; the active milestone now proves the CLI/core path before further Web refinement.
+CRP preserves ChatGPT login/remote features while routing Codex model traffic to a selected OpenAI-compatible upstream. Named providers, lifecycle management, the local Admin API, and a bilingual Web UI are implemented. The CLI/core path is complete on the local macOS gate; Web refinement remains explicitly frozen.
 
 ## Current Scope
 
-Tasks 1 through 11 are implemented and documented in `d114061` and `dd4de3f`. Task 12 package/platform gates are `af918d5`; safety commit `210cb71` removes public fallback inputs, makes `init` a strict `ui` alias, and aligns diagnostic summary behavior; `5fecf45` closes the release-documentation preparation. On 2026-07-14 the user paused Web and release work and approved the core-first design in `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`; the executable TDD plan is `docs/superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md`. Its implementation and evidence are pending. Task 12 remains parked, not complete.
+Tasks 1 through 11 are implemented and documented in `d114061` and `dd4de3f`. Task 12 package/platform gates are `af918d5`; safety commit `210cb71` removes public fallback inputs, makes `init` a strict `ui` alias, and aligns diagnostic summary behavior; `5fecf45` closes the release-documentation preparation. The core-first sequence is now complete locally: `1183fb5` implements safe clean-home bootstrap plus bilingual/staged CLI contracts, `f83c9d6` completes deterministic D1, and `4bbb97c` separates discovery/operation timeouts and fixes structured proxy URL joining. Production macOS D2 also passes with native Keychain and a real Dusapi upstream. Task 12 remains parked, not complete.
 
-Do not describe workflow definitions as platform results. Remote macOS/Windows/Linux run URLs, real Keychain/Credential Manager/Secret Service evidence, macOS/Windows screenshots, real-home migration/rollback, and expert approval are still pending.
+Do not describe workflow definitions as platform results. The local macOS native-keyring/upstream D2 pass is not remote or cross-platform evidence. GitHub-runner macOS/Windows/Linux native-service results, macOS/Windows screenshots, real-home migration/rollback, cross-platform hardlink/`O_NOFOLLOW`/ACL behavior, and expert approval are still pending release gates.
 
 ## Architecture
 
 Implemented: shared paths, safe public errors, idempotent Codex bootstrap, strict provider storage, secure credential adapters, immutable request snapshots, strict worker IPC, reliable worker management, bounded sanitized activity, transactional v0.2.2 migration, serialized provider orchestration, private local sessions, the exact Admin route/security boundary, readiness-gated supervisor composition, state-discovered CLI dispatch through the Admin API, and the packaged three-file bilingual Web UI. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
 
-Approved but not implemented: bootstrap must privately and atomically create a missing `.codex/config.toml`; all human CLI output must support `en` and `zh-CN`; JSON failures and start phases must be stable; a production-component integration gate and a separately authorized real provider/native-keyring smoke must pass. No aggregate setup endpoint, API version, registry schema, fixed address, provider identity, or Web contract changes are approved.
+Core-first implementation: bootstrap privately and atomically creates a missing `.codex/config.toml` under a private parent with no backup and byte-identical repeat behavior; existing files retain no-follow identity/race checks, backup, mode preservation, and idempotency. All human CLI paths support `en` and `zh-CN`; locale precedence, pre-discovery validation, language-independent JSON failures, and the three start phases are stable. D1 composes the production CLI/Admin/registry/provider/WorkerManager/forked-worker path with an injected memory credential adapter and loopback upstreams. Supervisor discovery now applies its 2-second liveness probe without shrinking the returned client's 30-second operation timeout, and proxy forwarding joins base and incoming URLs structurally instead of concatenating strings. No aggregate setup endpoint, API version, registry schema, fixed address, provider identity, or Web contract changed.
 
 ## Data and API
 
@@ -30,9 +30,9 @@ One authenticated local OS user. Admin API is loopback-only, origin/host checked
 
 Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The user approved the Task 11 Overview visual and required complete English/Simplified Chinese UI coverage on 2026-07-13. On 2026-07-14 the implementation and deterministic acceptance completed: locale precedence is stored `crp.locale` then supported `navigator.languages` then English; only explicit selection persists; Settings is read-only; a valid cookie without a fragment opens a GET-only workspace; any failed session exchange and later session/CSRF authentication failure are terminal. Requirements and code-quality/security/accessibility reviews ended `APPROVED` after fixes, with no unresolved finding.
 
-Latest code evidence at `210cb71` is 258/258 full tests (`227` core + `7` capture + `24` integration), 67/67 post-security focused tests, 41/41 E2E, 29 syntax-checked source files, and zero runtime vulnerabilities. The `af918d5` package gate separately proves the exact reviewed 30-file tarball and workflow policy. Final-tree local verification also passes lint 29, `npm test` 258/258 (`227` core + `7` capture + `24` integration), integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3 against the exact 30-file allowlist, minor Changeset status since `origin/main`, and a clean cached diff check. Human L3 and external review evidence remain pending.
+Latest core-tree evidence at `4bbb97c` is 295/295 (`262` unit-core + `7` isolated capture + `25` ordinary integration + `1` serial core-chain), lint across 29 source files, zero runtime vulnerabilities, and the exact reviewed 30-file package. D1 covers clean-home creation, provider add/list/test/activate, actual loopback Responses forwarding, A-to-B switching while A remains in flight, same-port restart, status/stop/shutdown, fixed-port and temporary-state cleanup, and complete-secret scans. The prior unchanged-Web Chromium result remains 41/41; it was not rerun as a new core-tree browser gate.
 
-The evidence above predates the approved core-first implementation. Do not claim clean-home creation, CLI localization/staged JSON errors, a full production-component chain, or a real provider/native-keyring core pass until new results are recorded.
+Production D2 used the real CLI, production native-keyring adapter and login Keychain, a real Dusapi upstream, and a detached Supervisor. CRP paths were isolated through `CRP_HOME` while the real `HOME` remained available to Keychain. Provider test succeeded, activation and proxy start succeeded, a real `/responses` request returned HTTP `200 OK`, health passed, restart kept the Supervisor PID and replaced the worker PID, and stop/shutdown plus process/state/port/temporary-state cleanup passed. A separate detached clean-home run created `.codex`/`config.toml` privately with fixed `OpenAI`/`15100` and passed bootstrap evidence. This completes the local core D2 gate.
 
 ## How To Run Current Code
 
@@ -41,6 +41,7 @@ cd node
 npm ci
 npm run lint
 npm test
+node scripts/run-test-group.mjs core-chain
 npm run test:unit
 npm run test:e2e -- --project=chromium --workers=1
 node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs test/release-workflows.test.mjs
@@ -65,24 +66,28 @@ Do not run `crp start` against a real home directory during tests because it mod
 - Node 22.19 Task 10 gate: `node --test test/crp.test.mjs test/integration/crp-lifecycle.test.mjs` passes 27/27; exact `npm test` passes 202/202 core assertions, 7/7 isolated capture assertions, and 24/24 integration assertions; `npm run lint` syntax-checks 27 source files and `npm audit --omit=dev` reports zero vulnerabilities. Coverage includes state discovery, authenticated lifecycle and provider dispatch, `ui` browser-session discovery, legacy secret-bearing flag rejection, owner-identity-checked shutdown, startup waiting, and failed-spawn cleanup without process or state residue. `git diff --check` and the static secret-pattern scan pass. Tests use temporary homes and injected spawn/client boundaries; real HOME, native keyrings, external provider traffic, browser launch behavior, and cross-platform process identity and signal handling remain L3.
 - Task 11 gate on Chrome for Testing 149.0.7827.55 with Playwright 1.61.1: `npm run test:e2e -- --project=chromium --workers=1` passes 40/40; `node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs` passes 16/16; exact `npm test` passes 202/202 core, 7/7 isolated capture, and 24/24 integration assertions, 233 total; `npm run lint` syntax-checks 28 source files; `npm audit --omit=dev` reports zero vulnerabilities. Browser coverage includes both locales, locale/storage rules, onboarding, provider CRUD/test/activation, real activity enums, lifecycle, degraded errors, GET-only re-entry, terminal session/CSRF failure, semantic keyboard/focus behavior, 1440x900 visual evidence, 390x844 automatic layout, fixture cleanup, and deep scans across browser/network/state/diagnostic surfaces. The exact eight-file result is committed as `d114061`; explicit sanitized screenshots remain under `output/playwright/task11/` for local review and were not committed.
 - Task 12 package/platform gate at `af918d5`: the three focused package/native/workflow tests pass 21/21 and `npm pack --dry-run --json --ignore-scripts` matches the exact reviewed 30-file allowlist; `actionlint` and workflow policy checks pass. Safety commit `210cb71` then passes 67/67 post-security focused tests, 41/41 E2E, exact 227/227 core plus 7/7 isolated capture plus 24/24 integration assertions (258 total), syntax checking across 29 source files, and zero runtime vulnerabilities. This documentation commit records final local evidence: lint 29, `npm test` 258/258, integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3 against the exact 30-file allowlist, minor Changeset status since `origin/main`, and a clean cached diff check. These are local results, not remote-platform evidence.
+- Core-first final tree at `4bbb97c`: exact `npm test` passes 295/295 (`262` unit-core + `7` isolated capture + `25` ordinary integration + `1` serial core-chain), lint syntax-checks 29 source files, audit reports zero vulnerabilities, and package verification remains the exact 30-file allowlist. The core-chain uses production components but substitutes an in-memory credential adapter and loopback upstreams; it remains D1 evidence.
+- Local macOS D2: production native Keychain, detached Supervisor discovery, real Dusapi provider test and `/responses` HTTP `200 OK`, activate/start/restart/health/stop/shutdown, stable Supervisor PID, changed worker PID, and cleanup all pass. Separate clean-home detached bootstrap evidence also passes. D2 completes the local core gate without satisfying cross-platform release evidence.
 - Node 24.2 stability: `node --test test/capture-store.test.mjs` passes 7/7 without hanging after replacing fixed watcher sleeps with bounded condition waits and pre-assertion cleanup.
 - Pending V1 release gate: remote platform/native/visual evidence, real-home migration/rollback evidence, and human L3 approval in `docs/TESTING.md`; pull request, push, merge, versioning, publication, and release also remain pending.
 
 ## Known Risks
 
-Credential migration on a real home, real localhost browser launch/security, native credential backends, live upstream behavior, cross-platform worker signal/port-release semantics, cross-platform atomic rename/permission semantics, and macOS/Windows visual behavior remain L3 release gates. Push, pull request, merge, versioning, and publishing have not occurred.
+Credential migration on a real home, real localhost browser launch/security, cross-platform native credential backends, cross-platform worker signal/port-release semantics, cross-platform hardlink/`O_NOFOLLOW`/ACL and atomic rename/permission semantics, and macOS/Windows visual behavior remain L3 release gates. General child-process environment minimization is separate deferred L3 hardening and does not block local core completion. Push, pull request, merge, versioning, and publishing have not occurred.
 
-The current `provider add --api-key <KEY>` interface remains an explicitly deferred argv/history exposure. The deterministic core-chain test may inject credentials and loopback upstreams, but only the separately authorized live smoke may satisfy real provider/native-keyring core evidence.
+The current `provider add --api-key <KEY>` interface remains an explicitly deferred argv/history exposure by user decision and will be redesigned later. The completed D2 evidence, not the injected D1 chain, satisfies the local real provider/native-keyring core gate.
+
+Web remains frozen. The reported first-step field alignment defect, step-content residue, and legacy bootstrap `INTERNAL_ERROR` flow are still parked; the core bootstrap fix does not count as a Web correction or browser re-verification.
 
 ## Recent Decisions
 
 - Use harness-builder `iterate` mode.
-- Prioritize core CLI completion over further Web refinement; keep Web and Task 12 release execution parked until the core-first gate is complete.
+- Keep Web frozen after local core completion; resume its three known defects and Task 12 release execution only under separate priority and scope decisions.
 - Keep existing Admin routes and schema; do not add an aggregate setup endpoint.
 - Create a missing Codex config privately and atomically with no backup, while preserving backup/mode/idempotency behavior for existing files.
 - Support human CLI output in `en` and `zh-CN`; keep JSON keys, codes, enums, messages, and actions stable English contracts.
-- Require both deterministic production-component composition and a separately authorized real provider/native-keyring smoke before claiming core completion.
-- Retain `provider add --api-key <KEY>` in this slice and record rather than conceal its exposure risk.
+- Require both deterministic production-component composition and a separately authorized real provider/native-keyring smoke before claiming local core completion; both gates now pass.
+- Retain `provider add --api-key <KEY>` for now, record rather than conceal its exposure risk, and defer redesign to later work.
 - Target ordinary users with CLI + local Web UI.
 - Support macOS/Windows UI first and preserve Linux CLI.
 - Use Supervisor + Proxy Worker.
@@ -94,7 +99,10 @@ The current `provider add --api-key <KEY>` interface remains an explicitly defer
 - Require package tests to match the exact reviewed allowlist and platform native-keyring gates to probe the intended service without fallback.
 - Require tests to use declared direct dependencies and every checkout before pull-request code to disable persisted credentials.
 - Keep V1 release, platform, and real-home migration approval classified as L3.
-- Treat `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` as the historical Tasks 1-12 plan, not the active core-first execution plan. The created and active core-first TDD plan is `docs/superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md`; implementation and evidence remain pending.
+- Treat `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` as the historical Tasks 1-12 plan. The core-first TDD plan is `docs/superpowers/plans/2026-07-14-crp-core-first-cli-implementation.md`; Scopes A/B, D1, corrections, and local D2 are complete.
+- Treat detached lifecycle/bootstrap evidence as only partial D2 unless native credential retrieval and the real upstream request also complete; the final macOS run meets that full boundary.
+- Keep Supervisor liveness probes short without reusing that timeout for provider-test or other normal Admin operations.
+- Join proxy target URLs structurally; string concatenation of a normalized trailing-slash base and incoming path is prohibited.
 - Keep file-watcher tests condition-based and cleanup-safe across supported Node versions.
 - Atomic configuration writes must compare content first and preserve source file permissions.
 - Registry mutation must persist successfully before replacing in-memory state.
