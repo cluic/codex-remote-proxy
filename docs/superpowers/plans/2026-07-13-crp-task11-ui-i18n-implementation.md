@@ -10,7 +10,13 @@
 
 **Base:** `7a87466`
 
-**Status:** Implementation and deterministic verification completed on 2026-07-14 and committed as `d114061`; the completed closeout is included in this documentation commit. Task 11 is closed, while L3 merge approval remains pending.
+**Status:** Historical Task 11 implementation and deterministic verification completed on 2026-07-14 and committed as `d114061`; current Web acceptance is frozen and incomplete.
+
+## Current Status and Superseded Requirements
+
+This plan records the exact Task 11 work and evidence at `d114061`; its checked items are historical commit-bound evidence. Commit `210cb71` later removed the public file-fallback checkbox and `fallbackConsent` field. Every fallback-consent instruction or checked item below is superseded and must not be reimplemented: current public CLI/UI/Admin contracts require native credential storage and reject fallback selectors.
+
+The current Web tree has three parked acceptance issues: first-step test-model input alignment, step-1 fields remaining visible in steps 2/3, and lack of a fresh real bootstrap/activation/start browser run after the core fixes. The `d114061` result therefore does not establish current Web acceptance. See [UI/UX](../../UIUX.md), [Status](../../STATUS.md), and [AI Handoff](../../AI_HANDOFF.md).
 
 **Owner:** `/root/task11_ui` (completed and released)
 
@@ -120,7 +126,7 @@ export const test = base.extend({
 
 - [x] **Step 3: Write the failing bilingual onboarding tests**
 
-In `onboarding.spec.mjs`, cover browser-language default, stored-locale precedence, create -> test -> activate -> bootstrap, explicit fallback consent, and fixed Codex invariants:
+In `onboarding.spec.mjs`, cover browser-language default, stored-locale precedence, create -> test -> activate -> bootstrap, the then-current explicit fallback consent, and fixed Codex invariants. The fallback case is historical and superseded by `210cb71`:
 
 ```js
 test("completes onboarding in English without storing secrets", async ({ page, crp }) => {
@@ -225,7 +231,7 @@ Wrap fetch in `apiRequest(method, path, body)` that sets JSON only when a body i
 
 - [x] **Step 4: Implement create -> test -> activate -> bootstrap onboarding**
 
-Render a labelled form for provider name, base URL, API key, test model, advanced auth/model fields, and the unchecked explicit file-fallback checkbox. The primary flow performs:
+Historical Task 11 step, superseded by `210cb71`: render a labelled form for provider name, base URL, API key, test model, advanced auth/model fields, and the unchecked explicit file-fallback checkbox. The then-current primary flow performs:
 
 ```text
 POST /api/v1/providers
@@ -235,7 +241,7 @@ POST /api/v1/codex/bootstrap
 GET  /api/v1/status
 ```
 
-Send `fallbackConsent` directly from the checkbox. After the create request settles, clear the credential input in success and failure paths. When test fails after create, retain the public provider, render localized cause/action, keep activation disabled, and allow edit/replacement. Disable every flow button while its mutation is pending and announce each transition through the polite live region.
+Historical Task 11 behavior, superseded by `210cb71`: send `fallbackConsent` directly from the checkbox. After the create request settles, clear the credential input in success and failure paths. When test fails after create, retain the public provider, render localized cause/action, keep activation disabled, and allow edit/replacement. Disable every flow button while its mutation is pending and announce each transition through the polite live region. Current public requests must omit `fallbackConsent`.
 
 - [x] **Step 5: Implement the approved guided-console CSS foundation**
 
@@ -432,7 +438,7 @@ Actual: `d114061` (`feat: add guided local management UI`) contains exactly the 
 
 ## Completion Evidence
 
-On 2026-07-14 the implementation passed 40/40 Chromium E2E tests, the 16/16 session/Admin focused regression, the exact 233/233 `npm test` gate, syntax checks across 28 source files, and `npm audit --omit=dev` with zero vulnerabilities. The suite generated sanitized `en` and `zh-CN` Overview images at 1440x900, exercised automatic layout at 390x844, and completed deep secret scans. Requirements review and the subsequent code-quality/security/accessibility reviews ended `APPROVED` with no unresolved finding after their fixes were reverified. The exact eight-file implementation is committed as `d114061`, and the completed closeout is included in this documentation commit. Task 11 is closed but remains unmerged and unpushed; Task 12 still requires a registered writer, cross-platform evidence, packaging/release checks, and L3 expert confirmation.
+On 2026-07-14 the implementation passed 40/40 Chromium E2E tests, the 16/16 session/Admin focused regression, the exact 233/233 `npm test` gate, syntax checks across 28 source files, and `npm audit --omit=dev` with zero vulnerabilities. The suite generated sanitized `en` and `zh-CN` Overview images at 1440x900, exercised automatic layout at 390x844, and completed deep secret scans. Requirements review and the subsequent code-quality/security/accessibility reviews ended `APPROVED` with no unresolved finding after their fixes were reverified. The exact eight-file implementation is committed as `d114061`, and the completed closeout is included in this documentation commit. This closes the historical Task 11 scope only; it does not resolve the current frozen Web issues or Task 12's pending cross-platform and L3 release gates.
 
 ## Final Acceptance Checklist
 
@@ -440,7 +446,7 @@ On 2026-07-14 the implementation passed 40/40 Chromium E2E tests, the 16/16 sess
 - [x] Locale priority, selector persistence, `html.lang`, and `Intl` formatting pass.
 - [x] Only `crp.locale` is persisted by client JavaScript.
 - [x] Create -> test -> activate -> bootstrap passes in both locales.
-- [x] File fallback consent is explicit, unchecked, and unpersisted.
+- [x] Historical Task 11 evidence: file fallback consent was explicit, unchecked, and unpersisted. Superseded by native-only public behavior in `210cb71`; do not reimplement.
 - [x] Overview, Providers, Activity, and read-only Settings pass.
 - [x] A -> B switching passes; bootstrap is called exactly once and subsequent status reports `OpenAI` plus `http://127.0.0.1:15100`, while existing backend tests retain byte-level Codex-config coverage.
 - [x] Restart confirmation appears only for positive in-flight state.

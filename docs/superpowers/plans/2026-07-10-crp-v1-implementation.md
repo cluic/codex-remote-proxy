@@ -8,6 +8,14 @@
 
 **Tech Stack:** Node.js ESM 22.13+, built-in `node:http`, `node:test`, `child_process.fork`, JSON persistence, `@napi-rs/keyring`, vanilla HTML/CSS/ES modules, Playwright, npm/Changesets.
 
+## Current Execution Status
+
+This is the historical Tasks 1-12 V1 plan. Tasks 1-11 are implemented: Task 10 landed in `7a87466`, and Task 11 landed in `d114061` with its then-current deterministic browser evidence. The unchecked Task 10/11 boxes below are retained as the original plan snapshot and must not be interpreted as unfinished work.
+
+Task 12 remains incomplete: remote cross-platform native/visual/filesystem/process evidence, real-home migration/rollback, final L3 review, and release operations are still pending. Public `fallbackConsent` behavior from the original UI baseline was removed by `210cb71`; current public CLI/UI/Admin flows require native credential storage and reject fallback selectors. The later core-first priority and its completed local macOS gate are recorded in the [core-first design](../specs/2026-07-14-crp-core-first-cli-design.md) and [core-first execution plan](2026-07-14-crp-core-first-cli-implementation.md).
+
+Do not mechanically update the historical task checkboxes. Use [Status](../../STATUS.md) and [AI Handoff](../../AI_HANDOFF.md) for current execution state.
+
 ---
 
 ## Scope and File Map

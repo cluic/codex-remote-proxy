@@ -2,13 +2,19 @@
 
 Date: 2026-07-10
 
-Status: Approved by user
+Status: Historical approved V1 baseline; current execution status follows
 
 Mode: Cluic Harness Builder `iterate`
 
+## Current Execution Status
+
+This document preserves the original V1 product baseline. Tasks 1-11 are implemented; Task 10 landed in `7a87466` and Task 11 in `d114061`. Task 12 cross-platform, migration, L3 review, and release gates remain incomplete. The later core-first design supplements this baseline and records the completed local macOS core gate: [CRP Core-First CLI and Real-Chain Design](2026-07-14-crp-core-first-cli-design.md).
+
+The public file-fallback concept below was superseded by `210cb71`. Current public CLI/UI/Admin flows require native credential storage, expose no `fallbackConsent` input, and reject fallback selectors; the lower-level file adapter remains trusted-injection only. Web is currently frozen with the three known onboarding issues recorded in [UI/UX](../../UIUX.md).
+
 ## Idea Triage
 
-This is a current-milestone product enhancement, not a backlog note. It addresses four verified gaps in v0.2.2: provider-bound history visibility, incomplete restart semantics, single-provider persistence, and CLI-only onboarding.
+At approval, this was the current-milestone product enhancement rather than a backlog note. It addressed four verified gaps in v0.2.2: provider-bound history visibility, incomplete restart semantics, single-provider persistence, and CLI-only onboarding.
 
 ## Product Boundary
 
@@ -45,7 +51,7 @@ The supervisor owns worker draining, termination, port-release confirmation, res
 
 ## Provider and Credential Design
 
-Provider profiles store name, base URL, auth header/scheme, safe extra headers, model passthrough/override policy, credential reference, timestamps, and compatibility-test result. Complete keys are write-only through the Admin API and live in native platform stores. A permission-restricted file backend is an explicit fallback, not the default.
+Provider profiles store name, base URL, auth header/scheme, safe extra headers, model passthrough/override policy, credential reference, timestamps, and compatibility-test result. Complete keys are write-only through the Admin API and live in native platform stores. The original explicit file-fallback proposal is historical and superseded by the native-only public boundary described above.
 
 A provider must pass both connection validation and a minimal Responses API request using a selected test model before first activation. Failure returns a stable code and a user action.
 

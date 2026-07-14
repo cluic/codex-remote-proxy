@@ -1,5 +1,15 @@
 # UI/UX
 
+## Current Web Acceptance Status
+
+Web implementation and E2E remain frozen while the completed local core milestone is handed off. The packaged UI exists, but it is not currently accepted for release because three reported onboarding issues remain unresolved or unverified:
+
+1. The first-step test-model input is vertically misaligned with the adjacent fields.
+2. Steps 2 and 3 retain step-1 form fields, obscuring which information is still actionable.
+3. The real bootstrap, activation, and proxy-start flow has not been rerun in a browser against the corrected core implementation.
+
+Task 11 and `210cb71` browser results below are historical evidence for those exact trees. They must not be reported as current Web acceptance or as proof that these three issues are fixed.
+
 ## Audience and Tone
 
 Primary users may not understand providers, processes, ports, or configuration files. Use calm, direct language, show one recommended action, and place technical details behind expandable areas.
@@ -20,7 +30,7 @@ The admin UI is not designed for mobile or remote access.
 - Activity: sanitized lifecycle events and an in-memory diagnostic summary.
 - Settings: read-only ports, credential backend status, capture state, and Codex bootstrap state.
 
-All five views are implemented in the packaged `index.html`, `styles.css`, and `app.js`; the UI has no CDN, framework, or separate locale asset dependency.
+All five views are implemented in the packaged `index.html`, `styles.css`, and `app.js`; the UI has no CDN, framework, or separate locale asset dependency. Implementation presence does not override the frozen acceptance status above.
 
 ## Core Interaction Rules
 
@@ -80,4 +90,4 @@ Task 11 acceptance cleared token and credential state before explicitly generati
 
 The PNGs under `output/` are explicit, sanitized local review attachments, not repository source and not part of the exact eight-file Task 11 commit. The durable repository evidence is this accepted visual contract plus the deterministic test that regenerates the images. Task 12 must attach fresh macOS and Windows screenshots to the L3 review record; neither Task 11 nor `docs/TESTING.md` requires committing PNGs to Git.
 
-Latest code evidence at `210cb71` includes 41/41 Chromium tests and regenerated sanitized artifacts. Real macOS and Windows workflow artifact URLs and Windows-specific visual review are still pending and must not be inferred from local Chrome for Testing results.
+Historical code evidence at `210cb71` includes 41/41 Chromium tests and regenerated sanitized artifacts. Those results predate the reported onboarding defects and the later core corrections, so they do not satisfy current Web acceptance. Real macOS and Windows workflow artifact URLs, Windows-specific visual review, and a fresh real bootstrap/activation/start browser run are still pending and must not be inferred from local Chrome for Testing results.

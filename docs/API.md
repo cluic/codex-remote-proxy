@@ -90,4 +90,4 @@ The UI exchanges the `crp ui` launch fragment through `POST /session`, removes a
 
 Update this document and contract tests in the same change. Breaking API changes require a new `/api/vN` prefix and a migration path for the bundled UI and CLI.
 
-The completed core-first slice and `4bbb97c` corrections change no endpoint, request schema, response schema, registry schema, or API version. CLI locale, start-stage, and discovery/operation timeout behavior are adapter contracts, while structured proxy URL joining is a data-plane correction; none adds an Admin response field.
+The completed core-first slice and `4bbb97c` corrections change no endpoint, request schema, response schema, registry schema, or API version. CLI locale, start-stage, and discovery/operation timeout behavior are adapter contracts, while structured proxy URL joining is a data-plane correction; none adds an Admin response field. Commit `249c23e` changes only test locale determinism and internal capture runtime-config reconciliation (SHA-256 content fingerprint, polling, debounce, and cleanup); it also changes no Admin API contract.

@@ -2,13 +2,19 @@
 
 Date: 2026-07-14
 
-Status: Approved by user; implementation and live evidence pending
+Status: Approved and complete for the local macOS core gate; release gates remain pending
 
 Mode: Cluic Harness Builder `iterate`
 
+## Current Execution Status
+
+This document is the approved design record, not an active implementation queue. Scopes A/B, staged start, deterministic D1, and the production native-Keychain/real-Dusapi/detached-Supervisor D2 gate are complete on local macOS. Required provider fields now fail validation before Supervisor discovery or mutation. The user subsequently chose to keep Web work frozen even after core completion.
+
+The reusable D2 runner proposed below was not added; the acceptance boundary was satisfied through an explicitly authorized one-time operator execution with redacted cleanup evidence. Cross-platform native/filesystem/process evidence and Task 12 L3 release approval remain pending. Current milestone facts are maintained in [Status](../../STATUS.md) and [AI Handoff](../../AI_HANDOFF.md).
+
 ## Idea Triage
 
-This change replaces Web refinement as the active implementation priority. The existing UI remains packaged but frozen while CRP proves that a clean machine can bootstrap Codex, manage a provider, start the fixed proxy, and complete a real upstream request through the CLI. Task 12 release evidence remains parked; it is neither cancelled nor complete.
+At approval, this change replaced Web refinement as the active implementation priority. The existing UI remained packaged but frozen while CRP proved that a clean machine can bootstrap Codex, manage a provider, start the fixed proxy, and complete a real upstream request through the CLI. That local proof is now complete; Task 12 release evidence remains parked and incomplete.
 
 ## Approved Boundary
 
@@ -19,7 +25,7 @@ This change replaces Web refinement as the active implementation priority. The e
 - Retain the current `provider add --api-key <KEY>` interface in this slice. Its shell-history/process-list exposure is an accepted known risk, not a resolved security claim.
 - Do not change package contents merely to separate CLI translations. The CLI dictionaries remain independent from the Web dictionaries but may live in `node/bin/crp.mjs` so the reviewed package allowlist remains stable.
 
-## Current Gaps
+## Gaps at Approval (Historical)
 
 1. `bootstrapCodexConfig` assumes both `~/.codex/` and `config.toml` already exist. A clean home therefore reaches the Admin API as generic `INTERNAL_ERROR`.
 2. Human CLI text is English-only. `--json` failures are human strings rather than a stable JSON document.
@@ -29,7 +35,7 @@ This change replaces Web refinement as the active implementation priority. The e
 
 ## Selected Approach
 
-Strengthen the existing shared core incrementally. The Codex adapter gains clean-home creation and stable public errors; the CLI remains an Admin API client and gains an independent bilingual presentation boundary plus staged start errors; integration coverage composes the existing production modules. A separately authorized live-smoke runner supplies real native/upstream evidence.
+Strengthen the existing shared core incrementally. The Codex adapter gains clean-home creation and stable public errors; the CLI remains an Admin API client and gains an independent bilingual presentation boundary plus staged start errors; integration coverage composes the existing production modules. The approved design proposed a separately authorized live-smoke runner for real native/upstream evidence; execution used the authorized one-time procedure described in the current-status section instead.
 
 This is preferred to a CLI-only parallel implementation because it keeps Web and CLI behavior on the same core services. It is preferred to a new one-shot setup endpoint because the current endpoints already express the required state transitions and are consumed by the packaged UI.
 
@@ -135,12 +141,11 @@ The live run is opt-in, never an ordinary `npm test` or CI requirement, may incu
 
 ## Web Compatibility
 
-No Web source changes are allowed in this slice. The existing Web flow already calls the same bootstrap and lifecycle endpoints, so safe clean-home creation and stable Admin error codes improve its future behavior without a core rewrite. UI alignment, step-state rendering, and activation/start presentation remain parked until the core gate passes.
+No Web source changes were allowed in this slice. The existing Web flow calls the same bootstrap and lifecycle endpoints, so safe clean-home creation and stable Admin error codes can improve its future behavior without a core rewrite. The core gate now passes, but UI alignment, step-state rendering, and activation/start browser verification remain parked by the user's later decision.
 
 ## Deferred Known Risks
 
 - `provider add --api-key <KEY>` can expose a credential through shell history or process inspection; the user explicitly deferred changing this interface.
-- Provider command required-field validation currently occurs after Supervisor startup and remains a follow-up unless implementation can correct it without widening this approved slice.
 - The Supervisor and worker inherit broader process environment data than the least-privilege target; the live runner must remove its credential before spawn, while general environment minimization remains follow-up hardening.
 - The final active provider cannot currently be deleted through the public API, so the live runner requires ownership-proven native-entry cleanup after shutdown.
 - Task 12 remote platform/native/visual/migration evidence and expert release approval remain pending and separate from this core milestone.

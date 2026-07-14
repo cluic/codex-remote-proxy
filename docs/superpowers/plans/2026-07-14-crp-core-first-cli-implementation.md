@@ -10,7 +10,21 @@
 
 **Design:** `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`
 
-**Status:** Plan complete; implementation and evidence pending.
+**Status:** Local macOS core gate complete; this file now preserves the original execution plan and records its actual outcome.
+
+## Execution Outcome
+
+| Workstream | Outcome | Actual evidence |
+| --- | --- | --- |
+| Scope A: clean-home bootstrap | Complete | Landed in `1183fb5`; private missing-parent/file creation, existing-file preservation, races, cleanup, and stable Admin errors pass. |
+| Scope B/C: bilingual CLI and staged start | Complete | Landed in `1183fb5`; `en`/`zh-CN`, locale precedence, language-independent JSON failures, pre-discovery provider validation, and three start stages pass. |
+| D1: production-component chain | Complete | Landed in `f83c9d6` as `node/test/integration/core-real-chain.test.mjs`, then retained as the serial `core-chain` group. It uses an injected memory credential adapter and loopback upstreams, so it remains deterministic D1 evidence. |
+| D2: native/external gate | Complete on local macOS | An explicitly authorized one-time operator execution used the production native Keychain, real Dusapi, detached Supervisor, real proxy request, lifecycle, secret scan, and cleanup. The planned reusable D2 runner and deterministic runner test were not implemented; the operator execution replaced that deliverable for this local acceptance gate. |
+| Reviewed corrections | Complete | `4bbb97c` separated liveness/operation timeouts and fixed structured upstream URL joining; `249c23e` made CLI output tests locale-explicit and stabilized capture runtime-config reconciliation. Current deterministic total: 296/296 (`262 + 8 + 25 + 1`). |
+| Task 12 release gates | Pending | Remote macOS/Windows/Linux native, visual, filesystem/process, real-home migration/rollback, and human L3 evidence remain required. |
+| Web refinement | Frozen | The reported field alignment, stale step content, and real bootstrap/activation/start browser verification remain outside this completed core plan. |
+
+The unchecked boxes below are the original plan snapshot. They are not a current task list and must not be used to repeat completed work or infer that the planned D2 runner exists. Use [Status](../../STATUS.md) and [AI Handoff](../../AI_HANDOFF.md) for current facts.
 
 ---
 
@@ -103,7 +117,7 @@
 
 ## Task D1: Serial Production-Component Chain
 
-**Files:** Create `node/test/integration/core-cli-chain.test.mjs`; modify `node/scripts/run-test-group.mjs`, `node/scripts/run-tests.mjs`; production source: none.
+**Planned files:** Create `node/test/integration/core-cli-chain.test.mjs`; modify `node/scripts/run-test-group.mjs`, `node/scripts/run-tests.mjs`; production source: none. **Actual D1 file:** `node/test/integration/core-real-chain.test.mjs`.
 
 - [ ] **RED before Scope A/B starts:** In the current working tree, create only the minimal production-chain skeleton through `runCli -> ensureSupervisor -> SupervisorClient -> createSupervisor` and assert clean-home `start --json` cannot bootstrap. Run `cd node && node --test test/integration/core-cli-chain.test.mjs`; retain the command, tree identity, expected assertion, and safe failing output as RED evidence before assigning either implementation writer.
 - [ ] Freeze the D1 file after RED while Scope A/B implement and close; do not ask the post-merge tree to reproduce base behavior and do not create another worktree.
@@ -115,7 +129,7 @@
 
 ## Task D2: Authorized Real Native/Upstream Gate
 
-**Files:** Create `node/test/live/core-cli-live-smoke.mjs`, `node/test/core-cli-live-smoke.test.mjs`; production source: none.
+**Planned files only:** `node/test/live/core-cli-live-smoke.mjs` and `node/test/core-cli-live-smoke.test.mjs`; neither was created. The local D2 acceptance gate instead used the explicitly authorized one-time operator execution recorded above.
 
 - [ ] **RED:** Inject process/port/keyring/fs/HTTP boundaries; assert authorization and inputs before mutation, current-`$TMPDIR` containment, occupied-port refusal, credential removal before spawn, redacted streams, `finally` cleanup, and cleanup uncertainty as failure.
 - [ ] **Minimal implementation:** Require `--confirm-real-provider-cost` plus `CRP_LIVE_BASE_URL`, `CRP_LIVE_MODEL`, `CRP_LIVE_API_KEY`; move/delete the secret from environment, use one isolated temp home, and invoke real CLI/detached Supervisor without general env minimization.

@@ -74,6 +74,14 @@ A runtime snapshot contains exactly one positive safe-integer `generation` and o
 
 `current()` returns the frozen active reference. `publicState()` returns only `{ configured, generation }`, both before and after configuration. A proxied request captures `current()` exactly once before body listeners and retains that reference for its target, authentication, headers, TLS, timeout, capture context, and logging lifetime.
 
+## CaptureRuntimeConfigState
+
+Capture runtime reconciliation is in-memory operational state, not a new registry or database schema. It retains the desired normalized `{ enabled, dbPath }`, the currently active database path, `restartRequired`, and one SHA-256 fingerprint of the runtime-config file bytes (or a stable read-error code). The fingerprint never represents SQLite or captured request/response content.
+
+`start()` is idempotent. It establishes the content fingerprint synchronously, immediately reloads the runtime config to reconcile a rewrite that occurred during startup, and then polls content every 500 ms; changes are debounced for 100 ms before reload. If `dbPath` changes while a database is active, the desired path changes and `captureRestartRequired` becomes true while `captureRuntimeDbPath` continues to identify the active database until restart. `close()` clears the polling interval, pending debounce, and fingerprint before closing the database.
+
+The existing public capture projection remains `{ captureConfigured, captureActive, captureDbPath, captureRuntimeDbPath, captureState, captureRestartRequired, failedWriteCount, lastWriteErrorAt, lastWriteErrorMessage, captureLastErrorAt, captureLastErrorMessage }`; no fingerprint or timer handle is public or persisted.
+
 ## WorkerProtocolMessage
 
 Every IPC message has exactly `{ version: 1, type, requestId, ...typeFields }`. Parent messages are `configure`, `drain`, `shutdown`, and `status`; only `configure` adds `{ generation, settings }`, and it is the only message allowed to carry resolved credentials. Child messages are `ready`, `configured`, `drained`, `status`, and `fatal`. Lifecycle messages expose only an exact public worker state `{ phase, configured, generation, listening, listenHost, listenPort, inFlight }`; fatal messages expose a stable code and static public message without causes or input payloads.

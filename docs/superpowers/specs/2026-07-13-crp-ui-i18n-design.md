@@ -2,13 +2,19 @@
 
 Date: 2026-07-13
 
-Status: Approved by user; implemented and verified on 2026-07-14
+Status: Historical Task 11 baseline; implemented in `d114061` and later superseded in part
 
 Mode: Cluic Harness Builder `iterate`
 
 Base: `7a87466`
 
 Implementation remains L3 and is not merged or pushed.
+
+## Current Status and Superseded Boundary
+
+Task 11's `d114061` browser evidence proves the implementation against the contracts and fixtures that existed at that commit; it is historical evidence, not current Web acceptance. Commit `210cb71` later removed the public file-fallback checkbox and `fallbackConsent` request field. Current public CLI/UI/Admin flows require native credential storage, and production contracts plus current E2E reject fallback selectors. Every fallback-consent requirement below is therefore a preserved historical Task 11 requirement, not current behavior.
+
+Web refinement is now frozen. The first-step test-model input alignment defect, step-1 fields remaining visible in steps 2/3, and the real bootstrap/activation/start flow after core corrections remain unresolved or not freshly browser-verified. See [UI/UX](../../UIUX.md), [Status](../../STATUS.md), and [AI Handoff](../../AI_HANDOFF.md) for current facts.
 
 ## Approved Context
 
@@ -112,7 +118,7 @@ The first-run flow uses the existing provider-ID API sequence:
 
 If creation succeeds but testing fails, the untested/failed provider remains saved and editable. Activation remains disabled. The user receives the localized cause/action response and can replace the credential or edit the provider before testing again.
 
-The provider form includes an unchecked explicit-consent checkbox for the permission-restricted file credential fallback. Its copy states that CRP uses it only if the native credential store cannot be constructed. The checkbox maps directly to `fallbackConsent`; it is never preselected and its choice is not persisted in browser storage.
+Historical Task 11 requirement, superseded by `210cb71`: the provider form included an unchecked explicit-consent checkbox for the permission-restricted file credential fallback. Its copy stated that CRP used it only if the native credential store could not be constructed. The checkbox mapped directly to `fallbackConsent`; it was never preselected and its choice was not persisted in browser storage. No current public fallback control or request field exists.
 
 Secret inputs are blank when editing. A credential-configured status may be shown as text, but no masked or partial credential becomes an input value.
 
@@ -157,7 +163,7 @@ This design changes only static UI assets, Playwright configuration, and Task 11
 2. Locale priority is stored preference, browser languages, then English; language changes update `html[lang]` immediately.
 3. Only `crp.locale` is persisted by client JavaScript.
 4. A clean user completes create -> test -> activate -> bootstrap in either locale.
-5. File fallback requires an unchecked, explicit-consent checkbox.
+5. Historical Task 11 criterion, superseded by `210cb71`: file fallback required an unchecked, explicit-consent checkbox; current public flows are native-only.
 6. Settings is visibly read-only.
 7. A valid cookie without a fragment provides a GET-only workspace, while a failed exchange or later session/CSRF failure becomes a localized terminal instruction to reopen with `crp ui`; no refresh is attempted.
 8. After tokens and credentials are cleared from UI state, explicit English and Simplified Chinese 1440x900 Overview screenshots match the approved guided utility direction without overflow or overlap.
