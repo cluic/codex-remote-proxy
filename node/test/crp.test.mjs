@@ -114,6 +114,7 @@ function makeTempHome() {
 function makeHomeEnv(homeDir) {
   return {
     ...process.env,
+    CRP_LOCALE: "en",
     HOME: homeDir,
     USERPROFILE: homeDir
   };
@@ -217,6 +218,7 @@ async function invokeCli(args, overrides = {}) {
   const status = await runCli(args, {
     stdout: (text) => stdout.push(text),
     stderr: (text) => stderr.push(text),
+    environment: { CRP_LOCALE: "en" },
     ...overrides
   });
   return { status, stdout: stdout.join(""), stderr: stderr.join("") };

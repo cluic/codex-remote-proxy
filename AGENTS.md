@@ -27,6 +27,7 @@
 - CI native-backend gates must probe the intended platform service and must not accept fallback storage.
 - Tests must import only declared direct dependencies, and every checkout before pull-request code must set `persist-credentials: false`.
 - Secret-bearing negative tests must assert absence before equality so a RED failure cannot print the sentinel.
+- CLI human-output tests must set an explicit locale instead of inheriting the developer environment.
 - Deterministic loopback D1 evidence must not be reported as native-keyring or external-upstream D2 completion.
 - macOS native-keyring tests must isolate CRP paths through `CRP_HOME` while preserving the real `HOME` required to access the login Keychain.
 

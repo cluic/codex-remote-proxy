@@ -1,4 +1,5 @@
-import { watchFile, unwatchFile, readFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -18,6 +19,15 @@ const HEADER_REDACTION_NAMES = new Set([
 const HEADER_REDACTION_SUBSTRINGS = ["token", "secret", "api-key"];
 
 function defaultLogger() {}
+
+function fingerprintRuntimeConfig(configPath) {
+  try {
+    return `sha256:${createHash("sha256").update(readFileSync(configPath)).digest("hex")}`;
+  } catch (error) {
+    const code = typeof error?.code === "string" ? error.code : "UNKNOWN";
+    return `error:${code}`;
+  }
+}
 
 function resolvePathValue(value, baseDir) {
   return isAbsolute(value) ? value : resolve(baseDir, value);
@@ -282,17 +292,31 @@ export class CaptureManager {
     this.lastWriteErrorMessage = null;
     this.lastErrorAt = null;
     this.lastErrorMessage = null;
+    this.started = false;
     this.closed = false;
     this.watchTimer = null;
+    this.watchInterval = null;
+    this.runtimeConfigFingerprint = null;
     this.handleRuntimeConfigChange = this.handleRuntimeConfigChange.bind(this);
+    this.pollRuntimeConfig = this.pollRuntimeConfig.bind(this);
   }
 
   start() {
-    if (this.desiredConfig.enabled) {
-      this.enableFromConfig(this.desiredConfig, { source: "startup" });
-    }
-    if (this.watchRuntimeConfig) {
-      watchFile(this.configPath, { interval: WATCH_INTERVAL_MS }, this.handleRuntimeConfigChange);
+    if (this.started || this.closed) return this;
+    this.started = true;
+    try {
+      if (this.desiredConfig.enabled) {
+        this.enableFromConfig(this.desiredConfig, { source: "startup" });
+      }
+      if (this.watchRuntimeConfig) {
+        this.runtimeConfigFingerprint = fingerprintRuntimeConfig(this.configPath);
+        this.reloadRuntimeConfig();
+        this.watchInterval = setInterval(this.pollRuntimeConfig, WATCH_INTERVAL_MS);
+        this.watchInterval.unref?.();
+      }
+    } catch (error) {
+      this.started = false;
+      throw error;
     }
     return this;
   }
@@ -302,14 +326,24 @@ export class CaptureManager {
       return;
     }
     this.closed = true;
-    if (this.watchRuntimeConfig) {
-      unwatchFile(this.configPath, this.handleRuntimeConfigChange);
+    if (this.watchInterval) {
+      clearInterval(this.watchInterval);
+      this.watchInterval = null;
     }
+    this.runtimeConfigFingerprint = null;
     if (this.watchTimer) {
       clearTimeout(this.watchTimer);
       this.watchTimer = null;
     }
     this.closeDatabase();
+  }
+
+  pollRuntimeConfig() {
+    if (this.closed) return;
+    const nextFingerprint = fingerprintRuntimeConfig(this.configPath);
+    if (nextFingerprint === this.runtimeConfigFingerprint) return;
+    this.runtimeConfigFingerprint = nextFingerprint;
+    this.handleRuntimeConfigChange();
   }
 
   handleRuntimeConfigChange() {

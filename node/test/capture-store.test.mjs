@@ -217,6 +217,53 @@ test("capture manager marks restart required when db path changes", async (t) =>
   assert.equal(resolve(state.captureDbPath), resolve(nextDbPath));
 });
 
+test("capture manager reconciles a config change during startup", (t) => {
+  const dir = makeTempDir("crp-startup-change");
+  mkdirSync(dir, { recursive: true });
+  let manager;
+  t.after(() => {
+    try {
+      manager?.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const runtimeConfigPath = join(dir, "proxy-config.json");
+  const dbPath = join(dir, "traffic.sqlite3");
+  const nextDbPath = join(dir, "traffic-next.sqlite3");
+  writeFileSync(runtimeConfigPath, `${JSON.stringify({
+    capture: {
+      enabled: true,
+      dbPath
+    }
+  }, null, 2)}\n`, "utf8");
+
+  manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: {
+      enabled: true,
+      dbPath
+    }
+  });
+  const enableFromConfig = manager.enableFromConfig.bind(manager);
+  manager.enableFromConfig = (...args) => {
+    enableFromConfig(...args);
+    writeFileSync(runtimeConfigPath, `${JSON.stringify({
+      capture: {
+        enabled: true,
+        dbPath: nextDbPath
+      }
+    }, null, 2)}\n`, "utf8");
+  };
+  manager.start();
+
+  const state = manager.getPublicState();
+  assert.equal(state.captureRestartRequired, true);
+  assert.equal(resolve(state.captureRuntimeDbPath), resolve(dbPath));
+  assert.equal(resolve(state.captureDbPath), resolve(nextDbPath));
+  assert.equal(manager.start(), manager);
+});
+
 test("loadRuntimeCaptureConfig validates malformed config", () => {
   const dir = makeTempDir("crp-bad-config");
   mkdirSync(dir, { recursive: true });
