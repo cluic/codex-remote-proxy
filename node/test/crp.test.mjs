@@ -65,6 +65,48 @@ function prepareSupervisorFiles(homeDir, { state = supervisorState(), token = CO
   return paths;
 }
 
+function trackControlTokenReads(paths) {
+  const descriptorPaths = new Map();
+  let tokenReads = 0;
+  return {
+    fileOperations: {
+      ...realFileOperations,
+      openSync(path, ...args) {
+        const descriptor = realFileOperations.openSync(path, ...args);
+        descriptorPaths.set(descriptor, path);
+        return descriptor;
+      },
+      readFileSync(pathOrDescriptor, ...args) {
+        if (descriptorPaths.get(pathOrDescriptor) === paths.controlTokenPath) tokenReads += 1;
+        return realFileOperations.readFileSync(pathOrDescriptor, ...args);
+      },
+      closeSync(descriptor) {
+        descriptorPaths.delete(descriptor);
+        return realFileOperations.closeSync(descriptor);
+      }
+    },
+    tokenReads: () => tokenReads
+  };
+}
+
+function delayedJsonResponse(payload, { delayMs, signal }) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    }, delayMs);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function makeTempHome() {
   return mkdtempSync(join(os.tmpdir(), "crp-home-"));
 }
@@ -1015,12 +1057,46 @@ test("SupervisorClient pins the Admin origin, bearer, JSON bodies, and safe publ
   assert.equal(publicError.details.authorization, "[REDACTED]");
 });
 
+test("SupervisorClient rejects malformed per-call timeout overrides before fetch", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  let fetchCalls = 0;
+  const client = new SupervisorClient({
+    origin: "http://127.0.0.1:15101",
+    controlTokenPath: paths.controlTokenPath,
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  for (const override of [
+    null,
+    {},
+    { requestTimeoutMs: 0 },
+    { requestTimeoutMs: 1.5 },
+    { requestTimeoutMs: 1, unknown: true }
+  ]) {
+    await assert.rejects(
+      async () => client.request("GET", "/status", undefined, override),
+      (error) => error?.code === "SUPERVISOR_CLIENT_INPUT_INVALID"
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
 test("spawns one detached supervisor and shares concurrent bounded discovery", async (t) => {
   const homeDir = makeTempHome();
   t.after(() => rmSync(homeDir, { recursive: true, force: true }));
   const paths = getPaths(homeDir);
+  const tokenTracker = trackControlTokenReads(paths);
   let spawnCalls = 0;
   let clock = 0;
+  const calls = [];
   const spawnSupervisor = () => {
     spawnCalls += 1;
     prepareSupervisorFiles(homeDir);
@@ -1031,10 +1107,20 @@ test("spawns one detached supervisor and shares concurrent bounded discovery", a
     adminPort: 15101,
     spawnSupervisor,
     isProcessAlive: () => true,
-    fetchImpl: async () => new Response(JSON.stringify({
-      supervisor: { pid: 4242, startedAt: "2026-07-13T08:00:00.000Z" },
-      worker: { phase: "stopped", pid: null }
-    }), { status: 200, headers: { "content-type": "application/json" } }),
+    fileOperations: tokenTracker.fileOperations,
+    probeTimeoutMs: 20,
+    requestTimeoutMs: 250,
+    fetchImpl: async (url, { signal }) => {
+      const path = new URL(url).pathname;
+      calls.push(path);
+      if (path.endsWith("/status")) {
+        return new Response(JSON.stringify({
+          supervisor: { pid: 4242, startedAt: "2026-07-13T08:00:00.000Z" },
+          worker: { phase: "stopped", pid: null }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return delayedJsonResponse({ result: { ok: true } }, { delayMs: 80, signal });
+    },
     now: () => clock,
     wait: async (milliseconds) => { clock += milliseconds; },
     timeoutMs: 8_000,
@@ -1049,10 +1135,116 @@ test("spawns one detached supervisor and shares concurrent bounded discovery", a
   assert.equal(left.state.supervisorPid, 4242);
   assert.equal(left.spawned, true);
   assert.equal(spawnCalls, 1);
+  assert.deepEqual(
+    await left.client.request("POST", "/providers/provider-1/test", { model: "test-model" }),
+    { result: { ok: true } }
+  );
+  assert.equal(tokenTracker.tokenReads(), 1);
 
   const reused = await ensureSupervisor(options);
   assert.equal(reused.spawned, false);
   assert.equal(spawnCalls, 1);
+  assert.equal(tokenTracker.tokenReads(), 2);
+  assert.deepEqual(calls, [
+    "/api/v1/status",
+    "/api/v1/providers/provider-1/test",
+    "/api/v1/status"
+  ]);
+});
+
+test("ensureSupervisor reads one token and keeps probe timeout separate from later operations", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const tokenTracker = trackControlTokenReads(paths);
+  const calls = [];
+  const status = adminStatus(4242);
+
+  const context = await ensureSupervisor({
+    paths,
+    adminPort: 15101,
+    spawnSupervisor: () => assert.fail("a ready supervisor must not be spawned again"),
+    isProcessAlive: () => true,
+    fileOperations: tokenTracker.fileOperations,
+    probeTimeoutMs: 20,
+    requestTimeoutMs: 250,
+    fetchImpl: async (url, { signal }) => {
+      const path = new URL(url).pathname;
+      calls.push(path);
+      if (path.endsWith("/status")) {
+        return new Response(JSON.stringify(status), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return delayedJsonResponse({ result: { ok: true } }, { delayMs: 80, signal });
+    }
+  });
+
+  assert.deepEqual(
+    await context.client.request("POST", "/providers/provider-1/test", { model: "test-model" }),
+    { result: { ok: true } }
+  );
+  assert.deepEqual(calls, [
+    "/api/v1/status",
+    "/api/v1/providers/provider-1/test"
+  ]);
+  assert.equal(tokenTracker.tokenReads(), 1);
+});
+
+test("discoverSupervisor times out a slow identity probe before the request timeout", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+
+  const context = await discoverSupervisor({
+    paths,
+    adminPort: 15101,
+    isProcessAlive: () => true,
+    probeTimeoutMs: 20,
+    requestTimeoutMs: 250,
+    fetchImpl: async (_url, { signal }) => delayedJsonResponse(adminStatus(4242), {
+      delayMs: 80,
+      signal
+    })
+  });
+
+  assert.equal(context, null);
+});
+
+test("ensureSupervisor rejects invalid probe and request timeouts before spawning", async (t) => {
+  for (const [field, value] of [
+    ["probeTimeoutMs", 0],
+    ["probeTimeoutMs", 1.5],
+    ["requestTimeoutMs", 0],
+    ["requestTimeoutMs", Number.MAX_SAFE_INTEGER + 1]
+  ]) {
+    const homeDir = makeTempHome();
+    t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+    let spawnCalls = 0;
+    let clock = 0;
+
+    await assert.rejects(
+      () => ensureSupervisor({
+        paths: getPaths(homeDir),
+        adminPort: 15101,
+        spawnSupervisor: () => {
+          spawnCalls += 1;
+          return { pid: 4242 };
+        },
+        isProcessAlive: () => true,
+        fetchImpl: async () => assert.fail("invalid timeouts must not reach Admin"),
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        now: () => clock,
+        wait: async (milliseconds) => { clock += milliseconds; },
+        [field]: value
+      }),
+      (error) => error?.code === "SUPERVISOR_CLIENT_INPUT_INVALID",
+      `${field}=${value}`
+    );
+    assert.equal(spawnCalls, 0, `${field}=${value}`);
+  }
 });
 
 test("discovery rejects a status with the same PID but a different startedAt", async (t) => {

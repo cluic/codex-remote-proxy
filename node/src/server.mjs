@@ -127,9 +127,18 @@ function safeBodyPreview(buffer, maxLen = 4096) {
 }
 
 export function buildTargetUrl(baseUrl, requestUrl) {
+  const target = new URL(baseUrl);
   const incoming = new URL(requestUrl, "http://127.0.0.1");
-  const path = incoming.pathname === "/" ? "" : incoming.pathname;
-  return new URL(`${baseUrl}${path}${incoming.search}`);
+  const baseSearch = target.search;
+  if (incoming.pathname !== "/") {
+    const basePath = target.pathname.replace(/\/+$/, "");
+    target.pathname = `${basePath}${incoming.pathname}`;
+  }
+  target.search = baseSearch && incoming.search
+    ? `${baseSearch}&${incoming.search.slice(1)}`
+    : baseSearch || incoming.search;
+  target.hash = "";
+  return target;
 }
 
 function formatAuthorization(upstream) {

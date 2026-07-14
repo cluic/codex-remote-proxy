@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { EventEmitter, once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 
-import { createApp, createServer, isDirectExecution } from "../src/server.mjs";
+import { buildTargetUrl, createApp, createServer, isDirectExecution } from "../src/server.mjs";
 import { RuntimeSettingsSource } from "../src/worker/runtime-settings.mjs";
 
 function makeTempDir(prefix) {
@@ -136,6 +136,50 @@ function requestJson(url, body) {
     body: JSON.stringify(body)
   });
 }
+
+test("buildTargetUrl joins base and request paths with one separator", () => {
+  const cases = [
+    {
+      baseUrl: "https://api.example.test/",
+      requestUrl: "/responses?model=gpt%2F5",
+      expected: "https://api.example.test/responses?model=gpt%2F5"
+    },
+    {
+      baseUrl: "https://api.example.test/v1",
+      requestUrl: "/responses",
+      expected: "https://api.example.test/v1/responses"
+    },
+    {
+      baseUrl: "https://api.example.test/v1/",
+      requestUrl: "/responses",
+      expected: "https://api.example.test/v1/responses"
+    },
+    {
+      baseUrl: "https://api.example.test/v1/",
+      requestUrl: "/",
+      expected: "https://api.example.test/v1/"
+    },
+    {
+      baseUrl: "https://api.example.test/v1/",
+      requestUrl: "/responses/%2Fencoded?cursor=a%2Fb&space=a%20b",
+      expected: "https://api.example.test/v1/responses/%2Fencoded?cursor=a%2Fb&space=a%20b"
+    }
+  ];
+
+  for (const { baseUrl, requestUrl, expected } of cases) {
+    assert.equal(buildTargetUrl(baseUrl, requestUrl).href, expected);
+  }
+});
+
+test("buildTargetUrl preserves base query parameters without forwarding fragments", () => {
+  assert.equal(
+    buildTargetUrl(
+      "https://api.example.test/v1?tenant=one%20two#section",
+      "/responses?model=gpt%2F5"
+    ).href,
+    "https://api.example.test/v1/responses?tenant=one%20two&model=gpt%2F5"
+  );
+});
 
 test("server writes proxied request and response to sqlite", async () => {
   const dir = makeTempDir("crp-server");

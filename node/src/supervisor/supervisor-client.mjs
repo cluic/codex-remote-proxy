@@ -57,6 +57,7 @@ const CHILD_STATE_FIELDS = new Set([
   "inFlight"
 ]);
 const WORKER_ERROR_FIELDS = new Set(["code", "message"]);
+const REQUEST_OPTIONS_FIELDS = new Set(["requestTimeoutMs"]);
 const DEFAULT_FILE_OPERATIONS = {
   chmodSync,
   closeSync,
@@ -343,17 +344,25 @@ export class SupervisorClient {
     this.#requestTimeoutMs = requestTimeoutMs;
   }
 
-  request(method, path, body) {
+  request(method, path, body, options) {
     validateRequest(method, path);
-    return this.#performRequest(method, path, body);
+    let requestTimeoutMs = this.#requestTimeoutMs;
+    if (options !== undefined) {
+      if (!hasExactFields(options, REQUEST_OPTIONS_FIELDS)
+        || !Number.isSafeInteger(options.requestTimeoutMs) || options.requestTimeoutMs < 1) {
+        throw clientError("SUPERVISOR_CLIENT_INPUT_INVALID", { status: 400 });
+      }
+      requestTimeoutMs = options.requestTimeoutMs;
+    }
+    return this.#performRequest(method, path, body, requestTimeoutMs);
   }
 
-  async #performRequest(method, path, body) {
+  async #performRequest(method, path, body, requestTimeoutMs) {
     const headers = { authorization: `Bearer ${this.#controlToken}` };
     const options = {
       method,
       headers,
-      signal: AbortSignal.timeout(this.#requestTimeoutMs)
+      signal: AbortSignal.timeout(requestTimeoutMs)
     };
     if (body !== undefined) {
       headers["content-type"] = "application/json; charset=utf-8";
@@ -437,7 +446,8 @@ export async function discoverSupervisor({
   fileOperations = DEFAULT_FILE_OPERATIONS,
   platform = process.platform,
   isProcessAlive = defaultIsProcessAlive,
-  requestTimeoutMs = 2_000
+  probeTimeoutMs = 2_000,
+  requestTimeoutMs = 30_000
 } = {}) {
   const state = readSupervisorState({
     path: paths?.statePath,
@@ -456,7 +466,9 @@ export async function discoverSupervisor({
   });
   let status;
   try {
-    status = await client.request("GET", "/status");
+    status = await client.request("GET", "/status", undefined, {
+      requestTimeoutMs: probeTimeoutMs
+    });
   } catch (error) {
     if (error?.code === "SUPERVISOR_UNAVAILABLE") return null;
     throw error;
@@ -483,6 +495,7 @@ async function ensureSupervisorInternal({
   fileOperations,
   platform,
   isProcessAlive,
+  probeTimeoutMs,
   requestTimeoutMs,
   timeoutMs,
   pollIntervalMs,
@@ -497,6 +510,7 @@ async function ensureSupervisorInternal({
     fileOperations,
     platform,
     isProcessAlive,
+    probeTimeoutMs,
     requestTimeoutMs
   };
   const existing = await discoverSupervisor(discoveryOptions);
@@ -536,7 +550,8 @@ export function ensureSupervisor({
   fileOperations = DEFAULT_FILE_OPERATIONS,
   platform = process.platform,
   isProcessAlive = defaultIsProcessAlive,
-  requestTimeoutMs = 2_000,
+  probeTimeoutMs = 2_000,
+  requestTimeoutMs = 30_000,
   timeoutMs = 8_000,
   pollIntervalMs = 100,
   now = () => Date.now(),
@@ -548,6 +563,8 @@ export function ensureSupervisor({
     || !Number.isInteger(adminPort) || adminPort < 1 || adminPort > 65_535
     || typeof spawnSupervisor !== "function" || typeof fetchImpl !== "function"
     || typeof isProcessAlive !== "function" || typeof now !== "function" || typeof wait !== "function"
+    || !Number.isSafeInteger(probeTimeoutMs) || probeTimeoutMs < 1
+    || !Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1
     || !Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1) {
     return Promise.reject(clientError("SUPERVISOR_CLIENT_INPUT_INVALID", { status: 400 }));
@@ -562,6 +579,7 @@ export function ensureSupervisor({
     fileOperations,
     platform,
     isProcessAlive,
+    probeTimeoutMs,
     requestTimeoutMs,
     timeoutMs,
     pollIntervalMs,
