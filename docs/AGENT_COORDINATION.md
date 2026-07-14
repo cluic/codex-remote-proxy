@@ -2,12 +2,13 @@
 
 ## Active Workstreams
 
-None.
+None. The next implementation writer must register a disjoint TDD scope before editing.
 
 ## Completed Workstreams
 
 | Workstream | Owner | Scope | Files/Areas | Status | No-Edit Areas |
 | --- | --- | --- | --- | --- | --- |
+| Core-first approved design and living-doc alignment | `/root/core_design_docs` | Record the Web freeze and approved clean-home bootstrap, CLI `en`/`zh-CN`, staged errors, production-chain acceptance, and live-smoke boundary without claiming implementation | `AGENTS.md`; `docs/AGENT_COORDINATION.md`; `docs/AI_HANDOFF.md`; `docs/DECISIONS.md`; `docs/ROADMAP.md`; `docs/STATUS.md`; `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md` | Completed on 2026-07-14; documentation-only checks pass; writer authority permanently released; implementation planning/code/evidence remain owned by `/root` | All `node/**`; `.github/**`; other docs; package manifests and lockfiles; Changesets; `output/**`; commits, pushes, releases, real HOME, native credentials, and external services |
 | Task 12 post-security documentation alignment | `/root/task12_release_docs` | From safety commit `210cb71`, align public and living documentation plus the minor Changeset with the reviewed native-only public boundary, strict `init` alias, diagnostic summary, provider invariants, and latest local evidence | Same bounded documentation and Changeset files as the Task 12 release/documentation scope below | Completed on 2026-07-14; this documentation commit records final local evidence; writer authority permanently released; external evidence, approval, and release remain owned by `/root` | All `node/src`, `node/bin`, `node/ui`, `node/scripts`, `node/test`, package manifests and lockfiles, workflows, `output/**`, commits, pushes, and releases |
 | Task 12 public onboarding and fallback boundary hardening | `/root/task12_security_fix` | Replace legacy `init` secret setup with a strict `ui` alias, remove public per-provider fallback consent, and align bilingual diagnostics copy using TDD | `docs/AGENT_COORDINATION.md`; `node/bin/crp.mjs`; `node/ui/app.js`; `node/src/supervisor/admin-server.mjs`; `node/src/supervisor/provider-service.mjs`; `node/test/crp.test.mjs`; `node/test/provider-service.test.mjs`; `node/test/integration/admin-server.test.mjs`; `node/test/e2e/crp-ui-fixture.mjs`; `node/test/e2e/onboarding.spec.mjs`; `node/test/e2e/provider-switch.spec.mjs`; `node/test/e2e/restart-and-errors.spec.mjs` | Completed in `210cb71` with 67/67 focused Node, 41/41 Chromium E2E, 258/258 full tests, lint, diff, and zero-vulnerability audit evidence; writer authority permanently released | All other files, including other docs, README files, Changesets, manifests, workflows, `output/**`, commits, real HOME, native credentials, and external services |
 | Task 12 release and documentation closeout | `/root/task12_release_docs` | From base `af918d5`, synchronize user, migration, architecture, security, testing, and release-readiness documentation and add the minor Changeset | `AGENTS.md`; `README.md`; `README.zh-CN.md`; `node/README.md`; `node/CHANGELOG.md`; `node/.changeset/multi-provider-local-ui.md`; `node/RELEASING.md`; `docs/AGENT_COORDINATION.md`; `docs/AI_HANDOFF.md`; `docs/STATUS.md`; `docs/ROADMAP.md`; `docs/TESTING.md`; `docs/ARCHITECTURE.md`; `docs/API.md`; `docs/PERMISSIONS.md`; `docs/DATA_MODEL.md`; `docs/UIUX.md`; `docs/DECISIONS.md`; `docs/PRD.md`; `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` | Completed on 2026-07-14; final local gate recorded by this documentation commit; writer authority permanently released; external evidence, approval, and release remain owned by `/root` | All `node/src`, `node/bin`, `node/ui`, `node/scripts`, `node/test`, package manifests and lockfiles, workflows, `output/**`, commits, pushes, and releases |
@@ -34,6 +35,7 @@ None.
 
 - No Task 11 source or documentation writer remains active; both completed writer scopes are permanently released.
 - No Task 12 gate, security, or release-documentation writer remains active; all writer scopes are permanently released.
+- The core-first design writer is permanently released. Web source/E2E and Task 12 release execution remain frozen until the core gate is complete or the user changes priority.
 - `node/package.json` and `node/package-lock.json` are no-edit by default because Playwright and the E2E scripts landed in Task 1; a discovered manifest defect must return to the coordinator for a separate scope decision.
 - The Task 11 shared E2E helper is `node/test/e2e/crp-ui-fixture.mjs`; no second fixture file was added.
 - Future agents must not change shared contracts without first updating the owning doc and coordination row.
@@ -41,4 +43,4 @@ None.
 
 ## Decisions Needed
 
-The implementation chain is Task 11 `d114061`, Task 11 docs `dd4de3f`, Task 12 package/platform gates `af918d5`, and credential-boundary hardening `210cb71`. This documentation commit records final local evidence, and no writer remains active. Remote macOS/Windows/Linux workflow URLs, real native credential services, macOS/Windows artifacts, real-home migration/rollback evidence, human L3 expert confirmation, push, pull request, merge, versioning, publishing, and release remain outstanding; Task 12 is not complete.
+The approved next slice is `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`. A new implementation/planning writer must register exact files and no-edit areas before work. Remote platform/native/visual/migration evidence, L3 approval, push, pull request, merge, versioning, publishing, and release remain outstanding; Task 12 is parked and incomplete.

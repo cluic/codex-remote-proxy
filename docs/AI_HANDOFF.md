@@ -2,17 +2,19 @@
 
 ## Product Summary
 
-CRP preserves ChatGPT login/remote features while routing Codex model traffic to a selected OpenAI-compatible upstream. The unreleased minor now implements named providers, reliable lifecycle management, and a bilingual local Web UI for ordinary users.
+CRP preserves ChatGPT login/remote features while routing Codex model traffic to a selected OpenAI-compatible upstream. Named providers, lifecycle management, the local Admin API, and a bilingual Web UI are implemented; the active milestone now proves the CLI/core path before further Web refinement.
 
 ## Current Scope
 
-Tasks 1 through 11 are implemented and documented in `d114061` and `dd4de3f`. Task 12 package/platform gates are `af918d5`; safety commit `210cb71` removes public fallback inputs, makes `init` a strict `ui` alias, and aligns diagnostic summary behavior. This documentation commit records final local evidence and synchronizes those facts with the minor Changeset. Task 12 is not complete: external platform/native/visual/migration evidence, human L3 approval, pull request, push, merge, versioning, publication, and release remain pending.
+Tasks 1 through 11 are implemented and documented in `d114061` and `dd4de3f`. Task 12 package/platform gates are `af918d5`; safety commit `210cb71` removes public fallback inputs, makes `init` a strict `ui` alias, and aligns diagnostic summary behavior; `5fecf45` closes the release-documentation preparation. On 2026-07-14 the user paused Web and release work and approved the core-first design in `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`. Its implementation is pending. Task 12 remains parked, not complete.
 
 Do not describe workflow definitions as platform results. Remote macOS/Windows/Linux run URLs, real Keychain/Credential Manager/Secret Service evidence, macOS/Windows screenshots, real-home migration/rollback, and expert approval are still pending.
 
 ## Architecture
 
 Implemented: shared paths, safe public errors, idempotent Codex bootstrap, strict provider storage, secure credential adapters, immutable request snapshots, strict worker IPC, reliable worker management, bounded sanitized activity, transactional v0.2.2 migration, serialized provider orchestration, private local sessions, the exact Admin route/security boundary, readiness-gated supervisor composition, state-discovered CLI dispatch through the Admin API, and the packaged three-file bilingual Web UI. Codex remains on `model_provider = "OpenAI"` and fixed `http://127.0.0.1:15100`; supervisor Admin API defaults to `127.0.0.1:15101`.
+
+Approved but not implemented: bootstrap must privately and atomically create a missing `.codex/config.toml`; all human CLI output must support `en` and `zh-CN`; JSON failures and start phases must be stable; a production-component integration gate and a separately authorized real provider/native-keyring smoke must pass. No aggregate setup endpoint, API version, registry schema, fixed address, provider identity, or Web contract changes are approved.
 
 ## Data and API
 
@@ -29,6 +31,8 @@ One authenticated local OS user. Admin API is loopback-only, origin/host checked
 Architecture, provider model, core flows, UI direction, errors, testing, and MVP boundary were visually reviewed and approved on 2026-07-10. The user approved the Task 11 Overview visual and required complete English/Simplified Chinese UI coverage on 2026-07-13. On 2026-07-14 the implementation and deterministic acceptance completed: locale precedence is stored `crp.locale` then supported `navigator.languages` then English; only explicit selection persists; Settings is read-only; a valid cookie without a fragment opens a GET-only workspace; any failed session exchange and later session/CSRF authentication failure are terminal. Requirements and code-quality/security/accessibility reviews ended `APPROVED` after fixes, with no unresolved finding.
 
 Latest code evidence at `210cb71` is 258/258 full tests (`227` core + `7` capture + `24` integration), 67/67 post-security focused tests, 41/41 E2E, 29 syntax-checked source files, and zero runtime vulnerabilities. The `af918d5` package gate separately proves the exact reviewed 30-file tarball and workflow policy. Final-tree local verification also passes lint 29, `npm test` 258/258 (`227` core + `7` capture + `24` integration), integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3 against the exact 30-file allowlist, minor Changeset status since `origin/main`, and a clean cached diff check. Human L3 and external review evidence remain pending.
+
+The evidence above predates the approved core-first implementation. Do not claim clean-home creation, CLI localization/staged JSON errors, a full production-component chain, or a real provider/native-keyring core pass until new results are recorded.
 
 ## How To Run Current Code
 
@@ -68,9 +72,17 @@ Do not run `crp start` against a real home directory during tests because it mod
 
 Credential migration on a real home, real localhost browser launch/security, native credential backends, live upstream behavior, cross-platform worker signal/port-release semantics, cross-platform atomic rename/permission semantics, and macOS/Windows visual behavior remain L3 release gates. Push, pull request, merge, versioning, and publishing have not occurred.
 
+The current `provider add --api-key <KEY>` interface remains an explicitly deferred argv/history exposure. The deterministic core-chain test may inject credentials and loopback upstreams, but only the separately authorized live smoke may satisfy real provider/native-keyring core evidence.
+
 ## Recent Decisions
 
 - Use harness-builder `iterate` mode.
+- Prioritize core CLI completion over further Web refinement; keep Web and Task 12 release execution parked until the core-first gate is complete.
+- Keep existing Admin routes and schema; do not add an aggregate setup endpoint.
+- Create a missing Codex config privately and atomically with no backup, while preserving backup/mode/idempotency behavior for existing files.
+- Support human CLI output in `en` and `zh-CN`; keep JSON keys, codes, enums, messages, and actions stable English contracts.
+- Require both deterministic production-component composition and a separately authorized real provider/native-keyring smoke before claiming core completion.
+- Retain `provider add --api-key <KEY>` in this slice and record rather than conceal its exposure risk.
 - Target ordinary users with CLI + local Web UI.
 - Support macOS/Windows UI first and preserve Linux CLI.
 - Use Supervisor + Proxy Worker.
@@ -82,7 +94,7 @@ Credential migration on a real home, real localhost browser launch/security, nat
 - Require package tests to match the exact reviewed allowlist and platform native-keyring gates to probe the intended service without fallback.
 - Require tests to use declared direct dependencies and every checkout before pull-request code to disable persisted credentials.
 - Keep V1 release, platform, and real-home migration approval classified as L3.
-- Execute the approved design through the task sequence in `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md`.
+- Treat `docs/superpowers/plans/2026-07-10-crp-v1-implementation.md` as the historical Tasks 1-12 plan, not the active core-first execution plan. A new core-first TDD plan is pending; once generated and approved, it becomes the active implementation plan.
 - Keep file-watcher tests condition-based and cleanup-safe across supported Node versions.
 - Atomic configuration writes must compare content first and preserve source file permissions.
 - Registry mutation must persist successfully before replacing in-memory state.

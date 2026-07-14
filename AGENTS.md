@@ -17,6 +17,7 @@
 - Never return, log, capture, or commit complete API keys.
 - Update affected API, data, permissions, UI/UX, testing, status, and handoff docs with behavior changes.
 - Do not run parallel writable agents without scopes and no-edit areas in `docs/AGENT_COORDINATION.md`.
+- When the user asks to conserve root-agent context, delegate reading and reviewing root and `docs/` documentation to a subagent.
 - Record reusable work mistakes as one concise required or prohibited sentence.
 - Clear secret state and its current DOM value before validation, requests, or re-rendering.
 - Cancel stale asynchronous focus callbacks and preserve newer user focus.

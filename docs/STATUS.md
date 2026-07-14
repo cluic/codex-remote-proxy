@@ -2,11 +2,12 @@
 
 ## Current Milestone
 
-V1 release readiness: local Task 12 gates and documentation prepared; external platform and L3 approval pending.
+Core-first CLI acceptance: Web refinement and Task 12 release execution are paused while the clean-home CLI path is implemented and proven through production components plus an authorized real provider/native-keyring smoke run.
 
 ## In Progress
 
-- Task 12 documentation closeout from safety commit `210cb71`: align public/native credential boundaries, strict `init` alias behavior, diagnostic summary metadata, active-provider rules, release notes, and the minor Changeset. This documentation commit records final local evidence; no push, pull request, merge, versioning, publish, or release is authorized yet.
+- Implement the user-approved core-first design in `docs/superpowers/specs/2026-07-14-crp-core-first-cli-design.md`: safe missing-file Codex bootstrap, CLI `en`/`zh-CN`, stable JSON and start-stage errors, a production-component integration gate, and a separately authorized real live smoke.
+- Keep the existing Admin API, registry schema, `OpenAI` provider identity, `127.0.0.1:15100` proxy address, package allowlist, and Web source/tests unchanged.
 
 ## Done
 
@@ -32,16 +33,19 @@ V1 release readiness: local Task 12 gates and documentation prepared; external p
 - Prepared Task 12 package and platform gates in `af918d5` (`test: add release package and platform gates`): exact 30-file tarball allowlisting, injectable native-keyring smoke coverage, strict Changesets/release workflow policy tests, a Node 22 Linux/macOS/Windows workflow matrix, macOS/Windows Chromium artifacts, and platform-native credential jobs.
 - Completed public credential-boundary hardening in `210cb71` (`fix: enforce write-only credential boundaries`). Latest code evidence is 258/258 (`227` core + `7` isolated capture + `24` integration), 67/67 post-security focused tests, 41/41 Chromium E2E, 29 syntax-checked source files, zero runtime vulnerabilities, and passing diff checks. This evidence supersedes the earlier `af918d5` code counts without completing Task 12.
 - Prepared the Task 12 user, migration, architecture, security, testing, and release documentation plus the sole next-version Changeset source without running versioning or publication. Final-tree local verification passes: lint 29, `npm test` 258/258 (`227` core + `7` isolated capture + `24` integration), integration 24/24, Chromium E2E 41/41, audit 0, package-content 3/3 against the exact 30-file allowlist, minor Changeset status since `origin/main`, and a clean cached diff check.
+- Approved the 2026-07-14 core-first design. This is a planning fact only; clean-home creation, CLI localization/staged JSON failures, the production-component chain, and real live evidence are not yet implemented or complete.
 
 ## Blocked
 
-- No local implementation blocker is recorded. Release is externally gated on actual remote workflow runs, real native credential services, platform screenshots, real-home migration/rollback review, and L3 expert approval.
+- No local implementation blocker is recorded. Final core acceptance requires operator-authorized real provider inputs, a working native credential service, free fixed ports, redacted evidence, and cleanup confirmation.
+- Release remains separately gated on remote platform runs, platform screenshots, real-home migration/rollback review, and L3 expert approval.
 
 ## Next
 
-1. With explicit authorization, obtain macOS/Windows/Linux workflow URLs, real Keychain/Credential Manager/Secret Service results, macOS/Windows sanitized screenshots, and real-home migration/rollback evidence.
-2. Obtain human L3 expert confirmation before any pull request, push, merge, versioning, publication, or release operation.
-3. Keep versioning and release as a separate Changesets release-PR operation after all external evidence and approvals are complete.
+1. Implement clean-home bootstrap and stable public Codex configuration errors with TDD.
+2. Implement complete CLI `en`/`zh-CN`, language-independent JSON failures, and explicit start stages.
+3. Pass the deterministic production-component chain, then execute and retain one authorized real provider/native-keyring smoke result with successful cleanup.
+4. Resume Web fixes only after core acceptance; resume Task 12 release gates only under separate authorization.
 
 ## Risks
 
@@ -53,3 +57,5 @@ V1 release readiness: local Task 12 gates and documentation prepared; external p
 - Task 11 browser tests use an injected loopback Admin server, in-memory services, temporary roots, and mock upstreams; real `crp ui`, native keyrings, real HOME, external providers, browser launch, and macOS/Windows platform behavior remain Task 12 L3 gates.
 - Task 12 workflow definitions and injectable smoke tests are not remote runner results. No real Keychain, Credential Manager, or Secret Service claim is complete until the corresponding job URL and backend-specific evidence exist.
 - Version `0.2.2` remains published; the minor Changeset describes intended release impact but does not authorize or imply a version bump or npm publication.
+- `provider add --api-key <KEY>` remains intentionally unchanged for this slice and can expose credentials through shell history or process inspection.
+- Deterministic loopback/injected integration evidence must not be described as real provider or native-keyring evidence.
