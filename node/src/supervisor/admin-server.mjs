@@ -970,6 +970,7 @@ export function createAdminServer({
           if (error) rejectPromise(error);
           else resolvePromise();
         });
+        server.closeAllConnections?.();
       });
     }
   };
