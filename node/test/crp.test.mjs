@@ -1453,11 +1453,13 @@ test("reads only the exact fixed-loopback supervisor state and private canonical
   })}\n`, { mode: 0o600 });
   assert.equal(readSupervisorState({ path: paths.statePath, adminPort: 15101 }), null);
 
-  chmodSync(paths.controlTokenPath, 0o644);
-  assert.throws(
-    () => readControlToken({ path: paths.controlTokenPath }),
-    (error) => error?.code === "SUPERVISOR_TOKEN_INVALID"
-  );
+  if (process.platform !== "win32") {
+    chmodSync(paths.controlTokenPath, 0o644);
+    assert.throws(
+      () => readControlToken({ path: paths.controlTokenPath }),
+      (error) => error?.code === "SUPERVISOR_TOKEN_INVALID"
+    );
+  }
 });
 
 test("rejects a control-token path swapped after its descriptor is opened", (t) => {

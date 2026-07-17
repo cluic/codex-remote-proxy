@@ -111,7 +111,9 @@ test("metrics store aggregates hourly observations and restores the strict priva
   ]);
 
   assert.equal(state.store.flush(), true);
-  assert.equal(statSync(state.path).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(state.path).mode & 0o777, 0o600);
+  }
   const document = JSON.parse(readFileSync(state.path, "utf8"));
   assert.deepEqual(Object.keys(document).sort(), [
     "bucketMinutes",

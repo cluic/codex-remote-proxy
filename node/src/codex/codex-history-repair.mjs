@@ -1640,6 +1640,7 @@ async function backupOpenDatabase(
     const temp = fileOperations.lstatSync(tempPath);
     if (!temp.isFile() || temp.isSymbolicLink()) throw failed();
     if (!sameIdentity(tempIdentity, identityOf(temp))) throw conflict();
+    const tempHash = sha256(readSafeFile(tempPath, fileOperations).bytes);
     fileOperations.chmodSync(tempPath, 0o600);
     let descriptor;
     try {
@@ -1674,9 +1675,9 @@ async function backupOpenDatabase(
     }
     if (!removeOwnedPath(tempPath, tempIdentity, fileOperations, createId)) throw failed();
     tempOwned = false;
-    const finalDestination = fileOperations.lstatSync(destination);
-    if (!finalDestination.isFile() || finalDestination.isSymbolicLink()
-      || !sameIdentity(tempIdentity, identityOf(finalDestination))) {
+    const finalDestination = readSafeFile(destination, fileOperations);
+    if (!sameIdentity(tempIdentity, finalDestination.identity)
+      || sha256(finalDestination.bytes) !== tempHash) {
       throw conflict();
     }
     return true;

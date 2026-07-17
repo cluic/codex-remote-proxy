@@ -9,7 +9,8 @@ const packageName = "@cluic/codex-remote-proxy";
 const repository = "cluic/codex-remote-proxy";
 
 function readWorkflowText(name) {
-  return readFileSync(resolve(repositoryRoot, ".github/workflows", name), "utf8");
+  return readFileSync(resolve(repositoryRoot, ".github/workflows", name), "utf8")
+    .replace(/\r\n/g, "\n");
 }
 
 function extractStepBlock(workflowText, stepName) {

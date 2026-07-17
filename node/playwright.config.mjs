@@ -16,7 +16,7 @@ export default defineConfig({
     headless: true,
     viewport: { width: 1440, height: 900 },
     reducedMotion: "reduce",
-    screenshot: "off",
+    screenshot: "only-on-failure",
     trace: "off",
     video: "off"
   },

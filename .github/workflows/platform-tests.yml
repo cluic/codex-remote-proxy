@@ -60,7 +60,7 @@ jobs:
         if: matrix.browser
         run: npx playwright install chromium
 
-      - name: Run 40 browser E2E tests
+      - name: Run browser E2E tests
         if: matrix.browser
         run: npm run test:e2e -- --project=chromium --workers=1
 
@@ -69,8 +69,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: crp-ui-${{ matrix.label }}-${{ github.run_id }}
-          path: output/playwright/task11/**/*.png
-          if-no-files-found: error
+          path: output/playwright/task11/**
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Install Linux Secret Service

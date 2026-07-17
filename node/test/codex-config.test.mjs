@@ -1143,6 +1143,7 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
     const configPath = join(codexDir, "config.toml");
     const originalBytes = Buffer.from(CONFIG_AT_PROXY_NEEDING_PATCH, "utf8");
     let sourceDescriptor;
+    let backupDescriptor;
     let replaced = false;
     const replacedIdentity = (identity) => {
       const changed = Object.create(identity);
@@ -1167,6 +1168,9 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
             openSync(path, ...args) {
               const descriptor = realFileOperations.openSync(path, ...args);
               if (path === configPath) sourceDescriptor = descriptor;
+              if (path.startsWith(`${configPath}.`) && path.endsWith(".bak")) {
+                backupDescriptor = descriptor;
+              }
               return descriptor;
             },
             readFileSync(target, ...args) {
@@ -1178,9 +1182,11 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
               }
               return value;
             },
-            copyFileSync(...args) {
-              const value = realFileOperations.copyFileSync(...args);
-              if (replacementPhase === "after-backup") replaced = true;
+            writeFileSync(target, ...args) {
+              const value = realFileOperations.writeFileSync(target, ...args);
+              if (replacementPhase === "after-backup" && target === backupDescriptor) {
+                replaced = true;
+              }
               return value;
             },
             lstatSync(path, ...args) {
@@ -1630,14 +1636,12 @@ for (const crashPhase of ["after-journal", "after-config"]) {
 
     const crashOperations = {
       ...realFileOperations,
-      copyFileSync(source, destination, flags) {
-        if (crashPhase === "after-journal" && source === configPath && !injectedCrash) {
+      openSync(path, ...args) {
+        if (crashPhase === "after-journal"
+          && path.startsWith(`${configPath}.`) && path.endsWith(".bak") && !injectedCrash) {
           injectedCrash = true;
           throw new Error("simulated crash before config publication");
         }
-        return realFileOperations.copyFileSync(source, destination, flags);
-      },
-      openSync(path, ...args) {
         if (crashPhase === "after-config"
           && path.startsWith(`${dirname(rolloutPath)}/.rollout-${crashPhase}.jsonl.`)
           && path.endsWith(".tmp") && !injectedCrash) {

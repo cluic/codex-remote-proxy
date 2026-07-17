@@ -3,7 +3,6 @@ import {
   chmodSync,
   closeSync,
   constants,
-  copyFileSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -81,7 +80,6 @@ const DEFAULT_FILE_OPERATIONS = {
   chmodSync,
   closeSync,
   constants,
-  copyFileSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -155,36 +153,38 @@ function makeBackupStem(configPath, date) {
   return `${configPath}.${timestamp}`;
 }
 
-function copyBackupExclusively(configPath, date, fileOperations) {
+function copyBackupExclusively(configPath, source, date, fileOperations) {
   const stem = makeBackupStem(configPath, date);
+  const bytes = source.bytes;
   let suffix = 1;
   let backupPath = `${stem}.bak`;
 
   while (true) {
+    let descriptor;
+    let identity;
+    let writtenBytes = Buffer.alloc(0);
     try {
-      fileOperations.copyFileSync(
-        configPath,
-        backupPath,
-        fileOperations.constants.COPYFILE_EXCL
-      );
-      let descriptor;
-      try {
-        descriptor = fileOperations.openSync(
-          backupPath,
-          fileOperations.constants.O_RDONLY
-            | (typeof fileOperations.constants.O_NOFOLLOW === "number"
-              ? fileOperations.constants.O_NOFOLLOW
-              : 0)
-        );
-        const stats = fileOperations.fstatSync(descriptor);
-        if (!stats.isFile()) throw new Error("Backup identity is invalid.");
-        fileOperations.fsyncSync(descriptor);
-      } finally {
-        if (descriptor !== undefined) fileOperations.closeSync(descriptor);
+      descriptor = fileOperations.openSync(backupPath, "wx", source.mode);
+      identity = fileOperations.fstatSync(descriptor);
+      if (!identity.isFile()) throw new Error("Backup identity is invalid.");
+      fileOperations.writeFileSync(descriptor, bytes);
+      writtenBytes = bytes;
+      fileOperations.fsyncSync(descriptor);
+      fileOperations.closeSync(descriptor);
+      descriptor = undefined;
+      const backup = readClaimedPath(backupPath, fileOperations);
+      if (!sameIdentity(backup.identity, identity) || !backup.bytes.equals(bytes)) {
+        throw new Error("Backup identity changed.");
       }
       syncDirectory(dirname(backupPath), fileOperations);
       return backupPath;
     } catch (error) {
+      if (descriptor !== undefined) {
+        try { fileOperations.closeSync(descriptor); } catch {}
+      }
+      if (identity !== undefined) {
+        claimOwnedPath(backupPath, identity, fileOperations, { expectedBytes: writtenBytes });
+      }
       if (error?.code !== "EEXIST") {
         throw error;
       }
@@ -740,11 +740,14 @@ function writeFileAtomically(
   );
   let fileDescriptor;
   let tempIdentity;
+  let writtenBytes = Buffer.alloc(0);
+  const targetBytes = Buffer.from(text, "utf8");
 
   try {
     fileDescriptor = fileOperations.openSync(tempPath, "wx", mode);
     tempIdentity = fileOperations.fstatSync(fileDescriptor);
     fileOperations.writeFileSync(fileDescriptor, text, "utf8");
+    writtenBytes = targetBytes;
     fileOperations.fsyncSync(fileDescriptor);
     fileOperations.closeSync(fileDescriptor);
     fileDescriptor = undefined;
@@ -770,7 +773,9 @@ function writeFileAtomically(
         }
         throw error;
       }
-      if (!claimOwnedPath(tempPath, tempIdentity, fileOperations)) {
+      if (!claimOwnedPath(tempPath, tempIdentity, fileOperations, {
+        expectedBytes: writtenBytes
+      })) {
         throw new Error("Codex configuration temp cleanup is uncertain.");
       }
     } else {
@@ -788,7 +793,9 @@ function writeFileAtomically(
     }
     if (tempIdentity !== undefined) {
       try {
-        claimOwnedPath(tempPath, tempIdentity, fileOperations);
+        claimOwnedPath(tempPath, tempIdentity, fileOperations, {
+          expectedBytes: writtenBytes
+        });
       } catch {
         // Preserve the original write failure.
       }
@@ -955,7 +962,7 @@ export async function bootstrapCodexConfig({
 
       assertCurrentConfig(configPath, source, fileOperations);
       phase = "write";
-      const backupPath = copyBackupExclusively(configPath, now(), fileOperations);
+      const backupPath = copyBackupExclusively(configPath, source, now(), fileOperations);
       phase = "read";
       assertCurrentConfig(configPath, source, fileOperations);
       phase = "write";
