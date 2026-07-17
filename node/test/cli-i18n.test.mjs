@@ -29,7 +29,14 @@ function discoveredContext(client, status = adminStatus()) {
     origin: "http://127.0.0.1:15101",
     state: {
       supervisorPid: status.supervisor.pid,
-      startedAt: status.supervisor.startedAt
+      startedAt: status.supervisor.startedAt,
+      admin: {
+        host: "127.0.0.1",
+        port: 15101,
+        authority: "127.0.0.1:15101",
+        origin: "http://127.0.0.1:15101"
+      },
+      worker: status.worker
     },
     status,
     client,
@@ -475,9 +482,18 @@ test("status human output distinguishes a stopped Worker from a missing Supervis
 
 test("lifecycle success output is bilingual", async () => {
   const client = {
-    async request(method, path) {
+    async request(method, path, body) {
       if (path === "/status") return adminStatus();
       if (path === "/proxy/stop") return { worker: { phase: "stopped", pid: null, generation: 1 } };
+      if (path === "/supervisor/shutdown") {
+        return {
+          shutdown: {
+            accepted: true,
+            supervisorPid: body.supervisorPid,
+            startedAt: body.startedAt
+          }
+        };
+      }
       return { worker: { phase: "running", pid: 8001, generation: 1 } };
     }
   };
@@ -507,7 +523,8 @@ test("lifecycle success output is bilingual", async () => {
     const result = await invokeCli(["shutdown", "--locale", locale], {
       paths,
       discoverSupervisorImpl: async () => context,
-      killProcess() {},
+      readSupervisorStateSnapshotImpl: () => Object.freeze({}),
+      readSupervisorStateImpl: () => context.state,
       isProcessAlive: () => false
     });
     assert.equal(result.status, 0, result.stderr);

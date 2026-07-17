@@ -256,7 +256,7 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
 
   // D1 proves the production component chain with an injected credential adapter.
   // D2 owns detached Supervisor entry, native keyring, and OS signal evidence.
-  const isProcessAlive = (pid) => supervisorAlive && pid === process.pid;
+  const isProcessAlive = (pid) => pid === process.pid && existsSync(paths.statePath);
   const ensureSupervisorImpl = (options) => ensureSupervisor({
     ...options,
     home,
@@ -287,6 +287,7 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
       isProcessAlive,
       wait: async () => {
         if (supervisorClosePromise) await supervisorClosePromise;
+        else await new Promise((resolvePromise) => setImmediate(resolvePromise));
       },
       shutdownTimeoutMs: 10_000,
       stdout: (text) => stdout.push(text),
@@ -479,7 +480,12 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
 
   const shutdown = await invoke(["shutdown", "--json"]);
   assert.equal(shutdown.shutdown, true);
+  assert.equal(shutdown.graceful, true);
+  assert.equal(shutdown.forced, false);
   assert.equal(shutdown.supervisorPid, process.pid);
+  supervisorClosePromise ??= supervisor.close().finally(() => {
+    supervisorAlive = false;
+  });
   await supervisorClosePromise;
   assert.equal(supervisorAlive, false);
   assert.equal(existsSync(paths.statePath), false);

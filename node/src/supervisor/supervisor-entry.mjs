@@ -57,7 +57,15 @@ export async function runSupervisor({
   };
   const shutdown = () => {
     if (shutdownPromise) return shutdownPromise;
-    shutdownPromise = Promise.resolve(supervisor.close())
+    let requested;
+    try {
+      requested = typeof supervisor.requestShutdown === "function"
+        ? supervisor.requestShutdown()
+        : supervisor.close();
+    } catch (error) {
+      requested = Promise.reject(error);
+    }
+    shutdownPromise = Promise.resolve(requested)
       .then(
         () => {
           removeSignalHandlers();

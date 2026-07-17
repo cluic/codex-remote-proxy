@@ -11,6 +11,8 @@ import type {
   SafeErrorDetails,
   Settings,
   StatusResponse,
+  SupervisorIdentity,
+  SupervisorShutdownAcceptance,
   WorkerStatus
 } from "./types";
 
@@ -39,7 +41,24 @@ type RequestOptions = {
   emptyBody?: boolean;
   signal?: AbortSignal;
   sessionResume?: boolean;
+  expectedStatus?: number;
 };
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isExactShutdownPayload(
+  value: unknown,
+  identity: SupervisorIdentity
+): value is { shutdown: SupervisorShutdownAcceptance } {
+  if (!isPlainRecord(value) || Object.keys(value).length !== 1
+    || !isPlainRecord(value.shutdown)) return false;
+  return Object.keys(value.shutdown).length === 3
+    && value.shutdown.accepted === true
+    && value.shutdown.supervisorPid === identity.pid
+    && value.shutdown.startedAt === identity.startedAt;
+}
 
 export class ApiError extends Error {
   readonly code: string;
@@ -250,6 +269,24 @@ export class CrpApi {
     return payload.worker;
   }
 
+  async shutdownSupervisor(identity: SupervisorIdentity): Promise<SupervisorShutdownAcceptance> {
+    const payload = await this.mutate<unknown>("/api/v1/supervisor/shutdown", {
+      method: "POST",
+      body: {
+        supervisorPid: identity.pid,
+        startedAt: identity.startedAt
+      },
+      expectedStatus: 202
+    });
+    if (!isExactShutdownPayload(payload, identity)) {
+      throw new ApiError("INTERNAL_ERROR", 202);
+    }
+    this.#terminal = true;
+    this.#csrfToken = null;
+    this.#mutationAllowed = false;
+    return payload.shutdown;
+  }
+
   async bootstrapCodex(): Promise<BootstrapResult> {
     const payload = await this.mutate<{ result: BootstrapResult }>("/api/v1/codex/bootstrap", {
       method: "POST",
@@ -335,6 +372,9 @@ export class CrpApi {
           this.terminate(error);
         }
         throw error;
+      }
+      if (options.expectedStatus !== undefined && response.status !== options.expectedStatus) {
+        throw new ApiError("INTERNAL_ERROR", response.status);
       }
       return payload as T;
     } catch (error) {

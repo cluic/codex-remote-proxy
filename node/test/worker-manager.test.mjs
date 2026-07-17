@@ -173,6 +173,7 @@ function createHarness(scripts = [], {
   healthOk = true,
   forkError = false,
   portError = false,
+  useDefaultFork = false,
   runRecoveryWhenReady = (operation) => operation(),
   recordMetric,
   noteDroppedMetric
@@ -181,8 +182,25 @@ function createHarness(scripts = [], {
   const children = [];
   const healthCalls = [];
   const portChecks = [];
+  const forkCalls = [];
   const metrics = [];
   let droppedMetrics = 0;
+  const forkWorker = () => {
+    if (forkError) throw new Error("sensitive fork cause must not pass");
+    const child = new FakeChild(scripts[children.length] ?? {});
+    children.push(child);
+    return child;
+  };
+  const forkDependency = useDefaultFork ? {
+    forkImpl(entryPath, args, options) {
+      forkCalls.push({
+        entryPath,
+        args: structuredClone(args),
+        options: structuredClone(options)
+      });
+      return forkWorker();
+    }
+  } : { forkWorker };
   const manager = new WorkerManager({
     host: "127.0.0.1",
     port: 15100,
@@ -192,12 +210,7 @@ function createHarness(scripts = [], {
     healthTimeoutMs: 100,
     terminateTimeoutMs: 100,
     killTimeoutMs: 100,
-    forkWorker() {
-      if (forkError) throw new Error("sensitive fork cause must not pass");
-      const child = new FakeChild(scripts[children.length] ?? {});
-      children.push(child);
-      return child;
-    },
+    ...forkDependency,
     async fetchImpl(url) {
       healthCalls.push(url);
       const generation = children.at(-1)?.sent.findLast((message) => message.type === "configure")?.generation;
@@ -224,6 +237,7 @@ function createHarness(scripts = [], {
     manager,
     clock,
     children,
+    forkCalls,
     healthCalls,
     portChecks,
     metrics,
@@ -293,6 +307,35 @@ test("start waits for ready, correlated configure, and matching health before ru
   assert.equal(harness.healthCalls.length, 1);
   assert.equal(harness.children[0].sent[0].type, "configure");
   assert.equal(harness.children[0].sent[0].settings.upstream.apiKey, SECRET);
+});
+
+test("default worker forks stay hidden across start, restart, and crash recovery", async (t) => {
+  const harness = createHarness([], { useDefaultFork: true });
+  t.after(() => harness.manager.close());
+
+  await settle(harness.manager.start(makeSnapshot()), harness.clock);
+  await settle(harness.manager.restart(makeSnapshot(2)), harness.clock);
+  harness.children[1].exit(1, null);
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "backoff",
+    "hidden worker recovery backoff"
+  );
+  await harness.clock.advance(250);
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "running",
+    "hidden worker recovery"
+  );
+
+  assert.equal(harness.forkCalls.length, 3);
+  for (const call of harness.forkCalls) {
+    assert.match(call.entryPath, /worker-entry\.mjs$/);
+    assert.deepEqual(call.args, []);
+    assert.deepEqual(call.options, {
+      execPath: process.execPath,
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      windowsHide: true
+    });
+  }
 });
 
 test("applySnapshot updates the confirmed generation only after a matching acknowledgement", async (t) => {

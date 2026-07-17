@@ -2,7 +2,7 @@ export type Locale = "en" | "zh-CN";
 
 export type Route = "overview" | "providers" | "activity" | "system" | "setup";
 
-export type AccessMode = "initializing" | "writable" | "read-only" | "terminal";
+export type AccessMode = "initializing" | "writable" | "read-only" | "terminal" | "stopped";
 
 export type TestStatus = "untested" | "passed" | "failed";
 
@@ -51,6 +51,17 @@ export interface WorkerStatus {
   restartCount: number;
   startedAt: string | null;
   error: { code?: string; message?: string } | null;
+}
+
+export interface SupervisorIdentity {
+  pid: number;
+  startedAt: string;
+}
+
+export interface SupervisorShutdownAcceptance {
+  accepted: true;
+  supervisorPid: number;
+  startedAt: string;
 }
 
 export interface StatusResponse {

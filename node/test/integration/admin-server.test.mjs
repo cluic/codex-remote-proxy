@@ -509,6 +509,222 @@ test("requires CSRF for browser mutations while bearer mutations bypass CSRF", a
   }
 });
 
+test("accepts identity-bound Supervisor shutdown through bearer or browser CSRF and schedules once", async (t) => {
+  const shutdownGate = createGate();
+  let shutdownCalls = 0;
+  const harness = await createHarness(t, {
+    requestSupervisorShutdown() {
+      shutdownCalls += 1;
+      return shutdownGate.promise;
+    }
+  });
+  const identity = {
+    supervisorPid: 9001,
+    startedAt: "2026-07-13T00:00:00.000Z"
+  };
+  const body = JSON.stringify(identity);
+  const session = await browserSession(harness);
+
+  const unauthenticated = await harness.request("/api/v1/supervisor/shutdown", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body
+  });
+  assert.equal(unauthenticated.response.status, 401);
+  assert.equal(unauthenticated.json.error.code, "AUTH_REQUIRED");
+
+  const missingCsrf = await harness.request("/api/v1/supervisor/shutdown", {
+    method: "POST",
+    headers: {
+      cookie: session.cookie,
+      origin: harness.address.origin,
+      "content-type": "application/json"
+    },
+    body
+  });
+  assert.equal(missingCsrf.response.status, 403);
+  assert.equal(missingCsrf.json.error.code, "AUTH_CSRF_INVALID");
+
+  const [browserResult, bearerResult] = await Promise.all([
+    harness.request("/api/v1/supervisor/shutdown", {
+      method: "POST",
+      headers: {
+        cookie: session.cookie,
+        origin: harness.address.origin,
+        "x-crp-csrf": session.csrfToken,
+        "content-type": "application/json"
+      },
+      body
+    }),
+    harness.request("/api/v1/supervisor/shutdown", {
+      method: "POST",
+      headers: { ...bearer(harness), "content-type": "application/json" },
+      body
+    })
+  ]);
+
+  for (const result of [unauthenticated, missingCsrf, browserResult, bearerResult]) {
+    assertNoSensitiveResponse(result);
+  }
+  for (const result of [browserResult, bearerResult]) {
+    assert.equal(result.response.status, 202, result.text);
+    assert.deepEqual(result.json, {
+      shutdown: { accepted: true, ...identity }
+    });
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(shutdownCalls, 1);
+  shutdownGate.resolve();
+});
+
+test("rejects stale or malformed Supervisor shutdown identities without scheduling close", async (t) => {
+  let shutdownCalls = 0;
+  const harness = await createHarness(t, {
+    requestSupervisorShutdown() {
+      shutdownCalls += 1;
+    }
+  });
+  const headers = { ...bearer(harness), "content-type": "application/json" };
+  const identity = {
+    supervisorPid: 9001,
+    startedAt: "2026-07-13T00:00:00.000Z"
+  };
+
+  for (const body of [
+    { ...identity, supervisorPid: 9002 },
+    { ...identity, startedAt: "2026-07-13T00:00:01.000Z" }
+  ]) {
+    const stale = await harness.request("/api/v1/supervisor/shutdown", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+    assertNoSensitiveResponse(stale);
+    assert.equal(stale.response.status, 409, stale.text);
+    assert.equal(stale.json.error.code, "SUPERVISOR_IDENTITY_CHANGED");
+  }
+
+  for (const body of [
+    {},
+    { ...identity, supervisorPid: 0 },
+    { ...identity, supervisorPid: 4_294_967_296 },
+    { ...identity, startedAt: "2026-07-13T00:00:00Z" },
+    { ...identity, unexpected: true }
+  ]) {
+    const malformed = await harness.request("/api/v1/supervisor/shutdown", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+    assertNoSensitiveResponse(malformed);
+    assert.equal(malformed.response.status, 400, malformed.text);
+    assert.equal(malformed.json.error.code, "API_BODY_INVALID");
+  }
+
+  const emptyBody = await harness.request("/api/v1/supervisor/shutdown", {
+    method: "POST",
+    headers
+  });
+  assert.equal(emptyBody.response.status, 400, emptyBody.text);
+  assert.equal(emptyBody.json.error.code, "API_BODY_INVALID");
+
+  const query = await harness.request("/api/v1/supervisor/shutdown?retry=1", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(identity)
+  });
+  assert.equal(query.response.status, 400, query.text);
+  assert.equal(query.json.error.code, "API_BODY_INVALID");
+
+  const wrongMethod = await harness.request("/api/v1/supervisor/shutdown", {
+    method: "GET",
+    headers: bearer(harness)
+  });
+  assert.equal(wrongMethod.response.status, 405, wrongMethod.text);
+  assert.equal(wrongMethod.response.headers.get("allow"), "POST");
+  assert.equal(wrongMethod.json.error.code, "API_METHOD_NOT_ALLOWED");
+
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(shutdownCalls, 0);
+});
+
+test("fails closed when no Supervisor shutdown coordinator is injected", async (t) => {
+  const harness = await createHarness(t);
+  const result = await harness.request("/api/v1/supervisor/shutdown", {
+    method: "POST",
+    headers: { ...bearer(harness), "content-type": "application/json" },
+    body: JSON.stringify({
+      supervisorPid: 9001,
+      startedAt: "2026-07-13T00:00:00.000Z"
+    })
+  });
+  assertNoSensitiveResponse(result);
+  assert.equal(result.response.status, 503, result.text);
+  assert.equal(result.json.error.code, "SUPERVISOR_SHUTDOWN_UNAVAILABLE");
+});
+
+test("finishes the shutdown response before closing the Admin server", async (t) => {
+  let adminToClose;
+  let shutdownCalls = 0;
+  const harness = await createHarness(t, {
+    requestSupervisorShutdown() {
+      shutdownCalls += 1;
+      return adminToClose.close();
+    }
+  });
+  adminToClose = harness.admin;
+  const closed = new Promise((resolvePromise) => {
+    harness.admin.server.once("close", resolvePromise);
+  });
+
+  const result = await harness.request("/api/v1/supervisor/shutdown", {
+    method: "POST",
+    headers: { ...bearer(harness), "content-type": "application/json" },
+    body: JSON.stringify({
+      supervisorPid: 9001,
+      startedAt: "2026-07-13T00:00:00.000Z"
+    })
+  });
+  assert.equal(result.response.status, 202, result.text);
+  assert.deepEqual(result.json, {
+    shutdown: {
+      accepted: true,
+      supervisorPid: 9001,
+      startedAt: "2026-07-13T00:00:00.000Z"
+    }
+  });
+  await closed;
+  assert.equal(shutdownCalls, 1);
+});
+
+test("retries the shutdown coordinator after a failed asynchronous close attempt", async (t) => {
+  let shutdownCalls = 0;
+  const harness = await createHarness(t, {
+    requestSupervisorShutdown() {
+      shutdownCalls += 1;
+      if (shutdownCalls === 1) return Promise.reject(new Error("private close failure"));
+      return Promise.resolve();
+    }
+  });
+  const request = () => harness.request("/api/v1/supervisor/shutdown", {
+    method: "POST",
+    headers: { ...bearer(harness), "content-type": "application/json" },
+    body: JSON.stringify({
+      supervisorPid: 9001,
+      startedAt: "2026-07-13T00:00:00.000Z"
+    })
+  });
+
+  const first = await request();
+  assert.equal(first.response.status, 202, first.text);
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  const second = await request();
+  assert.equal(second.response.status, 202, second.text);
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(shutdownCalls, 2);
+});
+
 test("resumes a valid cookie session only through the strict same-origin bootstrap", async (t) => {
   const harness = await createHarness(t);
   const session = await browserSession(harness);
@@ -1223,7 +1439,11 @@ function createGate() {
   return { promise, resolve, reject };
 }
 
-function supervisorDependencies(t, { listenGate = createGate() } = {}) {
+function supervisorDependencies(t, {
+  listenGate = createGate(),
+  adminCloseGate = null,
+  workerCloseImpl = null
+} = {}) {
   const home = mkdtempSync(join(os.tmpdir(), "crp-supervisor-"));
   const paths = {
     ...getPaths(home),
@@ -1235,7 +1455,7 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
     getPublicState: () => workerState(),
     close: () => {
       order.push("worker.close");
-      return Promise.resolve();
+      return workerCloseImpl?.() ?? Promise.resolve();
     }
   };
   const activity = { append() {}, list: () => [] };
@@ -1268,6 +1488,7 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
   const auth = {
     close() { order.push("auth.close"); }
   };
+  let adminOptions = null;
   const admin = {
     async listen() {
       order.push("admin.listen");
@@ -1275,7 +1496,7 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
     },
     close() {
       order.push("admin.close");
-      return Promise.resolve();
+      return adminCloseGate?.promise ?? Promise.resolve();
     }
   };
   const options = {
@@ -1331,6 +1552,7 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
     },
     adminServerFactory: (input) => {
       order.push("admin");
+      adminOptions = input;
       assert.equal(input.auth, auth);
       assert.equal(input.providerService, provider);
       assert.equal(input.metricsService, metrics);
@@ -1338,7 +1560,18 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
     }
   };
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  return { home, paths, order, worker, admin, listenGate, registry, metrics, options };
+  return {
+    home,
+    paths,
+    order,
+    worker,
+    admin,
+    listenGate,
+    registry,
+    metrics,
+    options,
+    getAdminOptions: () => adminOptions
+  };
 }
 
 test("supervisor migrates before registry construction and writes private state only after ready", async (t) => {
@@ -1386,7 +1619,7 @@ test("supervisor migrates before registry construction and writes private state 
   assert.equal(firstClose, secondClose);
   await firstClose;
   assert.deepEqual(harness.order.slice(-4), [
-    "admin.close", "auth.close", "worker.close", "metrics.close"
+    "worker.close", "admin.close", "auth.close", "metrics.close"
   ]);
   assert.equal(existsSync(harness.paths.statePath), false);
 });
@@ -1398,9 +1631,70 @@ test("supervisor cleans up in reverse order when Admin readiness fails", async (
   harness.listenGate.reject(failure);
   await assert.rejects(() => supervisor.listen(), (error) => error === failure);
   assert.deepEqual(harness.order.slice(-4), [
-    "admin.close", "auth.close", "worker.close", "metrics.close"
+    "worker.close", "admin.close", "auth.close", "metrics.close"
   ]);
   assert.equal(existsSync(harness.paths.statePath), false);
+});
+
+test("supervisor preserves discoverable state and retries after Worker close fails", async (t) => {
+  const failure = new Error("private Worker close failure");
+  let closeAttempts = 0;
+  const harness = supervisorDependencies(t, {
+    workerCloseImpl() {
+      closeAttempts += 1;
+      if (closeAttempts === 1) return Promise.reject(failure);
+      return Promise.resolve();
+    }
+  });
+  harness.listenGate.resolve({
+    host: "127.0.0.1",
+    port: 15101,
+    authority: "127.0.0.1:15101",
+    origin: "http://127.0.0.1:15101"
+  });
+  const supervisor = await createSupervisor(harness.options);
+  await supervisor.listen();
+
+  await assert.rejects(() => supervisor.close(), (error) => error === failure);
+  assert.equal(existsSync(harness.paths.statePath), true);
+  assert.equal(harness.order.filter((entry) => entry === "admin.close").length, 0);
+  await supervisor.close();
+  assert.equal(closeAttempts, 2);
+  assert.equal(harness.order.filter((entry) => entry === "admin.close").length, 1);
+  assert.equal(existsSync(harness.paths.statePath), false);
+});
+
+test("supervisor retries an interrupted fixed-marker state deletion", async (t) => {
+  const harness = supervisorDependencies(t);
+  const claimPath = `${harness.paths.statePath}.stale`;
+  let failClaimRemoval = true;
+  harness.options.stateFileOperations = {
+    ...realFileOperations,
+    rmSync(path, ...args) {
+      if (path === claimPath && failClaimRemoval) {
+        failClaimRemoval = false;
+        const error = new Error("private state removal failure");
+        error.code = "EIO";
+        throw error;
+      }
+      return realFileOperations.rmSync(path, ...args);
+    }
+  };
+  harness.listenGate.resolve({
+    host: "127.0.0.1",
+    port: 15101,
+    authority: "127.0.0.1:15101",
+    origin: "http://127.0.0.1:15101"
+  });
+  const supervisor = await createSupervisor(harness.options);
+  await supervisor.listen();
+
+  await assert.rejects(() => supervisor.close(), (error) => error?.code === "EIO");
+  assert.equal(existsSync(harness.paths.statePath), false);
+  assert.equal(existsSync(claimPath), true);
+  await supervisor.close();
+  assert.equal(existsSync(harness.paths.statePath), false);
+  assert.equal(existsSync(claimPath), false);
 });
 
 test("supervisor cleans constructed resources when composition fails before listen", async (t) => {
@@ -2084,6 +2378,44 @@ test("supervisor entry shares idempotent signal shutdown without exiting early",
   assert.equal(processRef.exitCode, 0);
   assert.equal(processRef.listenerCount("SIGTERM"), 0);
   assert.equal(processRef.listenerCount("SIGINT"), 0);
+});
+
+test("Supervisor Admin and signal shutdown share the same close-once coordinator", async (t) => {
+  const adminCloseGate = createGate();
+  const harness = supervisorDependencies(t, { adminCloseGate });
+  harness.listenGate.resolve({
+    host: "127.0.0.1",
+    port: 15101,
+    authority: "127.0.0.1:15101",
+    origin: "http://127.0.0.1:15101"
+  });
+  const supervisor = await createSupervisor(harness.options);
+  const processRef = new EventEmitter();
+  processRef.exitCode = null;
+  processRef.connected = false;
+  await runSupervisor({
+    processRef,
+    createSupervisorImpl: async () => supervisor
+  });
+
+  const fromAdmin = harness.getAdminOptions().requestSupervisorShutdown();
+  const direct = supervisor.requestShutdown();
+  assert.equal(fromAdmin, direct);
+  processRef.emit("SIGTERM");
+  await Promise.resolve();
+  assert.equal(harness.order.filter((entry) => entry === "admin.close").length, 1);
+  assert.equal(processRef.exitCode, null);
+
+  adminCloseGate.resolve();
+  await fromAdmin;
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  for (const operation of ["admin.close", "auth.close", "worker.close", "metrics.close"]) {
+    assert.equal(harness.order.filter((entry) => entry === operation).length, 1);
+  }
+  assert.equal(processRef.exitCode, 0);
+  assert.equal(processRef.listenerCount("SIGTERM"), 0);
+  assert.equal(processRef.listenerCount("SIGINT"), 0);
+  assert.equal(existsSync(harness.paths.statePath), false);
 });
 
 test("supervisor entry reports one sanitized startup failure over IPC", async () => {

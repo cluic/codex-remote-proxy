@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { assertNoSecrets, expect, openCrp, test } from "./crp-ui-fixture.mjs";
+import { assertLayoutIntegrity, assertNoSecrets, expect, openCrp, test } from "./crp-ui-fixture.mjs";
 
 async function openProviderTest(page, name) {
   await page.getByRole("button", { name: `Test ${name}` }).click();
@@ -97,6 +97,146 @@ test("stops and starts only the worker with exact empty request bodies", async (
     expect(request.contentType).toBeUndefined();
   }
   expect(crp.state.supervisorPid).toBe(7001);
+});
+
+test("keeps Exit CRP separate from worker controls and cancels safely on mobile", async ({ page, crp }) => {
+  const shutdownRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/supervisor/shutdown") {
+      shutdownRequests.push(request.method());
+    }
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openCrp(page, crp);
+  const menu = page.getByRole("button", { name: "Open navigation" });
+  await menu.click();
+  const drawer = page.getByRole("dialog", { name: "Primary navigation" });
+  const exit = drawer.getByRole("button", { name: "Exit CRP" });
+  expect(await exit.evaluate((element) => element.closest(".sidebar-worker-actions") === null)).toBe(true);
+  await exit.click();
+  await expect(drawer).toBeHidden();
+  const confirmation = page.getByRole("dialog", { name: "Exit CRP?" });
+  await expect(confirmation).toContainText("The local console will go offline");
+  await assertLayoutIntegrity(page);
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirmation).toBeHidden();
+  await expect(menu).toBeFocused();
+  expect(shutdownRequests).toEqual([]);
+  expect(crp.calls.filter((call) => call.operation === "shutdownSupervisor")).toEqual([]);
+});
+
+test("submits the authenticated supervisor identity and enters a quiet shutdown terminal", async ({ page, crp }) => {
+  const requests = [];
+  const responses = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname !== "/api/v1/supervisor/shutdown") return;
+    requests.push({
+      method: request.method(),
+      body: request.postDataJSON(),
+      contentType: request.headers()["content-type"],
+      csrfLength: request.headers()["x-crp-csrf"]?.length ?? 0
+    });
+  });
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/api/v1/supervisor/shutdown") {
+      responses.push(response.status());
+    }
+  });
+  await openCrp(page, crp);
+  await page.getByRole("button", { name: "Exit CRP" }).click();
+  const confirmation = page.getByRole("dialog", { name: "Exit CRP?" });
+  await confirmation.getByRole("button", { name: "Exit CRP" }).click();
+
+  const stopped = page.getByTestId("supervisor-stopped");
+  await expect(stopped.getByRole("heading", { name: "CRP is shutting down" })).toBeVisible();
+  await expect(stopped).toContainText("The shutdown request was accepted");
+  await expect(stopped).toContainText("You may close this page.");
+  await expect(page.locator("#app-root")).toHaveCount(0);
+  await expect.poll(() => crp.calls.filter((call) => call.operation === "shutdownSupervisor").length).toBe(1);
+  expect(crp.state.supervisorShutdownAccepted).toBe(true);
+  expect(requests).toEqual([{
+    method: "POST",
+    body: {
+      supervisorPid: crp.backendStatus.supervisor.pid,
+      startedAt: crp.backendStatus.supervisor.startedAt
+    },
+    contentType: "application/json",
+    csrfLength: 43
+  }]);
+  expect(responses).toEqual([202]);
+  expect(page.isClosed()).toBe(false);
+
+  const apiRequestCount = requests.length;
+  await stopped.getByLabel("Language").selectOption("zh-CN");
+  await expect(stopped.getByRole("heading", { name: "CRP 正在关闭" })).toBeVisible();
+  await expect(stopped).toContainText("关闭请求已被接受");
+  await expect(stopped).toContainText("现在可以关闭此页面。");
+  expect(requests).toHaveLength(apiRequestCount);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertLayoutIntegrity(page);
+});
+
+test("keeps supervisor shutdown unavailable in a read-only session", async ({ page, crp }) => {
+  const shutdownRequests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/supervisor/shutdown") {
+      shutdownRequests.push(request.method());
+    }
+  });
+  await openCrp(page, crp);
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("aria-busy", "false");
+  await expect(page.locator("#session-banner")).toContainText("Read-only session");
+  await expect(page.getByRole("button", { name: "Exit CRP" })).toBeDisabled();
+  expect(shutdownRequests).toEqual([]);
+});
+
+test("does not enter the stopped state when the supervisor identity changed", async ({ page, crp }) => {
+  await openCrp(page, crp);
+  crp.replaceSupervisorIdentity({
+    pid: crp.backendStatus.supervisor.pid + 1,
+    startedAt: crp.backendStatus.supervisor.startedAt
+  });
+  await page.getByRole("button", { name: "Exit CRP" }).click();
+  const confirmation = page.getByRole("dialog", { name: "Exit CRP?" });
+  await confirmation.getByRole("button", { name: "Exit CRP" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("CRP could not complete the operation");
+  await alert.locator("summary").click();
+  await expect(alert).toContainText("SUPERVISOR_IDENTITY_CHANGED");
+  await expect(page.locator("#app-root")).toBeVisible();
+  await expect(page.getByTestId("supervisor-stopped")).toHaveCount(0);
+  expect(crp.state.supervisorShutdownAccepted).toBe(false);
+  expect(crp.calls.filter((call) => call.operation === "shutdownSupervisor")).toEqual([]);
+});
+
+test("rejects a non-minimal shutdown acceptance without going offline", async ({ page, crp }) => {
+  await page.route("**/api/v1/supervisor/shutdown", async (route) => {
+    const identity = route.request().postDataJSON();
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        shutdown: {
+          accepted: true,
+          supervisorPid: identity.supervisorPid,
+          startedAt: identity.startedAt,
+          unexpected: true
+        }
+      })
+    });
+  });
+  await openCrp(page, crp);
+  await page.getByRole("button", { name: "Exit CRP" }).click();
+  const confirmation = page.getByRole("dialog", { name: "Exit CRP?" });
+  await confirmation.getByRole("button", { name: "Exit CRP" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("CRP could not complete the operation");
+  await alert.locator("summary").click();
+  await expect(alert).toContainText("INTERNAL_ERROR");
+  await expect(page.locator("#app-root")).toBeVisible();
+  await expect(page.getByTestId("supervisor-stopped")).toHaveCount(0);
+  expect(crp.state.supervisorShutdownAccepted).toBe(false);
 });
 
 test("projects real transitional and recovery phases in the sidebar", async ({ page, crp }) => {

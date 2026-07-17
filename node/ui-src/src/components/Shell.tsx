@@ -6,8 +6,10 @@ import {
   CircleGauge,
   FileClock,
   Languages,
+  LoaderCircle,
   Menu,
   Play,
+  Power,
   RefreshCw,
   RotateCw,
   ServerCog,
@@ -56,6 +58,7 @@ type ShellProps = {
   onStart: () => void;
   onStop: () => void;
   onRestart: () => void;
+  onShutdown: () => Promise<boolean>;
   children: ReactNode;
 };
 
@@ -77,10 +80,12 @@ export function Shell({
   onStart,
   onStop,
   onRestart,
+  onShutdown,
   children
 }: ShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [restartOpen, setRestartOpen] = useState(false);
+  const [shutdownOpen, setShutdownOpen] = useState(false);
   const asideRef = useRef<HTMLElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const wasOpenRef = useRef(false);
@@ -88,6 +93,7 @@ export function Shell({
   const openGenerationRef = useRef(0);
   const openFocusFrameRef = useRef<number | null>(null);
   const restartFrameRef = useRef<number | null>(null);
+  const shutdownFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!mobileOpen) {
@@ -144,6 +150,7 @@ export function Shell({
 
   useEffect(() => () => {
     if (restartFrameRef.current !== null) cancelAnimationFrame(restartFrameRef.current);
+    if (shutdownFrameRef.current !== null) cancelAnimationFrame(shutdownFrameRef.current);
   }, []);
 
   const navigate = (next: Route) => {
@@ -181,12 +188,30 @@ export function Shell({
     });
   };
 
+  const requestSidebarShutdown = () => {
+    if (!mobileOpen) {
+      setShutdownOpen(true);
+      return;
+    }
+    closeMobileNav();
+    if (shutdownFrameRef.current !== null) cancelAnimationFrame(shutdownFrameRef.current);
+    shutdownFrameRef.current = requestAnimationFrame(() => {
+      shutdownFrameRef.current = requestAnimationFrame(() => {
+        shutdownFrameRef.current = null;
+        setShutdownOpen(true);
+      });
+    });
+  };
+
   const activeProvider = status.activeProvider;
   const worker = status.worker;
   const workerRunning = worker?.phase === "running" && worker.state?.listening === true;
   const inFlight = worker?.state?.inFlight ?? 0;
   const providerEligible = activeProvider?.lastTestStatus === "passed" && activeProvider.credentialConfigured;
   const codexReady = status.codex.configured && !status.codex.historyRepairPending;
+  const supervisorIdentified = Number.isSafeInteger(status.supervisor.pid)
+    && status.supervisor.pid !== null
+    && typeof status.supervisor.startedAt === "string";
   const mutationPending = pending !== null;
   let workerLabel = t("common.stopped");
   let workerTone: "success" | "danger" | "info" | "neutral" = "neutral";
@@ -277,10 +302,21 @@ export function Shell({
           <div className="sidebar-runtime">
             <div className="sidebar-runtime-heading">
               <span title={status.codex.proxyUrl ?? "http://127.0.0.1:15100"}>OpenAI · :15100</span>
-              <StatusBadge tone={workerTone}>
-                {workerLabel}
-                {inFlight > 0 ? ` · ${inFlight}` : ""}
-              </StatusBadge>
+              <div className="sidebar-runtime-heading-actions">
+                <StatusBadge tone={workerTone}>
+                  {workerLabel}
+                  {inFlight > 0 ? ` · ${inFlight}` : ""}
+                </StatusBadge>
+                <IconButton
+                  className="sidebar-supervisor-exit"
+                  label={t("supervisor.exit")}
+                  disabled={accessMode !== "writable" || mutationPending || !supervisorIdentified}
+                  aria-busy={pending === "supervisor-shutdown" || undefined}
+                  onClick={requestSidebarShutdown}
+                >{pending === "supervisor-shutdown"
+                    ? <LoaderCircle className="spin" aria-hidden="true" />
+                    : <Power aria-hidden="true" />}</IconButton>
+              </div>
             </div>
             <div className="sidebar-runtime-controls">
               <label className="sidebar-provider-select" htmlFor="sidebar-provider-select">
@@ -430,6 +466,30 @@ export function Shell({
           </>
         )}
       ><Notice title={t("overview.inFlight", { value: inFlight })} tone="warning"><p>{t("overview.proxyControlsHelp")}</p></Notice></Modal>
+      <Modal
+        open={shutdownOpen}
+        title={t("supervisor.exitTitle")}
+        description={t("supervisor.exitHelp")}
+        onClose={() => setShutdownOpen(false)}
+        t={t}
+        size="small"
+        footer={(
+          <>
+            <Button autoFocus onClick={() => setShutdownOpen(false)}>{t("common.cancel")}</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setShutdownOpen(false);
+                void onShutdown();
+              }}
+            >{t("supervisor.exitConfirm")}</Button>
+          </>
+        )}
+      >
+        <Notice title={t("supervisor.exitNoticeTitle")} tone="warning">
+          <p>{t("supervisor.exitNoticeHelp")}</p>
+        </Notice>
+      </Modal>
     </div>
   );
 }

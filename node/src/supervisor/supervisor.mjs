@@ -408,17 +408,36 @@ function sameIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-function removeOwnedState(path, owned, fileOperations, createId) {
+function removeOwnedState(path, owned, fileOperations) {
   if (!owned) return;
+  const claimPath = resolve(dirname(path), `${basename(path)}.stale`);
   let before;
   try {
     before = fileOperations.lstatSync(path);
   } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw error;
+    if (error?.code !== "ENOENT") throw error;
+    try {
+      const claimed = fileOperations.lstatSync(claimPath);
+      if (sameIdentity(claimed, owned.identity)
+        && fileOperations.readFileSync(claimPath).equals(owned.bytes)) {
+        fileOperations.rmSync(claimPath);
+      }
+    } catch (claimError) {
+      if (claimError?.code !== "ENOENT") throw claimError;
+    }
+    return;
   }
   if (!sameIdentity(before, owned.identity)) return;
-  const claimPath = resolve(dirname(path), `.${basename(path)}.${createId()}.claim`);
+  try {
+    const residual = fileOperations.lstatSync(claimPath);
+    if (!sameIdentity(residual, owned.identity)
+      || !fileOperations.readFileSync(claimPath).equals(owned.bytes)) {
+      throw new Error("Supervisor state cleanup marker is not owned by this process.");
+    }
+    fileOperations.rmSync(claimPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   fileOperations.renameSync(path, claimPath);
   const claimed = fileOperations.lstatSync(claimPath);
   if (!sameIdentity(claimed, owned.identity)) {
@@ -487,6 +506,26 @@ export async function createSupervisor({
   let settingsService;
   let diagnosticsService;
   let adminServer;
+  let address = null;
+  let ownedState = null;
+  let listenPromise = null;
+  let closePromise = null;
+  const close = () => {
+    if (closePromise) return closePromise;
+    const attempt = (async () => {
+      await workerManager.close();
+      await adminServer.close();
+      await auth.close();
+      await metricsStore.close();
+      removeOwnedState(paths.statePath, ownedState, stateFileOperations);
+    })();
+    closePromise = attempt;
+    void attempt.catch(() => {
+      if (closePromise === attempt) closePromise = null;
+    });
+    return attempt;
+  };
+  const requestShutdown = () => close();
   try {
     const proxyUrl = `http://${settings.proxyHost}:${settings.proxyPort}`;
     codexService = createCodexService({
@@ -525,6 +564,7 @@ export async function createSupervisor({
       diagnosticsService,
       metricsService: metricsStore,
       getSupervisorState: () => ({ pid, startedAt }),
+      requestSupervisorShutdown: requestShutdown,
       uiDir,
       host: settings.adminHost,
       port: settings.adminPort
@@ -535,10 +575,6 @@ export async function createSupervisor({
     try { await metricsStore?.close?.(); } catch {}
     throw error;
   }
-  let address = null;
-  let ownedState = null;
-  let listenPromise = null;
-  let closePromise = null;
 
   const getPublicState = () => ({
     supervisorPid: pid,
@@ -546,28 +582,6 @@ export async function createSupervisor({
     admin: address,
     worker: publicWorkerState(workerManager.getPublicState())
   });
-  const close = () => {
-    if (closePromise) return closePromise;
-    closePromise = (async () => {
-      let firstError = null;
-      for (const operation of [
-        () => adminServer.close(),
-        () => auth.close(),
-        () => workerManager.close(),
-        () => metricsStore.close(),
-        () => removeOwnedState(paths.statePath, ownedState, stateFileOperations, createStateId)
-      ]) {
-        try {
-          await operation();
-        } catch (error) {
-          firstError ??= error;
-        }
-      }
-      if (firstError) throw firstError;
-    })();
-    return closePromise;
-  };
-
   return {
     paths,
     getPublicState,
@@ -594,6 +608,7 @@ export async function createSupervisor({
       })();
       return listenPromise;
     },
-    close
+    close,
+    requestShutdown
   };
 }

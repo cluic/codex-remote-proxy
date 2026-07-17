@@ -184,16 +184,24 @@ test("CLI manages one injected supervisor and replaceable worker through the rea
   const adminPort = await choosePort();
   const auth = new SessionAuth({ controlTokenPath: paths.controlTokenPath });
   const services = createServices();
+  let supervisorAlive = false;
+  let startPromise = null;
+  let closePromise = null;
   const admin = createAdminServer({
     auth,
     ...services,
     getSupervisorState: () => ({ pid: SUPERVISOR_PID, startedAt: STARTED_AT }),
+    requestSupervisorShutdown() {
+      closePromise ??= admin.close().then(() => {
+        services.providerService.stopProxy();
+        rmSync(paths.statePath, { force: true });
+        supervisorAlive = false;
+      });
+      return closePromise;
+    },
     host: "127.0.0.1",
     port: adminPort
   });
-  let supervisorAlive = false;
-  let startPromise = null;
-  let closePromise = null;
   t.after(async () => {
     await startPromise?.catch(() => {});
     await closePromise?.catch(() => {});
@@ -240,12 +248,7 @@ test("CLI manages one injected supervisor and replaceable worker through the rea
   });
   const discoverSupervisorImpl = () => discoverSupervisor(discoveryOptions);
   const killProcess = (pid, signal) => {
-    assert.equal(pid, SUPERVISOR_PID);
-    assert.equal(signal, "SIGTERM");
-    supervisorAlive = false;
-    closePromise ??= admin.close().then(() => {
-      rmSync(paths.statePath, { force: true });
-    });
+    assert.fail(`graceful shutdown must not signal ${pid} with ${signal}`);
   };
   const dependencies = {
     paths,
@@ -256,7 +259,10 @@ test("CLI manages one injected supervisor and replaceable worker through the rea
     openManagementUrlImpl: () => assert.fail("--no-open must not launch a browser"),
     killProcess,
     isProcessAlive: () => supervisorAlive,
-    wait: async () => { await closePromise; },
+    wait: async () => {
+      if (closePromise) await closePromise;
+      else await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    },
     now: () => 0
   };
   const outputs = [];
@@ -317,6 +323,8 @@ test("CLI manages one injected supervisor and replaceable worker through the rea
 
   const shutdown = await invoke(["shutdown", "--json"]);
   assert.equal(shutdown.supervisorPid, SUPERVISOR_PID);
+  assert.equal(shutdown.graceful, true);
+  assert.equal(shutdown.forced, false);
   assert.equal(supervisorAlive, false);
   assert.equal(existsSync(paths.statePath), false);
   assert.equal(outputs.some(({ stdout, stderr }) => `${stdout}\n${stderr}`.includes(secret)), false);

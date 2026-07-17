@@ -730,6 +730,48 @@ code {
   font-size: 12px;
 }
 
+.sidebar-runtime-heading > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-runtime-heading-actions {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.sidebar-runtime-heading-actions .status-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-supervisor-exit {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  flex: 0 0 24px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: #efc8cc;
+}
+
+.sidebar-supervisor-exit:hover:not(:disabled) {
+  color: #8f2931;
+  background: #ffe3e6;
+  border-color: #dfaeb3;
+}
+
+.sidebar-supervisor-exit svg {
+  width: 14px;
+  height: 14px;
+}
+
 .sidebar-runtime strong {
   display: block;
   margin-top: 10px;
@@ -942,6 +984,7 @@ code {
 .terminal-eyebrow { margin: 18px 0 0; color: var(--primary) !important; font-size: 12px; font-weight: 800; }
 .session-terminal code { display: inline-block; margin-top: 8px; padding: 7px 9px; color: #fff; background: var(--primary); border-radius: 5px; }
 .terminal-locale { display: block; width: 160px; margin-top: 24px; }
+.terminal-stopped-symbol { background: #33413c; }
 
 .readiness-band {
   display: flex;
@@ -1333,6 +1376,7 @@ code {
   .icon-button { width: 44px; min-width: 44px; }
   .sidebar-provider-select select { font-size: 11px; }
   .sidebar-worker-actions .icon-button { width: 32px; min-width: 32px; min-height: 32px; }
+  .sidebar-supervisor-exit { width: 32px; min-width: 32px; min-height: 32px; flex-basis: 32px; }
   .topbar { min-height: 62px; padding: 8px 16px; }
   .topbar-title span { display: none; }
   .topbar-actions .status-badge { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }

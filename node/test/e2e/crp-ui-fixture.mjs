@@ -90,6 +90,8 @@ function createServices({ upstream }) {
     generation: 0,
     worker: stoppedWorker(),
     supervisorPid: 7001,
+    supervisorStartedAt: STARTED_AT,
+    supervisorShutdownAccepted: false,
     nextWorkerPid: 4201,
     testFailureCode: null,
     nextMutationError: null,
@@ -472,6 +474,14 @@ function createServices({ upstream }) {
         return structuredClone({ ...metrics, window });
       }
     },
+    requestSupervisorShutdown() {
+      calls.push({
+        operation: "shutdownSupervisor",
+        supervisorPid: state.supervisorPid,
+        startedAt: state.supervisorStartedAt
+      });
+      state.supervisorShutdownAccepted = true;
+    },
     settingsService: {
       async getSettings() {
         return {
@@ -697,7 +707,7 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       ...services,
       getSupervisorState: () => ({
         pid: services.state.supervisorPid,
-        startedAt: STARTED_AT
+        startedAt: services.state.supervisorStartedAt
       }),
       uiDir: uiRoot,
       host: "127.0.0.1",
@@ -745,6 +755,10 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       },
       failNextMutation({ code, status, details = {} }) {
         services.state.nextMutationError = { code, status, details };
+      },
+      replaceSupervisorIdentity({ pid, startedAt }) {
+        services.state.supervisorPid = pid;
+        services.state.supervisorStartedAt = startedAt;
       },
       seedProviders({ providers, activeProviderId = null, generation = 4 } = {}) {
         services.resetModelCatalogs();

@@ -5,12 +5,15 @@ import {
   constants,
   fchmodSync,
   fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync
+  readFileSync,
+  renameSync,
+  rmSync
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -58,18 +61,32 @@ const CHILD_STATE_FIELDS = new Set([
   "inFlight"
 ]);
 const WORKER_ERROR_FIELDS = new Set(["code", "message"]);
-const REQUEST_OPTIONS_FIELDS = new Set(["requestTimeoutMs"]);
+const REQUEST_OPTIONS_FIELDS = new Set(["requestTimeoutMs", "expectedStatus"]);
+const STALE_STATE_REMOVAL_REASONS = Object.freeze({
+  INVALID_INPUT: "invalid_input",
+  PROCESS_RUNNING: "process_running",
+  STATE_MISSING: "state_missing",
+  STATE_CHANGED: "state_changed",
+  CLAIM_CONFLICT: "claim_conflict",
+  CLAIM_CHANGED: "claim_changed",
+  CLEANUP_FAILED: "cleanup_failed",
+  REMOVED: "removed"
+});
 const DEFAULT_FILE_OPERATIONS = {
   chmodSync,
   closeSync,
   fchmodSync,
   fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync
+  readFileSync,
+  renameSync,
+  rmSync
 };
 const pendingEnsures = new Map();
+const supervisorStateSnapshots = new WeakMap();
 
 function clientError(code, { status = 500 } = {}) {
   const contracts = {
@@ -114,6 +131,12 @@ function hasExactFields(value, fields) {
     && Object.keys(value).every((field) => fields.has(field));
 }
 
+function hasOnlyFields(value, fields) {
+  return isPlainObject(value)
+    && Object.keys(value).length > 0
+    && Object.keys(value).every((field) => fields.has(field));
+}
+
 function isIsoTimestamp(value) {
   if (typeof value !== "string") return false;
   try {
@@ -139,7 +162,7 @@ function isPrivateMode(stats, platform) {
   return platform === "win32" || (stats.mode & 0o777) === 0o600;
 }
 
-function readPrivateFile({ path, fileOperations, platform, maxBytes }) {
+function readPrivateFileSnapshot({ path, fileOperations, platform, maxBytes }) {
   const parent = fileOperations.lstatSync(dirname(path));
   if (!parent.isDirectory() || parent.isSymbolicLink()
     || platform !== "win32" && (parent.mode & 0o777) !== 0o700) {
@@ -165,10 +188,17 @@ function readPrivateFile({ path, fileOperations, platform, maxBytes }) {
     if (!after.isFile() || after.isSymbolicLink() || !sameIdentity(opened, after)) {
       throw new TypeError("private file identity changed");
     }
-    return Buffer.from(bytes);
+    return {
+      bytes: Buffer.from(bytes),
+      identity: { dev: opened.dev, ino: opened.ino }
+    };
   } finally {
     if (descriptor !== undefined) fileOperations.closeSync(descriptor);
   }
+}
+
+function readPrivateFile(options) {
+  return readPrivateFileSnapshot(options).bytes;
 }
 
 function validChildState(state) {
@@ -219,7 +249,7 @@ function validateSupervisorState(state, adminPort) {
     && validWorkerState(state.worker);
 }
 
-export function readSupervisorState({
+export function readSupervisorStateSnapshot({
   path,
   adminPort = 15101,
   fileOperations = DEFAULT_FILE_OPERATIONS,
@@ -230,16 +260,171 @@ export function readSupervisorState({
     return null;
   }
   try {
-    const bytes = readPrivateFile({
-      path,
+    const resolvedPath = resolve(path);
+    const snapshot = readPrivateFileSnapshot({
+      path: resolvedPath,
       fileOperations,
       platform,
       maxBytes: MAX_STATE_BYTES
     });
-    const state = JSON.parse(bytes.toString("utf8"));
-    return validateSupervisorState(state, adminPort) ? structuredClone(state) : null;
+    const state = JSON.parse(snapshot.bytes.toString("utf8"));
+    if (!validateSupervisorState(state, adminPort)) return null;
+    const opaqueSnapshot = Object.freeze(Object.create(null));
+    supervisorStateSnapshots.set(opaqueSnapshot, {
+      path: resolvedPath,
+      state: structuredClone(state),
+      identity: { ...snapshot.identity },
+      bytes: Buffer.from(snapshot.bytes),
+      adminPort
+    });
+    return opaqueSnapshot;
   } catch {
     return null;
+  }
+}
+
+export function readSupervisorState(options) {
+  const snapshot = readSupervisorStateSnapshot(options);
+  const owned = snapshot === null ? null : supervisorStateSnapshots.get(snapshot);
+  return owned ? structuredClone(owned.state) : null;
+}
+
+function matchesExpectedStateSnapshot(snapshot, expectedSnapshot) {
+  const current = snapshot === null ? null : supervisorStateSnapshots.get(snapshot);
+  return current !== null && current !== undefined
+    && sameIdentity(current.identity, expectedSnapshot.identity)
+    && current.bytes.equals(expectedSnapshot.bytes)
+    && current.state.supervisorPid === expectedSnapshot.state.supervisorPid
+    && current.state.startedAt === expectedSnapshot.state.startedAt
+    && Object.keys(current.state.admin).every(
+      (field) => current.state.admin[field] === expectedSnapshot.state.admin[field]
+    );
+}
+
+function pathExists(path, fileOperations) {
+  try {
+    fileOperations.lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function restoreClaimWithoutReplacement(claimPath, statePath, fileOperations) {
+  try {
+    fileOperations.linkSync(claimPath, statePath);
+    fileOperations.rmSync(claimPath);
+    return true;
+  } catch (error) {
+    if (error?.code === "EEXIST") return false;
+    throw error;
+  }
+}
+
+function staleStateClaimPath(statePath) {
+  return resolve(dirname(statePath), `${basename(statePath)}.stale`);
+}
+
+function expectedManagedProcessAlive(expected, isProcessAlive) {
+  const workerPid = expected.state.worker.pid;
+  return isProcessAlive(expected.state.supervisorPid)
+    || workerPid !== null && isProcessAlive(workerPid);
+}
+
+export function removeStaleSupervisorState({
+  path,
+  expectedSnapshot,
+  adminPort = 15101,
+  fileOperations = DEFAULT_FILE_OPERATIONS,
+  platform = process.platform,
+  isProcessAlive = defaultIsProcessAlive
+} = {}) {
+  if (typeof path !== "string" || path.length === 0
+    || !Number.isInteger(adminPort) || adminPort < 1 || adminPort > 65_535
+    || typeof isProcessAlive !== "function") {
+    return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.INVALID_INPUT };
+  }
+  const statePath = resolve(path);
+  const claimPath = staleStateClaimPath(statePath);
+  const expected = supervisorStateSnapshots.get(expectedSnapshot);
+  if (!expected
+    || expected.path !== statePath && expected.path !== claimPath
+    || expected.adminPort !== adminPort) {
+    return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.INVALID_INPUT };
+  }
+
+  try {
+    if (expectedManagedProcessAlive(expected, isProcessAlive)) {
+      return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.PROCESS_RUNNING };
+    }
+    const canonicalExists = pathExists(statePath, fileOperations);
+    const claimExists = pathExists(claimPath, fileOperations);
+    let claimedByThisCall = false;
+
+    if (canonicalExists) {
+      const current = readSupervisorStateSnapshot({
+        path: statePath,
+        adminPort,
+        fileOperations,
+        platform
+      });
+      if (!matchesExpectedStateSnapshot(current, expected)) {
+        return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.STATE_CHANGED };
+      }
+      if (claimExists) {
+        const residualClaim = readSupervisorStateSnapshot({
+          path: claimPath,
+          adminPort,
+          fileOperations,
+          platform
+        });
+        if (!matchesExpectedStateSnapshot(residualClaim, expected)) {
+          return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.CLAIM_CONFLICT };
+        }
+        if (expectedManagedProcessAlive(expected, isProcessAlive)) {
+          return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.PROCESS_RUNNING };
+        }
+        fileOperations.rmSync(claimPath);
+      }
+      fileOperations.renameSync(statePath, claimPath);
+      claimedByThisCall = true;
+    } else if (!claimExists) {
+      return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.STATE_MISSING };
+    }
+
+    const claimed = readSupervisorStateSnapshot({
+      path: claimPath,
+      adminPort,
+      fileOperations,
+      platform
+    });
+    if (!matchesExpectedStateSnapshot(claimed, expected)) {
+      if (claimedByThisCall) {
+        restoreClaimWithoutReplacement(claimPath, statePath, fileOperations);
+      }
+      return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.CLAIM_CHANGED };
+    }
+    if (expectedManagedProcessAlive(expected, isProcessAlive)) {
+      if (claimedByThisCall) {
+        restoreClaimWithoutReplacement(claimPath, statePath, fileOperations);
+      }
+      return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.PROCESS_RUNNING };
+    }
+
+    const confirmed = readSupervisorStateSnapshot({
+      path: claimPath,
+      adminPort,
+      fileOperations,
+      platform
+    });
+    if (!matchesExpectedStateSnapshot(confirmed, expected)) {
+      return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.CLAIM_CHANGED };
+    }
+    fileOperations.rmSync(claimPath);
+    return { removed: true, reason: STALE_STATE_REMOVAL_REASONS.REMOVED };
+  } catch {
+    return { removed: false, reason: STALE_STATE_REMOVAL_REASONS.CLEANUP_FAILED };
   }
 }
 
@@ -348,17 +533,23 @@ export class SupervisorClient {
   request(method, path, body, options) {
     validateRequest(method, path);
     let requestTimeoutMs = this.#requestTimeoutMs;
+    let expectedStatus = null;
     if (options !== undefined) {
-      if (!hasExactFields(options, REQUEST_OPTIONS_FIELDS)
-        || !Number.isSafeInteger(options.requestTimeoutMs) || options.requestTimeoutMs < 1) {
+      if (!hasOnlyFields(options, REQUEST_OPTIONS_FIELDS)
+        || "requestTimeoutMs" in options
+          && (!Number.isSafeInteger(options.requestTimeoutMs) || options.requestTimeoutMs < 1)
+        || "expectedStatus" in options
+          && (!Number.isInteger(options.expectedStatus)
+            || options.expectedStatus < 100 || options.expectedStatus > 599)) {
         throw clientError("SUPERVISOR_CLIENT_INPUT_INVALID", { status: 400 });
       }
-      requestTimeoutMs = options.requestTimeoutMs;
+      if ("requestTimeoutMs" in options) requestTimeoutMs = options.requestTimeoutMs;
+      if ("expectedStatus" in options) expectedStatus = options.expectedStatus;
     }
-    return this.#performRequest(method, path, body, requestTimeoutMs);
+    return this.#performRequest(method, path, body, requestTimeoutMs, expectedStatus);
   }
 
-  async #performRequest(method, path, body, requestTimeoutMs) {
+  async #performRequest(method, path, body, requestTimeoutMs, expectedStatus) {
     const headers = { authorization: `Bearer ${this.#controlToken}` };
     const options = {
       method,
@@ -393,6 +584,9 @@ export class SupervisorClient {
       throw clientError("SUPERVISOR_RESPONSE_INVALID");
     }
     if (!response.ok) throw publicResponseError(payload, response.status);
+    if (expectedStatus !== null && response.status !== expectedStatus) {
+      throw clientError("SUPERVISOR_RESPONSE_INVALID");
+    }
     if (!isPlainObject(payload)) throw clientError("SUPERVISOR_RESPONSE_INVALID");
     return payload;
   }
@@ -497,6 +691,7 @@ export function spawnDetachedSupervisor({
       cwd: resolve(PACKAGE_ROOT),
       env: { ...process.env, CRP_HOME: home },
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", logDescriptor, logDescriptor, "ipc"],
       serialization: "json",
       shell: false
@@ -599,6 +794,34 @@ async function ensureSupervisorInternal({
   };
   const existing = await discoverSupervisor(discoveryOptions);
   if (existing) return existing;
+
+  try {
+    const statePath = resolve(paths.statePath);
+    const claimPath = staleStateClaimPath(statePath);
+    if (pathExists(claimPath, fileOperations)) {
+      if (pathExists(statePath, fileOperations)) throw new Error("state and claim coexist");
+      const expectedSnapshot = readSupervisorStateSnapshot({
+        path: claimPath,
+        adminPort,
+        fileOperations,
+        platform
+      });
+      if (expectedSnapshot === null) throw new Error("claim is invalid");
+      const cleanup = removeStaleSupervisorState({
+        path: statePath,
+        expectedSnapshot,
+        adminPort,
+        fileOperations,
+        platform,
+        isProcessAlive
+      });
+      if (cleanup.removed !== true && cleanup.reason !== STALE_STATE_REMOVAL_REASONS.STATE_MISSING) {
+        throw new Error("claim could not be recovered");
+      }
+    }
+  } catch {
+    throw clientError("SUPERVISOR_START_FAILED");
+  }
 
   let spawnedChild;
   try {

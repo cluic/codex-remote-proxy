@@ -25,6 +25,8 @@ import {
   ensureSupervisor,
   readControlToken,
   readSupervisorState,
+  readSupervisorStateSnapshot,
+  removeStaleSupervisorState,
   spawnDetachedSupervisor
 } from "../src/supervisor/supervisor-client.mjs";
 
@@ -844,20 +846,26 @@ test("human start prints only a static encrypted-history warning after repair", 
   ]);
 });
 
-test("shutdown cross-checks authenticated status before SIGTERM and never removes state", async (t) => {
+test("shutdown requests an identity-bound graceful close without signalling", async (t) => {
   const homeDir = makeTempHome();
   t.after(() => rmSync(homeDir, { recursive: true, force: true }));
   const paths = prepareSupervisorFiles(homeDir);
   const calls = [];
   const signals = [];
   let alive = true;
-  let clock = 0;
-  let stateExistedBeforeSupervisorCleanup = false;
   const client = {
     async request(method, path, body) {
       calls.push([method, path, body]);
-      if (path === "/status") return adminStatus(4242);
-      throw new Error("unexpected request");
+      assert.equal(path, "/supervisor/shutdown");
+      alive = false;
+      rmSync(paths.statePath, { force: true });
+      return {
+        shutdown: {
+          accepted: true,
+          supervisorPid: 4242,
+          startedAt: "2026-07-13T08:00:00.000Z"
+        }
+      };
     }
   };
   const result = await invokeCli(["shutdown", "--json"], {
@@ -865,61 +873,353 @@ test("shutdown cross-checks authenticated status before SIGTERM and never remove
     discoverSupervisorImpl: async () => discoveredContext(client),
     killProcess(pid, signal) {
       signals.push([pid, signal]);
-      alive = false;
     },
-    isProcessAlive: () => alive,
-    wait: async (milliseconds) => {
-      stateExistedBeforeSupervisorCleanup = existsSync(paths.statePath);
-      rmSync(paths.statePath, { force: true });
-      clock += milliseconds;
-    },
-    now: () => clock
+    isProcessAlive: (pid) => pid === 4242 && alive
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(calls, [["GET", "/status", undefined]]);
+  assert.deepEqual(calls, [["POST", "/supervisor/shutdown", {
+    supervisorPid: 4242,
+    startedAt: "2026-07-13T08:00:00.000Z"
+  }]]);
+  assert.deepEqual(signals, []);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    shutdown: true,
+    graceful: true,
+    forced: false,
+    degraded: false,
+    supervisorPid: 4242,
+    workerStopped: true,
+    stateRemoved: true
+  });
+  assert.equal(existsSync(paths.statePath), false);
+});
+
+test("shutdown uses a verified forced fallback and safely removes matching stale state", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const calls = [];
+  const signals = [];
+  let supervisorAlive = true;
+  let workerAlive = true;
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      throw new CrpError(
+        "API_NOT_FOUND",
+        "The requested endpoint does not exist.",
+        "Upgrade the local supervisor and retry.",
+        { status: 404 }
+      );
+    }
+  };
+  const status = adminStatus(4242, { phase: "running", pid: 5353, generation: 1 });
+  const result = await invokeCli(["shutdown", "--json"], {
+    paths,
+    discoverSupervisorImpl: async () => discoveredContext(client, status),
+    killProcess(pid, signal) {
+      signals.push([pid, signal]);
+      supervisorAlive = false;
+    },
+    isProcessAlive: (pid) => pid === 4242 ? supervisorAlive : pid === 5353 && workerAlive,
+    wait: async () => { workerAlive = false; }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(calls, [["POST", "/supervisor/shutdown", {
+    supervisorPid: 4242,
+    startedAt: "2026-07-13T08:00:00.000Z"
+  }]]);
   assert.deepEqual(signals, [[4242, "SIGTERM"]]);
   assert.deepEqual(JSON.parse(result.stdout), {
     ok: true,
     shutdown: true,
+    graceful: false,
+    forced: true,
+    degraded: false,
     supervisorPid: 4242,
-    workerStopped: true
+    workerStopped: true,
+    stateRemoved: true
   });
-  assert.equal(stateExistedBeforeSupervisorCleanup, true);
   assert.equal(existsSync(paths.statePath), false);
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
+});
+
+test("shutdown fails closed when the authenticated live Worker survives forced fallback", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  let supervisorAlive = true;
+  let clock = 0;
+  const client = {
+    async request() {
+      throw new CrpError(
+        "SUPERVISOR_UNAVAILABLE",
+        "The local supervisor is unavailable.",
+        "Retry the operation.",
+        { status: 503 }
+      );
+    }
+  };
+  const status = adminStatus(4242, { phase: "running", pid: 5353, generation: 1 });
+
+  const result = await invokeCli(["shutdown", "--json"], {
+    paths,
+    discoverSupervisorImpl: async () => discoveredContext(client, status),
+    killProcess() { supervisorAlive = false; },
+    isProcessAlive: (pid) => pid === 4242 ? supervisorAlive : pid === 5353,
+    now: () => clock,
+    wait: async (milliseconds) => { clock += milliseconds; },
+    shutdownTimeoutMs: 200
+  });
+
+  assert.equal(result.status, 1);
+  const error = JSON.parse(result.stderr).error;
+  assert.equal(error.code, "SUPERVISOR_SHUTDOWN_TIMEOUT");
+  assert.deepEqual(error.details, {
+    forced: true,
+    graceful: false,
+    processStopped: false,
+    stateRemoved: false
+  });
+  assert.equal(existsSync(paths.statePath), true);
+});
+
+test("shutdown cleans exact dead state while remaining idempotently stopped", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+
+  const result = await invokeCli(["shutdown", "--json"], {
+    paths,
+    discoverSupervisorImpl: async () => null,
+    isProcessAlive: () => false
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    shutdown: false,
+    reason: "supervisor_not_running",
+    staleStateRemoved: true
+  });
+  assert.equal(existsSync(paths.statePath), false);
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
+});
+
+test("shutdown recovers a lone fixed stale-state claim from an interrupted cleanup", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  realFileOperations.renameSync(paths.statePath, `${paths.statePath}.stale`);
+
+  const result = await invokeCli(["shutdown", "--json"], {
+    paths,
+    discoverSupervisorImpl: async () => null,
+    isProcessAlive: () => false
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    shutdown: false,
+    reason: "supervisor_not_running",
+    staleStateRemoved: true
+  });
+  assert.equal(existsSync(paths.statePath), false);
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
+});
+
+test("shutdown preserves stale state while its recorded Worker is still alive", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const state = supervisorState();
+  state.worker = {
+    ...state.worker,
+    phase: "running",
+    pid: 5353,
+    generation: 1,
+    startedAt: "2026-07-13T08:00:01.000Z"
+  };
+  const paths = prepareSupervisorFiles(homeDir, { state });
+
+  const result = await invokeCli(["shutdown", "--json"], {
+    paths,
+    discoverSupervisorImpl: async () => null,
+    isProcessAlive: (pid) => pid === 5353
+  });
+
+  assert.equal(result.status, 1);
+  const error = JSON.parse(result.stderr).error;
+  assert.equal(error.code, "SUPERVISOR_SHUTDOWN_UNAVAILABLE");
+  assert.deepEqual(error.details, {
+    processStopped: false,
+    stateRemoved: false
+  });
+  assert.deepEqual(JSON.parse(readFileSync(paths.statePath, "utf8")), state);
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
 });
 
 test("shutdown refuses a same-PID replacement without mutating or signalling it", async (t) => {
   const homeDir = makeTempHome();
   t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
   const calls = [];
   const signals = [];
-  const replacementStatus = adminStatus(4242);
-  replacementStatus.supervisor.startedAt = "2026-07-13T08:01:00.000Z";
   const client = {
     async request(method, path, body) {
       calls.push([method, path, body]);
-      if (path === "/proxy/stop") {
-        return { worker: { phase: "stopped", pid: null, generation: 1 } };
-      }
-      if (path === "/status") return replacementStatus;
-      throw new Error("unexpected request");
+      throw new CrpError(
+        "SUPERVISOR_IDENTITY_CHANGED",
+        "The local supervisor identity changed.",
+        "Refresh status and retry.",
+        { status: 409 }
+      );
     }
   };
 
   const result = await invokeCli(["shutdown", "--json"], {
-    paths: getPaths(homeDir),
+    paths,
     discoverSupervisorImpl: async () => discoveredContext(client),
     killProcess(pid, signal) {
       signals.push([pid, signal]);
     },
-    isProcessAlive: () => false
+    isProcessAlive: () => true
   });
 
   assert.equal(result.status, 1);
-  assert.equal(JSON.parse(result.stderr).error.code, "CLI_COMMAND_FAILED");
-  assert.deepEqual(calls, [["GET", "/status", undefined]]);
+  assert.equal(JSON.parse(result.stderr).error.code, "SUPERVISOR_IDENTITY_CHANGED");
+  assert.deepEqual(calls, [["POST", "/supervisor/shutdown", {
+    supervisorPid: 4242,
+    startedAt: "2026-07-13T08:00:00.000Z"
+  }]]);
   assert.deepEqual(signals, []);
+  assert.equal(existsSync(paths.statePath), true);
+});
+
+test("shutdown revalidates identity before the legacy signal fallback", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const calls = [];
+  const signals = [];
+  const replacement = supervisorState(5252);
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/supervisor/shutdown") {
+        writeFileSync(paths.statePath, `${JSON.stringify(replacement)}\n`, { mode: 0o600 });
+        throw new CrpError(
+          "API_NOT_FOUND",
+          "The requested endpoint does not exist.",
+          "Upgrade the local supervisor and retry.",
+          { status: 404 }
+        );
+      }
+      assert.fail("replacement Supervisor must not receive another request");
+    }
+  };
+
+  const result = await invokeCli(["shutdown", "--json"], {
+    paths,
+    discoverSupervisorImpl: async () => discoveredContext(client),
+    killProcess(pid, signal) { signals.push([pid, signal]); },
+    isProcessAlive: () => true
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.code, "SUPERVISOR_IDENTITY_CHANGED");
+  assert.deepEqual(calls, [["POST", "/supervisor/shutdown", {
+    supervisorPid: 4242,
+    startedAt: "2026-07-13T08:00:00.000Z"
+  }]]);
+  assert.deepEqual(signals, []);
+  assert.deepEqual(JSON.parse(readFileSync(paths.statePath, "utf8")), replacement);
+});
+
+test("stale-state cleanup preserves a canonical replacement", (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const snapshot = readSupervisorStateSnapshot({ path: paths.statePath });
+  const replacement = supervisorState(5252);
+  writeFileSync(paths.statePath, `${JSON.stringify(replacement)}\n`, { mode: 0o600 });
+
+  const cleanup = removeStaleSupervisorState({
+    path: paths.statePath,
+    expectedSnapshot: snapshot,
+    isProcessAlive: () => false
+  });
+
+  assert.deepEqual(cleanup, { removed: false, reason: "state_changed" });
+  assert.deepEqual(JSON.parse(readFileSync(paths.statePath, "utf8")), replacement);
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
+});
+
+test("stale-state cleanup restores canonical state without leaving a marker after a liveness race", (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const snapshot = readSupervisorStateSnapshot({ path: paths.statePath });
+  let livenessChecks = 0;
+
+  const cleanup = removeStaleSupervisorState({
+    path: paths.statePath,
+    expectedSnapshot: snapshot,
+    isProcessAlive: () => {
+      livenessChecks += 1;
+      return livenessChecks > 1;
+    }
+  });
+
+  assert.deepEqual(cleanup, { removed: false, reason: "process_running" });
+  assert.deepEqual(JSON.parse(readFileSync(paths.statePath, "utf8")), supervisorState());
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
+});
+
+test("stale-state cleanup removes a same-inode residual claim before deleting canonical state", (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const snapshot = readSupervisorStateSnapshot({ path: paths.statePath });
+  realFileOperations.linkSync(paths.statePath, `${paths.statePath}.stale`);
+
+  const cleanup = removeStaleSupervisorState({
+    path: paths.statePath,
+    expectedSnapshot: snapshot,
+    isProcessAlive: () => false
+  });
+
+  assert.deepEqual(cleanup, { removed: true, reason: "removed" });
+  assert.equal(existsSync(paths.statePath), false);
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
+});
+
+test("stale-state cleanup preserves state while its recorded Worker is alive", (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const state = supervisorState();
+  state.worker = {
+    ...state.worker,
+    phase: "running",
+    pid: 5353,
+    generation: 1,
+    startedAt: "2026-07-13T08:00:01.000Z"
+  };
+  const paths = prepareSupervisorFiles(homeDir, { state });
+  const snapshot = readSupervisorStateSnapshot({ path: paths.statePath });
+
+  const cleanup = removeStaleSupervisorState({
+    path: paths.statePath,
+    expectedSnapshot: snapshot,
+    isProcessAlive: (pid) => pid === 5353
+  });
+
+  assert.deepEqual(cleanup, { removed: false, reason: "process_running" });
+  assert.deepEqual(JSON.parse(readFileSync(paths.statePath, "utf8")), state);
+  assert.equal(existsSync(`${paths.statePath}.stale`), false);
 });
 
 test("ui keeps the control token in the fragment and honors no-open", async () => {
@@ -1550,6 +1850,30 @@ test("SupervisorClient pins the Admin origin, bearer, JSON bodies, and safe publ
   assert.equal(publicError.status, 400);
   assert.equal(publicError.details.field, "name");
   assert.equal(publicError.details.authorization, "[REDACTED]");
+
+  const shutdown = {
+    shutdown: {
+      accepted: true,
+      supervisorPid: 4242,
+      startedAt: "2026-07-13T08:00:00.000Z"
+    }
+  };
+  response = new Response(JSON.stringify(shutdown), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  });
+  await assert.rejects(
+    () => client.request("POST", "/supervisor/shutdown", {}, { expectedStatus: 202 }),
+    (error) => error?.code === "SUPERVISOR_RESPONSE_INVALID"
+  );
+  response = new Response(JSON.stringify(shutdown), {
+    status: 202,
+    headers: { "content-type": "application/json" }
+  });
+  assert.deepEqual(
+    await client.request("POST", "/supervisor/shutdown", {}, { expectedStatus: 202 }),
+    shutdown
+  );
 });
 
 test("SupervisorClient rejects malformed per-call timeout overrides before fetch", async (t) => {
@@ -1574,7 +1898,10 @@ test("SupervisorClient rejects malformed per-call timeout overrides before fetch
     {},
     { requestTimeoutMs: 0 },
     { requestTimeoutMs: 1.5 },
-    { requestTimeoutMs: 1, unknown: true }
+    { requestTimeoutMs: 1, unknown: true },
+    { expectedStatus: 99 },
+    { expectedStatus: 600 },
+    { expectedStatus: 202.5 }
   ]) {
     await assert.rejects(
       async () => client.request("GET", "/status", undefined, override),
@@ -1645,6 +1972,60 @@ test("spawns one detached supervisor and shares concurrent bounded discovery", a
     "/api/v1/providers/provider-1/test",
     "/api/v1/status"
   ]);
+});
+
+test("ensureSupervisor removes a dead lone cleanup claim before spawning", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const claimPath = `${paths.statePath}.stale`;
+  realFileOperations.renameSync(paths.statePath, claimPath);
+  let spawned = false;
+
+  const context = await ensureSupervisor({
+    paths,
+    adminPort: 15101,
+    spawnSupervisor: () => {
+      assert.equal(existsSync(paths.statePath), false);
+      assert.equal(existsSync(claimPath), false);
+      spawned = true;
+      prepareSupervisorFiles(homeDir);
+      return { pid: 4242 };
+    },
+    isProcessAlive: () => spawned,
+    fetchImpl: async () => new Response(JSON.stringify(adminStatus(4242)), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }),
+    wait: async () => {},
+    timeoutMs: 100,
+    pollIntervalMs: 10
+  });
+
+  assert.equal(context.spawned, true);
+  assert.equal(spawned, true);
+  assert.equal(existsSync(claimPath), false);
+});
+
+test("ensureSupervisor preserves a lone cleanup claim while its Supervisor is alive", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const claimPath = `${paths.statePath}.stale`;
+  realFileOperations.renameSync(paths.statePath, claimPath);
+  let spawnCalls = 0;
+
+  await assert.rejects(
+    () => ensureSupervisor({
+      paths,
+      spawnSupervisor: () => { spawnCalls += 1; },
+      isProcessAlive: () => true
+    }),
+    (error) => error?.code === "SUPERVISOR_START_FAILED"
+  );
+  assert.equal(spawnCalls, 0);
+  assert.equal(existsSync(paths.statePath), false);
+  assert.equal(existsSync(claimPath), true);
 });
 
 test("ensureSupervisor reads one token and keeps probe timeout separate from later operations", async (t) => {
@@ -1793,6 +2174,7 @@ test("detached spawn redirects logs, sets CRP_HOME, and unrefs without a shell",
   assert.equal(received.options.serialization, "json");
   assert.equal(received.options.env.CRP_HOME, homeDir);
   assert.equal(received.options.shell, false);
+  assert.equal(received.options.windowsHide, true);
   assert.equal(unrefCalls, 1);
   assert.equal(channelUnrefCalls, 1);
   assert.equal(typeof child.startupFailure?.then, "function");

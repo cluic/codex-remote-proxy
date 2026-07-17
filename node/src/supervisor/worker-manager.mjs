@@ -48,10 +48,11 @@ function managerError(code) {
   return error;
 }
 
-function defaultForkWorker() {
-  return fork(WORKER_ENTRY_PATH, [], {
+function defaultForkWorker(forkImpl = fork) {
+  return forkImpl(WORKER_ENTRY_PATH, [], {
     execPath: process.execPath,
-    stdio: ["ignore", "ignore", "ignore", "ipc"]
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    windowsHide: true
   });
 }
 
@@ -137,7 +138,8 @@ export class WorkerManager {
     host = "127.0.0.1",
     port = 15100,
     clock = REAL_CLOCK,
-    forkWorker = defaultForkWorker,
+    forkWorker,
+    forkImpl = fork,
     fetchImpl = globalThis.fetch,
     readyTimeoutMs = 5_000,
     ackTimeoutMs = 5_000,
@@ -158,7 +160,9 @@ export class WorkerManager {
     this.#host = host;
     this.#port = port;
     this.#clock = clock;
-    this.#forkWorker = forkWorker;
+    this.#forkWorker = forkWorker === undefined
+      ? () => defaultForkWorker(forkImpl)
+      : forkWorker;
     this.#fetch = fetchImpl;
     this.#readyTimeoutMs = readyTimeoutMs;
     this.#ackTimeoutMs = ackTimeoutMs;

@@ -15,7 +15,9 @@ import {
   discoverSupervisor,
   ensureSupervisor,
   readControlToken,
-  readSupervisorState
+  readSupervisorState,
+  readSupervisorStateSnapshot,
+  removeStaleSupervisorState
 } from "../src/supervisor/supervisor-client.mjs";
 
 const PACKAGE_ROOT = resolve(import.meta.dirname, "..");
@@ -53,7 +55,14 @@ const REMOVED_CLI_COMMANDS = new Map([
   ["setup", "crp start"]
 ]);
 const SAFE_ERROR_DETAIL_FIELDS = new Set([
-  "field", "reason", "committed", "degraded", "pending", "generation", "httpStatus"
+  "field", "reason", "committed", "degraded", "pending", "generation", "httpStatus",
+  "forced", "graceful", "processStopped", "stateRemoved"
+]);
+const SHUTDOWN_FORCE_FALLBACK_CODES = new Set([
+  "API_METHOD_NOT_ALLOWED",
+  "API_NOT_FOUND",
+  "SUPERVISOR_SHUTDOWN_UNAVAILABLE",
+  "SUPERVISOR_UNAVAILABLE"
 ]);
 const CODEX_BOOTSTRAP_REQUEST_TIMEOUT_MS = 300_000;
 const CLI_ERROR_CONTRACTS = Object.freeze({
@@ -245,10 +254,14 @@ export const CLI_MESSAGES = Object.freeze({
     "stop.completed": "Proxy worker stopped. CRP Supervisor is still running; use `crp shutdown` to stop it.",
     "restart.completed": "Proxy worker restarted.",
     "shutdown.notRunning": "CRP supervisor is not running.",
+    "shutdown.notRunningStaleRemoved": "CRP supervisor is not running. Stale local state was safely removed.",
     "shutdown.identityChanged": "Supervisor identity changed; shutdown was cancelled.",
     "shutdown.timeout": "The supervisor did not stop in time.",
     "shutdown.stateTimeout": "The supervisor state was not cleaned up in time.",
+    "shutdown.unavailable": "The supervisor could not be reached for a safe shutdown.",
     "shutdown.completed": "CRP Supervisor and proxy Worker stopped.",
+    "shutdown.forcedCompleted": "CRP Supervisor and proxy Worker stopped using the forced fallback.",
+    "shutdown.degradedCompleted": "CRP stopped, and stale local state was safely recovered.",
     "stage.supervisor_start.failed": "Supervisor startup failed. Review the supervisor log and try again.",
     "stage.codex_bootstrap.failed": "Codex configuration bootstrap failed. Review CRP activity and retry before starting the proxy.",
     "stage.proxy_start.failed": "Proxy startup failed. Review CRP activity and try again."
@@ -431,10 +444,14 @@ export const CLI_MESSAGES = Object.freeze({
     "stop.completed": "代理工作进程已停止。CRP 监督进程仍在运行；如需停止，请使用 `crp shutdown`。",
     "restart.completed": "代理工作进程已重启。",
     "shutdown.notRunning": "CRP 监督进程未运行。",
+    "shutdown.notRunningStaleRemoved": "CRP 监督进程未运行，残留的本地状态已安全清理。",
     "shutdown.identityChanged": "监督进程身份已变化，已取消关闭操作。",
     "shutdown.timeout": "监督进程未能及时停止。",
     "shutdown.stateTimeout": "监督进程状态未能及时清理。",
+    "shutdown.unavailable": "无法连接监督进程以安全关闭。",
     "shutdown.completed": "CRP 监督进程和代理工作进程已停止。",
+    "shutdown.forcedCompleted": "CRP 监督进程和代理工作进程已通过强制回退停止。",
+    "shutdown.degradedCompleted": "CRP 已停止，残留的本地状态已安全恢复。",
     "stage.supervisor_start.failed": "启动监督进程失败。请检查监督进程日志后重试。",
     "stage.codex_bootstrap.failed": "引导 Codex 配置失败。请查看 CRP 活动记录，修复后再启动代理。",
     "stage.proxy_start.failed": "启动代理失败。请查看 CRP 活动记录后重试。"
@@ -510,6 +527,71 @@ function removedCommandError(command, replacement) {
   error.cliMessageKey = "command.removed";
   error.cliMessageValues = { command: `crp ${command}`, replacement };
   return error;
+}
+
+function shutdownCliError(code, messageKey, {
+  status = 500,
+  details = {},
+  cause
+} = {}) {
+  const contracts = {
+    SUPERVISOR_IDENTITY_CHANGED: [
+      "The local supervisor identity changed.",
+      "Refresh CRP status and retry against the current supervisor."
+    ],
+    SUPERVISOR_SHUTDOWN_TIMEOUT: [
+      "The local supervisor did not stop in time.",
+      "Review CRP status and Activity before retrying shutdown."
+    ],
+    SUPERVISOR_STATE_CLEANUP_FAILED: [
+      "The local supervisor stopped, but its state could not be cleaned up safely.",
+      "Do not remove unrelated files; review CRP Activity and retry shutdown."
+    ],
+    SUPERVISOR_SHUTDOWN_UNAVAILABLE: [
+      "The local supervisor could not be reached for a safe shutdown.",
+      "Retry shutdown while the current supervisor is still running."
+    ],
+    SUPERVISOR_SHUTDOWN_RESPONSE_INVALID: [
+      "The local supervisor returned an invalid shutdown response.",
+      "Review CRP Activity and retry shutdown."
+    ]
+  };
+  const [message, action] = contracts[code] ?? contracts.SUPERVISOR_SHUTDOWN_UNAVAILABLE;
+  const error = new CrpError(code, message, action, { status, details, cause });
+  error.cliMessageKey = messageKey;
+  return error;
+}
+
+function sameSupervisorIdentity(left, right) {
+  if (!left || !right
+    || left.supervisorPid !== right.supervisorPid
+    || left.startedAt !== right.startedAt) {
+    return false;
+  }
+  const leftAdmin = left.admin;
+  const rightAdmin = right.admin;
+  return leftAdmin !== null && typeof leftAdmin === "object"
+    && rightAdmin !== null && typeof rightAdmin === "object"
+    && ["host", "port", "authority", "origin"].every(
+      (field) => leftAdmin[field] === rightAdmin[field]
+    );
+}
+
+function validShutdownAcceptance(payload, expected) {
+  const shutdown = payload?.shutdown;
+  return payload !== null && typeof payload === "object" && !Array.isArray(payload)
+    && Object.keys(payload).length === 1
+    && shutdown !== null && typeof shutdown === "object" && !Array.isArray(shutdown)
+    && Object.keys(shutdown).length === 3
+    && shutdown.accepted === true
+    && shutdown.supervisorPid === expected.supervisorPid
+    && shutdown.startedAt === expected.startedAt;
+}
+
+function shutdownIdentityError() {
+  return shutdownCliError("SUPERVISOR_IDENTITY_CHANGED", "shutdown.identityChanged", {
+    status: 409
+  });
 }
 
 function sanitizeCliErrorDetails(details) {
@@ -2402,7 +2484,10 @@ async function dispatchSupervisorCommand(argv, dependencies) {
     now,
     shutdownTimeoutMs,
     readControlTokenImpl,
-    openManagementUrlImpl
+    openManagementUrlImpl,
+    readSupervisorStateImpl,
+    readSupervisorStateSnapshotImpl,
+    removeStaleSupervisorStateImpl
   } = dependencies;
   const discoveryOptions = { paths, adminPort };
 
@@ -2456,38 +2541,176 @@ async function dispatchSupervisorCommand(argv, dependencies) {
   }
 
   if (command === "shutdown") {
+    const stateSnapshot = readSupervisorStateSnapshotImpl({
+      path: paths.statePath,
+      adminPort
+    });
     const context = await discoverSupervisorImpl(discoveryOptions);
     if (context === null) {
+      let cleanupSnapshot = stateSnapshot;
+      let staleState = readSupervisorStateImpl({ path: paths.statePath, adminPort });
+      if (staleState === null && !existsSync(paths.statePath)) {
+        const claimPath = `${paths.statePath}.stale`;
+        cleanupSnapshot ??= readSupervisorStateSnapshotImpl({
+          path: claimPath,
+          adminPort
+        });
+        staleState = readSupervisorStateImpl({ path: claimPath, adminPort });
+      }
+      let staleStateRemoved = false;
+      if (cleanupSnapshot !== null && staleState !== null) {
+        const staleWorkerPid = Number.isSafeInteger(staleState.worker?.pid)
+          ? staleState.worker.pid
+          : null;
+        if (isProcessAliveImpl(staleState.supervisorPid)
+          || staleWorkerPid !== null && isProcessAliveImpl(staleWorkerPid)) {
+          throw shutdownCliError(
+            "SUPERVISOR_SHUTDOWN_UNAVAILABLE",
+            "shutdown.unavailable",
+            {
+              details: {
+                processStopped: false,
+                stateRemoved: false
+              }
+            }
+          );
+        }
+        const cleanup = removeStaleSupervisorStateImpl({
+          path: paths.statePath,
+          expectedSnapshot: cleanupSnapshot,
+          adminPort,
+          isProcessAlive: isProcessAliveImpl
+        });
+        staleStateRemoved = cleanup?.removed === true;
+        if (!staleStateRemoved && cleanup?.reason !== "state_missing") {
+          throw shutdownCliError(
+            "SUPERVISOR_STATE_CLEANUP_FAILED",
+            "shutdown.stateTimeout",
+            {
+              details: {
+                reason: cleanup?.reason ?? "cleanup_failed",
+                processStopped: true,
+                stateRemoved: false
+              }
+            }
+          );
+        }
+      }
       writePayload(options, {
         ok: true,
         shutdown: false,
-        reason: "supervisor_not_running"
-      }, stdout, cliMessage(dependencies.locale, "shutdown.notRunning"));
+        reason: "supervisor_not_running",
+        ...(staleStateRemoved ? { staleStateRemoved: true } : {})
+      }, stdout, cliMessage(
+        dependencies.locale,
+        staleStateRemoved ? "shutdown.notRunningStaleRemoved" : "shutdown.notRunning"
+      ));
       return true;
     }
-    const latest = await context.client.request("GET", "/status");
     const supervisorPid = context.state.supervisorPid;
-    if (latest?.supervisor?.pid !== supervisorPid
-      || latest?.supervisor?.startedAt !== context.state.startedAt) {
-      throw new Error(cliMessage(dependencies.locale, "shutdown.identityChanged"));
+    const startedAt = context.state.startedAt;
+    const currentState = readSupervisorStateImpl({ path: paths.statePath, adminPort });
+    if (stateSnapshot === null || !sameSupervisorIdentity(currentState, context.state)) {
+      throw shutdownIdentityError();
     }
-    killProcess(supervisorPid, "SIGTERM");
+    const request = { supervisorPid, startedAt };
+    let forced = false;
+    try {
+      const accepted = await context.client.request(
+        "POST",
+        "/supervisor/shutdown",
+        request,
+        { expectedStatus: 202 }
+      );
+      if (!validShutdownAcceptance(accepted, request)) {
+        throw shutdownCliError(
+          "SUPERVISOR_SHUTDOWN_RESPONSE_INVALID",
+          "shutdown.unavailable"
+        );
+      }
+    } catch (error) {
+      if (error?.code === "SUPERVISOR_IDENTITY_CHANGED") throw shutdownIdentityError();
+      if (!SHUTDOWN_FORCE_FALLBACK_CODES.has(error?.code)) throw error;
+      const fallbackState = readSupervisorStateImpl({ path: paths.statePath, adminPort });
+      if (!sameSupervisorIdentity(fallbackState, context.state)) throw shutdownIdentityError();
+      const latestState = readSupervisorStateImpl({ path: paths.statePath, adminPort });
+      if (!sameSupervisorIdentity(latestState, context.state)) throw shutdownIdentityError();
+      try {
+        killProcess(supervisorPid, "SIGTERM");
+      } catch (cause) {
+        throw shutdownCliError(
+          "SUPERVISOR_SHUTDOWN_UNAVAILABLE",
+          "shutdown.unavailable",
+          { cause }
+        );
+      }
+      forced = true;
+    }
+
+    const workerPid = Number.isSafeInteger(context.status?.worker?.pid)
+      && context.status.worker.pid > 0
+      ? context.status.worker.pid
+      : null;
     const deadline = now() + shutdownTimeoutMs;
-    while ((isProcessAliveImpl(supervisorPid) || existsSync(paths.statePath)) && now() < deadline) {
+    while ((isProcessAliveImpl(supervisorPid)
+      || workerPid !== null && isProcessAliveImpl(workerPid)) && now() < deadline) {
       await wait(Math.min(100, deadline - now()));
     }
-    if (isProcessAliveImpl(supervisorPid)) {
-      throw new Error(cliMessage(dependencies.locale, "shutdown.timeout"));
+    const supervisorStopped = !isProcessAliveImpl(supervisorPid);
+    const workerStopped = workerPid === null || !isProcessAliveImpl(workerPid);
+    if (!supervisorStopped || !workerStopped) {
+      throw shutdownCliError("SUPERVISOR_SHUTDOWN_TIMEOUT", "shutdown.timeout", {
+        details: {
+          forced,
+          graceful: !forced,
+          processStopped: supervisorStopped && workerStopped,
+          stateRemoved: !existsSync(paths.statePath)
+        }
+      });
     }
+
+    let recoveredStaleState = false;
     if (existsSync(paths.statePath)) {
-      throw new Error(cliMessage(dependencies.locale, "shutdown.stateTimeout"));
+      const cleanup = removeStaleSupervisorStateImpl({
+        path: paths.statePath,
+        expectedSnapshot: stateSnapshot,
+        adminPort,
+        isProcessAlive: isProcessAliveImpl
+      });
+      recoveredStaleState = cleanup?.removed === true;
+      if (!recoveredStaleState && cleanup?.reason !== "state_missing") {
+        throw shutdownCliError(
+          "SUPERVISOR_STATE_CLEANUP_FAILED",
+          "shutdown.stateTimeout",
+          {
+            details: {
+              reason: cleanup?.reason ?? "cleanup_failed",
+              forced,
+              graceful: false,
+              processStopped: true,
+              stateRemoved: false
+            }
+          }
+        );
+      }
     }
+    const stateRemoved = !existsSync(paths.statePath);
+    const degraded = !forced && recoveredStaleState;
+    const humanMessageKey = forced
+      ? "shutdown.forcedCompleted"
+      : degraded
+        ? "shutdown.degradedCompleted"
+        : "shutdown.completed";
     writePayload(options, {
       ok: true,
       shutdown: true,
+      graceful: !forced && !degraded,
+      forced,
+      degraded,
       supervisorPid,
-      workerStopped: true
-    }, stdout, cliMessage(dependencies.locale, "shutdown.completed"));
+      workerStopped,
+      stateRemoved
+    }, stdout, cliMessage(dependencies.locale, humanMessageKey));
     return true;
   }
 
@@ -2585,6 +2808,9 @@ export async function runCli(argv, {
   ensureSupervisorImpl = ensureSupervisor,
   discoverSupervisorImpl = discoverSupervisor,
   readControlTokenImpl = readControlToken,
+  readSupervisorStateImpl = readSupervisorState,
+  readSupervisorStateSnapshotImpl = readSupervisorStateSnapshot,
+  removeStaleSupervisorStateImpl = removeStaleSupervisorState,
   openManagementUrlImpl = (url) => openManagementUrl(url),
   killProcess = (pid, signal) => process.kill(pid, signal),
   isProcessAlive: isProcessAliveImpl = isProcessAlive,
@@ -2622,6 +2848,9 @@ export async function runCli(argv, {
       now,
       shutdownTimeoutMs,
       readControlTokenImpl,
+      readSupervisorStateImpl,
+      readSupervisorStateSnapshotImpl,
+      removeStaleSupervisorStateImpl,
       openManagementUrlImpl,
       locale
     });

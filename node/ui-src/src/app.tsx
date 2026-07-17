@@ -1,4 +1,4 @@
-import { TerminalSquare } from "lucide-react";
+import { Power, TerminalSquare } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -33,6 +33,7 @@ import type {
   Provider,
   ProviderInput,
   Route,
+  SupervisorIdentity,
   WorkspaceData
 } from "./types";
 
@@ -107,9 +108,13 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.lang = locale;
-    const titleKey = route === "setup" ? "setup.title" : `nav.${route}` as TranslationKey;
+    const titleKey = accessMode === "stopped"
+      ? "session.stoppedTitle"
+      : route === "setup"
+        ? "setup.title"
+        : `nav.${route}` as TranslationKey;
     document.title = `${t(titleKey)} | CRP`;
-  }, [locale, route, t]);
+  }, [accessMode, locale, route, t]);
 
   const loadWorkspace = useCallback(async (window: MetricsWindow): Promise<WorkspaceData | null> => {
     const sequence = ++loadSequenceRef.current;
@@ -359,6 +364,48 @@ export function App() {
     void executeMutation("proxy-restart", () => api.restartProxy(), "notice.workerRestarted");
   }, [api, executeMutation]);
 
+  const shutdownSupervisor = useCallback(async (): Promise<boolean> => {
+    if (pendingRef.current || !api.mutationAllowed) return false;
+    const supervisor = workspace?.status.supervisor;
+    if (!Number.isSafeInteger(supervisor?.pid) || supervisor?.pid === null
+      || typeof supervisor?.startedAt !== "string") {
+      setActionError(new ApiError("SUPERVISOR_IDENTITY_CHANGED", 409));
+      return false;
+    }
+    const identity: SupervisorIdentity = {
+      pid: supervisor.pid,
+      startedAt: supervisor.startedAt
+    };
+    pendingRef.current = true;
+    setPending("supervisor-shutdown");
+    setActionError(null);
+    setLoadError(null);
+    setNotice(null);
+    try {
+      await api.shutdownSupervisor(identity);
+      loadControllerRef.current?.abort();
+      loadControllerRef.current = null;
+      loadSequenceRef.current += 1;
+      metricsSequenceRef.current += 1;
+      activitySequenceRef.current += 1;
+      activityLoadingRef.current = false;
+      setActivityLoading(false);
+      setWorkspace(null);
+      setActivity(emptyActivity);
+      setMetrics(null);
+      setMetricsError(null);
+      setTerminalError(null);
+      setAccessMode("stopped");
+      return true;
+    } catch (error) {
+      setActionError(asApiError(error));
+      return false;
+    } finally {
+      pendingRef.current = false;
+      setPending(null);
+    }
+  }, [api, workspace]);
+
   const prepareCodex = useCallback(async (): Promise<BootstrapResult | null> => (
     await executeMutation("codex-bootstrap", () => api.bootstrapCodex(), "notice.codexPrepared")
   ), [api, executeMutation]);
@@ -418,6 +465,29 @@ export function App() {
             </select>
           </label>
           {terminalError ? <span className="visually-hidden">{terminalError.code}</span> : null}
+        </main>
+      </div>
+    );
+  }
+
+  if (accessMode === "stopped") {
+    return (
+      <div id="supervisor-stopped-root" className="terminal-root" data-testid="supervisor-stopped">
+        <main className="session-terminal" aria-labelledby="stopped-title">
+          <div className="brand-symbol terminal-stopped-symbol" aria-hidden="true"><Power /></div>
+          <p className="terminal-eyebrow">{t("session.stoppedEyebrow")}</p>
+          <h1 id="stopped-title">{t("session.stoppedTitle")}</h1>
+          <p>{t("session.stoppedHelp")}</p>
+          <p><strong>{t("session.stoppedClose")}</strong></p>
+          <p>{t("session.stoppedRestart")}</p>
+          <code>crp ui</code>
+          <label className="terminal-locale">
+            <span className="visually-hidden">{t("locale.label")}</span>
+            <select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>
+              <option value="en">English</option>
+              <option value="zh-CN">简体中文</option>
+            </select>
+          </label>
         </main>
       </div>
     );
@@ -493,6 +563,7 @@ export function App() {
       onStart={startProxy}
       onStop={stopProxy}
       onRestart={restartProxy}
+      onShutdown={shutdownSupervisor}
     >
       {route === "overview" ? (
         <OverviewPage

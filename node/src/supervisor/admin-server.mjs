@@ -61,6 +61,7 @@ const METRIC_RESULTS = [
 const METRIC_MAX_COUNT = 1_000_000_000_000;
 const METRIC_MAX_TOKEN_TOTAL = 9_000_000_000_000_000;
 const METRIC_MAX_LATENCY_MS = 300_000;
+const MAX_SUPERVISOR_PID = 4_294_967_295;
 
 function apiError(code, message, action, status) {
   return new CrpError(code, message, action, { status });
@@ -447,6 +448,45 @@ function projectSupervisorState(state) {
   };
 }
 
+function isSupervisorPid(value) {
+  return Number.isSafeInteger(value) && value >= 1 && value <= MAX_SUPERVISOR_PID;
+}
+
+function isCanonicalTimestamp(value) {
+  if (typeof value !== "string") return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function projectShutdownAcceptance(state) {
+  if (!isSupervisorPid(state?.pid) || !isCanonicalTimestamp(state?.startedAt)) {
+    throw new TypeError("Supervisor identity is invalid.");
+  }
+  return {
+    accepted: true,
+    supervisorPid: state.pid,
+    startedAt: state.startedAt
+  };
+}
+
+function supervisorIdentityChanged() {
+  return new CrpError(
+    "SUPERVISOR_IDENTITY_CHANGED",
+    "The local supervisor identity changed.",
+    "Refresh CRP status and retry against the current supervisor.",
+    { status: 409 }
+  );
+}
+
+function supervisorShutdownUnavailable() {
+  return new CrpError(
+    "SUPERVISOR_SHUTDOWN_UNAVAILABLE",
+    "Supervisor shutdown is unavailable.",
+    "Use CRP through the running Supervisor and try again.",
+    { status: 503 }
+  );
+}
+
 function projectCodexState(state) {
   return {
     configured: state?.configured === true,
@@ -518,6 +558,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/proxy/start`, ["POST"]],
     [`${API_PREFIX}/proxy/stop`, ["POST"]],
     [`${API_PREFIX}/proxy/restart`, ["POST"]],
+    [`${API_PREFIX}/supervisor/shutdown`, ["POST"]],
     [`${API_PREFIX}/activity`, ["GET"]],
     [`${API_PREFIX}/settings`, ["GET", "PATCH"]],
     [`${API_PREFIX}/codex/bootstrap`, ["POST"]],
@@ -575,6 +616,7 @@ export function createAdminServer({
   diagnosticsService,
   metricsService,
   getSupervisorState = () => ({ pid: process.pid, startedAt: null }),
+  requestSupervisorShutdown = null,
   uiDir,
   host = "127.0.0.1",
   port = 15101,
@@ -585,6 +627,12 @@ export function createAdminServer({
     || !Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1
     || !auth || !providerService) {
     throw new TypeError("Admin server options are invalid.");
+  }
+
+  if (typeof getSupervisorState !== "function"
+    || (requestSupervisorShutdown !== null
+      && typeof requestSupervisorShutdown !== "function")) {
+    throw new TypeError("Admin shutdown options are invalid.");
   }
 
   const runCodexExclusive = createSerialGate();
@@ -598,6 +646,23 @@ export function createAdminServer({
     }
     return await operation();
   });
+  let shutdownRequestPromise = null;
+  const requestShutdownOnce = () => {
+    if (shutdownRequestPromise) return shutdownRequestPromise;
+    const attempt = Promise.resolve().then(() => requestSupervisorShutdown());
+    shutdownRequestPromise = attempt;
+    void attempt.catch(() => {
+      if (shutdownRequestPromise === attempt) shutdownRequestPromise = null;
+    });
+    return attempt;
+  };
+  const scheduleShutdownAfterResponse = (response) => {
+    response.once("finish", () => {
+      setImmediate(() => {
+        void requestShutdownOnce();
+      });
+    });
+  };
 
   const server = http.createServer((request, response) => {
     setSafeHeaders(response);
@@ -881,6 +946,29 @@ export function createAdminServer({
       await requireEmptyBody(request, maxBodyBytes);
       const worker = await runWhenCodexReady(() => providerService.restartProxy());
       sendJson(response, 200, { worker: projectWorker(worker) });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/supervisor/shutdown` && request.method === "POST") {
+      if (request.url !== `${API_PREFIX}/supervisor/shutdown`) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["supervisorPid", "startedAt"],
+        required: ["supervisorPid", "startedAt"]
+      });
+      if (!isSupervisorPid(body.supervisorPid) || !isCanonicalTimestamp(body.startedAt)) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const current = getSupervisorState();
+      if (body.supervisorPid !== current?.pid || body.startedAt !== current?.startedAt) {
+        throw supervisorIdentityChanged();
+      }
+      if (typeof requestSupervisorShutdown !== "function") {
+        throw supervisorShutdownUnavailable();
+      }
+      const shutdown = projectShutdownAcceptance(current);
+      scheduleShutdownAfterResponse(response);
+      sendJson(response, 202, { shutdown });
       return;
     }
     if (url.pathname === `${API_PREFIX}/activity` && request.method === "GET") {
