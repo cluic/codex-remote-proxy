@@ -1144,8 +1144,6 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
     const codexDir = join(homeDir, ".codex");
     const configPath = join(codexDir, "config.toml");
     const originalBytes = Buffer.from(CONFIG_AT_PROXY_NEEDING_PATCH, "utf8");
-    let sourceDescriptor;
-    let backupDescriptor;
     let replaced = false;
     let replacementObserved = false;
     const replacedIdentity = (identity) => {
@@ -1170,27 +1168,10 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
             ...realFileOperations,
             openSync(path, ...args) {
               const descriptor = realFileOperations.openSync(path, ...args);
-              if (path === configPath) sourceDescriptor = descriptor;
-              if (path.startsWith(`${configPath}.`) && path.endsWith(".bak")) {
-                backupDescriptor = descriptor;
-              }
+              if (replacementPhase === "after-read" && path === configPath) replaced = true;
+              if (replacementPhase === "after-backup"
+                && path.startsWith(`${configPath}.`) && path.endsWith(".bak")) replaced = true;
               return descriptor;
-            },
-            readFileSync(target, ...args) {
-              const value = realFileOperations.readFileSync(target, ...args);
-              if (replacementPhase === "after-read"
-                && !replaced
-                && (target === configPath || target === sourceDescriptor)) {
-                replaced = true;
-              }
-              return value;
-            },
-            writeFileSync(target, ...args) {
-              const value = realFileOperations.writeFileSync(target, ...args);
-              if (replacementPhase === "after-backup" && target === backupDescriptor) {
-                replaced = true;
-              }
-              return value;
             },
             lstatSync(path, ...args) {
               const identity = realFileOperations.lstatSync(path, ...args);
