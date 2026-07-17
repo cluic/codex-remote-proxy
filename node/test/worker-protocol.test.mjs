@@ -267,6 +267,77 @@ test("child protocol accepts exact lifecycle acknowledgements, status, and fatal
   }
 });
 
+test("child protocol accepts only bounded anonymous metric observations", () => {
+  const message = {
+    version: 1,
+    type: "metric",
+    requestId: "metric-observation",
+    observation: {
+      generation: 7,
+      result: "success",
+      model: "gpt-5-codex",
+      inputTokens: 123,
+      outputTokens: 45,
+      durationBin: 4,
+      responseStartBin: 2
+    }
+  };
+  assert.deepEqual(validateChildMessage(message), message);
+  assert.deepEqual(validateChildMessage({
+    ...message,
+    observation: {
+      ...message.observation,
+      result: "networkError",
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      responseStartBin: null
+    }
+  }).observation, {
+    generation: 7,
+    result: "networkError",
+    model: null,
+    inputTokens: null,
+    outputTokens: null,
+    durationBin: 4,
+    responseStartBin: null
+  });
+
+  const sentinel = "metric-secret-sentinel";
+  const invalid = [
+    { ...message, requestId: "actual request id" },
+    { ...message, requestId: "actual-request-id" },
+    { ...message, observation: { ...message.observation, generation: 0 } },
+    { ...message, observation: { ...message.observation, result: "raw-error" } },
+    { ...message, observation: { ...message.observation, model: `bad\u0000${sentinel}` } },
+    { ...message, observation: { ...message.observation, inputTokens: 100_000_001 } },
+    { ...message, observation: { ...message.observation, outputTokens: null } },
+    { ...message, observation: { ...message.observation, durationBin: 13 } },
+    { ...message, observation: { ...message.observation, responseStartBin: -1 } },
+    { ...message, observation: { ...message.observation, requestId: sentinel } },
+    { ...message, observation: { ...message.observation, url: `https://${sentinel}.invalid` } },
+    { ...message, observation: { ...message.observation, error: sentinel } }
+  ];
+  for (const candidate of invalid) {
+    assert.throws(
+      () => validateChildMessage(candidate),
+      (error) => error?.code === "WORKER_PROTOCOL_INVALID"
+        && !String(error.message).includes(sentinel)
+    );
+  }
+
+  const sanitized = sanitizeProtocolMessage({
+    ...message,
+    observation: { ...message.observation, model: sentinel }
+  });
+  assert.equal(JSON.stringify(sanitized).includes(sentinel), false);
+  assert.deepEqual(sanitized, {
+    version: 1,
+    type: "metric",
+    requestId: "metric-observation"
+  });
+});
+
 test("child protocol rejects invalid state, extra fields, and secret-bearing errors", () => {
   const invalidMessages = [
     { version: 1, type: "ready", requestId: "worker-ready" },

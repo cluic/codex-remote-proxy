@@ -35,6 +35,9 @@ coverage/
 /scripts/__pycache__/
 /node/node_modules/
 /node/.npm/
+/output/
+/.playwright-cli/
+/crp-web-product.zip
 /local_docs/
 /local_docs
 /python/

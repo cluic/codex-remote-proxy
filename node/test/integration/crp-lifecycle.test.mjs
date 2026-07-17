@@ -99,14 +99,23 @@ function createServices() {
         const index = providers.findIndex((provider) => provider.id === id);
         return structuredClone(providers.splice(index, 1)[0]);
       },
-      async testProvider(id) {
+      async testProvider(id, _model, { activateIfNone = false } = {}) {
         const provider = providers.find((candidate) => candidate.id === id);
         Object.assign(provider, {
           lastTestAt: STARTED_AT,
           lastTestStatus: "passed",
           updatedAt: STARTED_AT
         });
-        return { ok: true, code: null };
+        let initialActivation = null;
+        if (activateIfNone && activeProviderId === null && workerPid === null) {
+          activeProviderId = id;
+          initialActivation = {
+            automatic: true,
+            activeProviderId: id,
+            workerStarted: false
+          };
+        }
+        return { ok: true, code: null, initialActivation };
       },
       async activate(id) {
         activeProviderId = id;
@@ -279,16 +288,22 @@ test("CLI manages one injected supervisor and replaceable worker through the rea
   ]);
   assert.equal(added.provider.id, "provider-1");
   assert.equal((await invoke(["provider", "list", "--json"])).providers.length, 1);
-  assert.equal((await invoke([
+  const tested = await invoke([
     "provider", "test", "--id", "provider-1", "--model", "test-model", "--json"
-  ])).result.ok, true);
-  assert.equal((await invoke([
-    "provider", "activate", "--id", "provider-1", "--json"
-  ])).activation.activeProviderId, "provider-1");
+  ]);
+  assert.equal(tested.result.ok, true);
+  assert.deepEqual(tested.result.initialActivation, {
+    automatic: true,
+    activeProviderId: "provider-1",
+    workerStarted: false
+  });
 
   const started = await invoke(["start", "--json"]);
   const firstWorkerPid = started.worker.pid;
   assert.equal(Number.isSafeInteger(firstWorkerPid), true);
+  assert.equal((await invoke([
+    "provider", "activate", "--id", "provider-1", "--json"
+  ])).activation.activeProviderId, "provider-1");
   const restarted = await invoke(["restart", "--json"]);
   assert.notEqual(restarted.worker.pid, firstWorkerPid);
   const statusAfterRestart = await invoke(["status", "--json"]);

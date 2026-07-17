@@ -1,93 +1,91 @@
 # UI/UX
 
-## Current Web Acceptance Status
+## M2E/V8 Current Direction
 
-Web implementation and E2E remain frozen while the completed local core milestone is handed off. The packaged UI exists, but it is not currently accepted for release because three reported onboarding issues remain unresolved or unverified:
+V8 completely replaces the previous Web implementation while using the rendered v0 prototype only as its visual target. The application uses a neutral near-white canvas, white operational surfaces, deep forest-green primary actions, restrained amber/green/red state accents, an icon sidebar, a compact top bar, and bilingual local-console copy. It does not reuse the prototype's Next.js shell, remote Geist font, Analytics, mock state, fake delayed mutations, authority toggle, wrong ports, masked credential previews, or oversized dependency set.
 
-1. The first-step test-model input is vertically misaligned with the adjacent fields.
-2. Steps 2 and 3 retain step-1 form fields, obscuring which information is still actionable.
-3. The real bootstrap, activation, and proxy-start flow has not been rerun in a browser against the corrected core implementation.
+The authored source is a React + TypeScript SPA under `node/ui-src/`, built by Vite. Production serves exactly `node/ui/index.html`, `node/ui/app.js`, and `node/ui/styles.css` from the existing same-origin Admin server. There is no frontend runtime server, CDN, remote font, telemetry, source map, inline script/style, or dynamic chunk.
 
-Task 11 and `210cb71` browser results below are historical evidence for those exact trees. They must not be reported as current Web acceptance or as proof that these three issues are fixed.
+## Information Architecture
 
-## Audience and Tone
+Permanent navigation is:
 
-Primary users may not understand providers, processes, ports, or configuration files. Use calm, direct language, show one recommended action, and place technical details behind expandable areas.
+- Overview
+- Providers
+- Forwarding Records, disabled with `Coming soon / 即将上线`
+- Activity
+- System
 
-## Device Priorities
+Setup is conditional and resume-safe rather than a permanent destination. Forwarding Records is not a link and has no route, request, mock records, payload view, export, purge, or Capture control.
 
-1. Desktop browsers on macOS and Windows.
-2. Keyboard-complete desktop interaction.
-3. Linux browser compatibility after CLI parity is stable.
+## Conditional Setup
 
-The admin UI is not designed for mobile or remote access.
+Setup derives its phase from authoritative Provider, Codex, and Worker facts. It never stores setup progress or secret drafts.
 
-## Page Map
+1. Save a Provider with a blank write-only credential field.
+2. Choose or manually enter a model, optionally refresh the independent model catalog, and run the Responses compatibility test.
+3. On the first success, request `activateIfNone: true`; the first-wins compare-and-set selects the Provider while the Worker remains stopped. A previously tested but unselected Provider is tested once more to perform the same selection.
+4. Confirm and run Codex bootstrap/history repair against fixed `OpenAI` and `http://127.0.0.1:15100`.
+5. Start the Worker explicitly, then open Overview.
 
-- Onboarding: provider details → compatibility test → activate → Codex bootstrap result.
-- Overview: supervisor/worker health, active provider, fixed proxy address, recent error, switch and restart actions.
-- Providers: list, create, edit, test, activate, delete, and replace credential.
-- Activity: sanitized lifecycle events and an in-memory diagnostic summary.
-- Settings: read-only ports, credential backend status, capture state, and Codex bootstrap state.
+Setup never calls explicit Provider activation. Ordinary Provider-page tests also omit `activateIfNone` unless the user selects a switch action.
 
-All five views are implemented in the packaged `index.html`, `styles.css`, and `app.js`; the UI has no CDN, framework, or separate locale asset dependency. Implementation presence does not override the frozen acceptance status above.
+The Setup model-refresh action aligns with the model input/select control rather than the catalog-count help row; narrow single-column layouts remove the desktop alignment offset.
 
-## Core Interaction Rules
+## Overview
 
-- A provider cannot be activated until its compatibility test passes.
-- Activation shows progress and completes only after the worker acknowledges the new generation.
-- Restart uses one explicit confirmation only when in-flight requests may be interrupted.
-- Destructive profile deletion requires confirmation and is unavailable for the active profile.
-- Active-provider edit and deletion stay unavailable even when the worker is stopped; activate another provider first.
-- Secret inputs are blank on edit; masked previews are informational, never form values.
-- Every error includes a plain-language cause and a next action.
-- First-run provider setup persists the provider before testing it, then permits activation only after a passing test.
-- Public onboarding requires the native credential store; the UI has no file-backend selection or consent control and shows the safe backend error when native storage is unavailable.
-- Settings is read-only in V1; fixed ports, capture state, credential backend, and Codex bootstrap state are informational.
-- A valid session cookie without a launch fragment opens a GET-only workspace with mutation controls disabled and a banner to reopen with `crp ui` for changes.
-- A failed session exchange or later session/CSRF authentication failure becomes a terminal read-only instruction to close the tab and run `crp ui` again; Task 11 does not refresh sessions.
+Overview begins with one compact readiness/action band and separate management, Worker, active-Provider, and Codex facts. Anonymous Metrics follows and supports 24-hour and 7-day windows independently from Capture; permanent lifecycle controls live in the sidebar runtime block.
 
-## Visual Direction
+The Metrics presentation contains:
 
-Approved direction: **guided utility console**.
+- request volume, success rate, observed Token total and coverage, and P95 response-start upper-bound KPIs;
+- request-result and observed-Token trends;
+- model request distribution, with bounded remainder grouped as Other;
+- a Provider performance table with request count, success rate, and P95 duration upper bound;
+- explicit empty, unavailable, degraded, and data-quality states.
 
-- First run uses a short step-by-step flow.
-- Daily use uses a light, low-density sidebar layout.
-- Status uses text plus icons, never color alone.
-- Advanced process and HTTP details remain collapsed by default.
+Token or latency values without observations display `-`, never a fabricated zero. A histogram overflow displays greater than the final 300-second bound. Charts include equivalent visually hidden tables, and color or hover is never the only information channel. Metrics never implies cost, billing, exact latency, or per-request inspection.
 
-## Initial Design Tokens
+Start, Stop, and Restart remain explicit. Stop leaves the Supervisor and Web available. Restart confirms only when the latest status reports in-flight requests. Lifecycle controls appear after Metrics rather than competing with the readiness summary.
 
-- System UI font stack for native familiarity and zero font downloads.
-- Neutral gray surfaces, blue primary actions, green healthy status, amber warning, red destructive/error.
-- Minimum 44px interactive targets and visible keyboard focus.
-- Eight-point spacing scale and restrained shadows.
+## Providers
 
-## Internationalization
+Provider cards show name, safe Base URL, test state, model policy, credential-configured state, last test, active state, and legal actions. IDs remain technical detail rather than the primary human label.
 
-- Task 11 ships complete `en` and `zh-CN` runtime dictionaries inside `app.js`; separate locale assets remain outside the static-file allowlist.
-- Locale priority is `localStorage["crp.locale"]`, then the first supported `navigator.languages` entry after skipping unsupported entries, then English. Browser-derived/default selection does not write storage; explicit selector use writes the preference, and invalid stored values are removed.
-- The language menu offers `English` and `简体中文`, has a minimum 44px target, and updates `document.documentElement.lang` immediately.
-- Dates and numbers use `Intl` with the active locale. Stable IDs, ports, URLs, request IDs, and error codes remain literal.
-- Every JavaScript-rendered visible string and accessible name, including validation, empty, loading, success, confirmation, live-region, session-expiry, and error cause/action copy, comes from the dictionaries. A short static bilingual `<noscript>` explanation is the only exception, and `document.title` updates with the active locale.
-- English longest-form actions and warnings define layout stress cases. English and Chinese may wrap, but neither may clip, overflow, or overlap controls and adjacent content.
-- Only the locale preference may enter browser storage. Control/session tokens, CSRF tokens, credentials, provider drafts, responses, and errors remain memory-only.
+Cards expose direct `Switch`, `Test and switch`, and stopped-Worker variants whose labels explicitly include `and start`. Production explicit activation applies the new snapshot to a running Worker or starts a stopped Worker; it is never described as selection-only. The previous Provider remains current until the Admin response and authoritative refresh confirm success.
 
-The full decision is recorded in `docs/superpowers/specs/2026-07-13-crp-ui-i18n-design.md`.
+Create, edit, model refresh, compatibility test, activation, credential replacement, and deletion remain separate operations. Active Provider edit, credential replacement, and deletion are unavailable with a reason. A delete confirmation names the Provider and explains that its credential and model catalog are removed.
 
-## Accessibility
+Credential fields are blank write-only inputs. They are never prefilled, hinted, partially revealed, displayed as masked saved values, or retained after submission begins. Only `Configured` or `Not configured` is readable.
 
-- Meet WCAG 2.2 AA contrast.
-- Preserve full keyboard navigation and semantic form labels.
-- Announce asynchronous test, activation, and restart state changes.
-- Respect reduced-motion preferences.
+## Activity And System
 
-## Visual Evidence
+Activity is sanitized control-plane history, not traffic analytics. It uses a dense paginated table, newest first, and shows only timestamp, allowlisted action/category/result, resolvable Provider identity, stable error code, and bounded safe details. There are no request/response bodies, raw logs, Capture contents, search, filters, or traffic charts.
 
-Low-fidelity architecture, provider flow, UI direction, and dashboard/error-state screens were reviewed and approved in the local visual companion on 2026-07-10. The user approved the Task 11 Overview visual and bilingual direction on 2026-07-13. The reviewed prototype lived under `/tmp`, so it is intentionally described rather than linked as durable evidence: a light guided utility console with a compact sidebar, restrained neutral surfaces, strong operational hierarchy, clear blue primary actions, and text-plus-icon status.
+System shows immutable local facts for fixed proxy/Admin addresses, Codex identity and readiness, Worker state, and the required native credential backend. Its two writable actions are Prepare Codex and Generate diagnostic summary. The diagnostic result is memory-only `{ created, generatedAt, eventCount }`, not a file or download. Capture settings and controls are omitted.
 
-Task 11 acceptance cleared token and credential state before explicitly generating English and Simplified Chinese Overview screenshots at 1440x900. The canonical local review artifacts are `output/playwright/task11/onboarding-onboards-in-Eng-57b0b-ce-and-finishes-on-Overview-chromium/overview-en.png` and `overview-zh-CN.png`; both are 1440x900, and automated layout coverage also exercises 390x844 without redefining the product as mobile. Automatic Playwright trace, video, failure screenshots, and other sensitive browser artifacts stay disabled.
+## Responsive And Accessibility
 
-The PNGs under `output/` are explicit, sanitized local review attachments, not repository source and not part of the exact eight-file Task 11 commit. The durable repository evidence is this accepted visual contract plus the deterministic test that regenerates the images. Task 12 must attach fresh macOS and Windows screenshots to the L3 review record; neither Task 11 nor `docs/TESTING.md` requires committing PNGs to Git.
+Desktop uses a roughly 256px sidebar, compact top bar, constrained content width, 16px component gaps, 24px section gaps, and surfaces no rounder than 8px. Narrow layouts use a focus-trapped drawer, 16px page padding, one-column content, stable chart dimensions, wrapping technical values, and full-width primary actions where needed.
 
-Historical code evidence at `210cb71` includes 41/41 Chromium tests and regenerated sanitized artifacts. Those results predate the reported onboarding defects and the later core corrections, so they do not satisfy current Web acceptance. Real macOS and Windows workflow artifact URLs, Windows-specific visual review, and a fresh real bootstrap/activation/start browser run are still pending and must not be inferred from local Chrome for Testing results.
+The application is responsive rather than desktop-only. The required narrow viewport is 390x844. Closed off-canvas navigation is hidden from pointer, focus, and accessibility traversal; stale asynchronous focus restoration is cancelled. Long English/Chinese names, URLs, model IDs, and errors must not create page-level horizontal scrolling or overlap.
+
+Interactive targets are at least 44px. Visible focus, skip navigation, semantic landmarks/forms/tables, reduced-motion support, text-plus-icon status, and WCAG 2.2 AA contrast are required.
+
+## Access And Internationalization
+
+The full interface ships equal `en` and `zh-CN` dictionaries inside `app.js`. Locale priority is stored explicit `crp.locale`, then English; browser language is never inferred. Only explicit selection writes storage, so a Chinese selection is retained on subsequent launches. Dates and numbers use `Intl`; stable IDs, URLs, ports, request IDs, and error codes remain literal.
+
+The launch fragment is exchanged once, removed, and cleared from memory. A valid cookie without a launch fragment opens a GET-only workspace whose mutation controls are disabled before interaction. A visible recovery action may restore management while the session remains valid; recovery rotates cookie/CSRF values, preserves the original expiry, and never re-reads the control token. A failed launch exchange, expired recovery, or later business-session/CSRF authentication failure is terminal for the tab. Credentials, tokens, drafts, responses, and errors never enter browser storage.
+
+The sidebar runtime block is the permanent fast-control surface: it shows the stable `OpenAI · :15100` route, Worker state and in-flight count, a Provider selector, and icon-only start/stop/restart controls with hover labels. Overview retains readiness and metrics but has no duplicate bottom lifecycle/route panels. Global success/error feedback is a fixed, closable overlay and must not move page content.
+
+Model testing uses a real select when a catalog exists and always provides an explicit manual-model option. Provider cards expose an icon-only duplicate action; duplication pre-fills non-secret routing configuration, generates a unique editable name, and requires a new blank API key.
+
+## Current Acceptance Status
+
+V8 local acceptance passes Chromium 33/33, including English and Simplified Chinese at 1440, 1024, and 390 widths. The matched 1272x716 v0/implementation side-by-side comparison, desktop Provider capture, narrow Overview capture, overflow checks, and final findings are recorded under `output/web-v8/` and in `design-qa.md`; no unresolved P0/P1/P2 remains. Historical Task 11 or V7 41/41 results remain evidence only for their earlier trees.
+
+## Historical Evidence
+
+The user approved the original Task 11 Overview direction and bilingual requirement on 2026-07-13. Task 11 later generated sanitized 1440x900 English and Chinese Overview artifacts and exercised 390x844, and M2D/V7 passed a request-order-only Chromium regression. Those results belong to their exact historical trees. V8 supersedes the old blue-primary guided-utility implementation and its parked field-alignment/stale-step defects; the old screenshots remain historical references, not current release evidence.

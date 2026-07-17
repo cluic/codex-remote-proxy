@@ -626,12 +626,16 @@ export async function migrateLegacyConfiguration({
     }
     if (activityStore) {
       try {
+        const safeFailureCode = error instanceof CrpError
+          && error.code === "MIGRATION_INPUT_INVALID"
+          ? error.code
+          : "MIGRATION_FAILED";
         await activityStore.append({
           category: "migration",
           action: "legacy-config",
           providerId,
           result: "failed",
-          errorCode: rollbackFailed ? "MIGRATION_ROLLBACK_DEGRADED" : "MIGRATION_FAILED",
+          errorCode: rollbackFailed ? "MIGRATION_ROLLBACK_DEGRADED" : safeFailureCode,
           details: { rollbackDegraded: rollbackFailed }
         });
       } catch {

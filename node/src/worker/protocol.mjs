@@ -4,11 +4,12 @@ export const PROTOCOL_VERSION = 1;
 
 const PARENT_TYPES = new Set(["configure", "drain", "shutdown", "status"]);
 const CHILD_STATE_TYPES = new Set(["ready", "configured", "drained", "status"]);
-const CHILD_TYPES = new Set([...CHILD_STATE_TYPES, "fatal"]);
+const CHILD_TYPES = new Set([...CHILD_STATE_TYPES, "fatal", "metric"]);
 const BASE_FIELDS = new Set(["version", "type", "requestId"]);
 const CONFIGURE_FIELDS = new Set([...BASE_FIELDS, "generation", "settings"]);
 const CHILD_STATE_FIELDS = new Set([...BASE_FIELDS, "state"]);
 const FATAL_FIELDS = new Set([...BASE_FIELDS, "error"]);
+const METRIC_FIELDS = new Set([...BASE_FIELDS, "observation"]);
 const STATE_FIELDS = new Set([
   "phase",
   "configured",
@@ -19,6 +20,15 @@ const STATE_FIELDS = new Set([
   "inFlight"
 ]);
 const ERROR_FIELDS = new Set(["code", "message"]);
+const METRIC_OBSERVATION_FIELDS = new Set([
+  "generation",
+  "result",
+  "model",
+  "inputTokens",
+  "outputTokens",
+  "durationBin",
+  "responseStartBin"
+]);
 const SETTINGS_FIELDS = new Set(["configPath", "server", "upstream", "proxy", "capture"]);
 const SERVER_FIELDS = new Set(["host", "port", "logLevel"]);
 const UPSTREAM_FIELDS = new Set([
@@ -36,6 +46,18 @@ const WORKER_PHASES = new Set(["ready", "running", "draining", "drained", "stopp
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+const METRIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+const METRIC_RESULTS = new Set([
+  "success",
+  "upstreamRejected",
+  "upstreamError",
+  "timeout",
+  "networkError",
+  "clientAbort"
+]);
+const METRIC_MAX_MODEL_CODE_POINTS = 256;
+const METRIC_MAX_OBSERVATION_TOKENS = 100_000_000;
+const METRIC_LATENCY_BIN_COUNT = 13;
 const SENSITIVE_HEADER_TERMS = [
   "authorization",
   "cookie",
@@ -252,6 +274,44 @@ function validateFatalError(error) {
   return error;
 }
 
+function isBoundedMetricModel(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= METRIC_MAX_MODEL_CODE_POINTS * 2
+    && [...value].length <= METRIC_MAX_MODEL_CODE_POINTS
+    && value.trim() === value
+    && !METRIC_TEXT_CONTROL_PATTERN.test(value);
+}
+
+function isMetricTokenCount(value) {
+  return Number.isSafeInteger(value)
+    && value >= 0
+    && value <= METRIC_MAX_OBSERVATION_TOKENS;
+}
+
+function isMetricLatencyBin(value) {
+  return Number.isInteger(value) && value >= 0 && value < METRIC_LATENCY_BIN_COUNT;
+}
+
+function validateMetricObservation(observation) {
+  const noUsage = observation?.inputTokens === null && observation?.outputTokens === null;
+  const completeUsage = isMetricTokenCount(observation?.inputTokens)
+    && isMetricTokenCount(observation?.outputTokens);
+  if (!isPlainObject(observation)
+    || !hasExactFields(observation, METRIC_OBSERVATION_FIELDS)
+    || !Number.isSafeInteger(observation.generation)
+    || observation.generation <= 0
+    || !METRIC_RESULTS.has(observation.result)
+    || (observation.model !== null && !isBoundedMetricModel(observation.model))
+    || (!noUsage && !completeUsage)
+    || !isMetricLatencyBin(observation.durationBin)
+    || (observation.responseStartBin !== null
+      && !isMetricLatencyBin(observation.responseStartBin))) {
+    throw protocolError();
+  }
+  return observation;
+}
+
 function projectState(state) {
   try {
     validateState(state, { exact: false });
@@ -296,6 +356,14 @@ export function validateChildMessage(message) {
     validateState(message.state);
     return message;
   }
+  if (message.type === "metric") {
+    if (!hasExactFields(message, METRIC_FIELDS)
+      || message.requestId !== "metric-observation") {
+      throw protocolError();
+    }
+    validateMetricObservation(message.observation);
+    return message;
+  }
   if (!hasExactFields(message, FATAL_FIELDS)) {
     throw protocolError();
   }
@@ -307,7 +375,8 @@ export function sanitizeProtocolMessage(message) {
   if (!isPlainObject(message)
     || message.version !== PROTOCOL_VERSION
     || (!PARENT_TYPES.has(message.type) && !CHILD_TYPES.has(message.type))
-    || !isRequestId(message.requestId)) {
+    || !isRequestId(message.requestId)
+    || (message.type === "metric" && message.requestId !== "metric-observation")) {
     return {};
   }
 

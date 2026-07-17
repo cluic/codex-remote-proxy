@@ -14,7 +14,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { CrpError } from "../shared/errors.mjs";
+import { CrpError, parseStartupFailureMessage } from "../shared/errors.mjs";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const SUPERVISOR_ENTRY = fileURLToPath(new URL("./supervisor-entry.mjs", import.meta.url));
@@ -27,6 +27,7 @@ const SAFE_ERROR_DETAIL_FIELDS = new Set([
   "reason",
   "committed",
   "degraded",
+  "pending",
   "generation",
   "httpStatus"
 ]);
@@ -406,6 +407,74 @@ function defaultIsProcessAlive(pid) {
   }
 }
 
+function ignoreLateChildError() {}
+
+function observeStartupFailure(child) {
+  if (!child || typeof child.on !== "function" || typeof child.once !== "function") {
+    return { failure: null, dispose() {} };
+  }
+  let resolveFailure;
+  let disposed = false;
+  let closeFallback = null;
+  const failure = new Promise((resolvePromise) => { resolveFailure = resolvePromise; });
+  const removeListeners = () => {
+    child.off?.("message", onMessage);
+    child.off?.("error", onError);
+    child.off?.("close", onClose);
+    if (closeFallback !== null) {
+      clearImmediate(closeFallback);
+      closeFallback = null;
+    }
+    child.on("error", ignoreLateChildError);
+  };
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    removeListeners();
+    if (child.connected === true && typeof child.disconnect === "function") {
+      try { child.disconnect(); } catch {}
+    }
+  };
+  const fail = (error) => {
+    if (disposed) return;
+    dispose();
+    resolveFailure(error);
+  };
+  const onMessage = (message) => {
+    fail(parseStartupFailureMessage(message) ?? clientError("SUPERVISOR_START_FAILED"));
+  };
+  const onError = () => { fail(clientError("SUPERVISOR_START_FAILED")); };
+  const onClose = () => {
+    if (closeFallback !== null) return;
+    closeFallback = setImmediate(() => {
+      closeFallback = null;
+      fail(clientError("SUPERVISOR_START_FAILED"));
+    });
+  };
+  child.on("message", onMessage);
+  child.once("error", onError);
+  child.once("close", onClose);
+  child.channel?.unref?.();
+  return { failure, dispose };
+}
+
+async function raceStartupFailure(operation, startupOutcome) {
+  const observedOperation = Promise.resolve(operation).then(
+    (value) => ({ type: "operation", value }),
+    (error) => ({ type: "operation-error", error })
+  );
+  if (startupOutcome === null) {
+    const outcome = await observedOperation;
+    if (outcome.type === "operation-error") throw outcome.error;
+    return outcome.value;
+  }
+  const outcome = await Promise.race([observedOperation, startupOutcome]);
+  if (outcome.type === "startup-error" || outcome.type === "operation-error") {
+    throw outcome.error;
+  }
+  return outcome.value;
+}
+
 export function spawnDetachedSupervisor({
   paths,
   home = dirname(paths?.globalHome ?? ""),
@@ -419,20 +488,35 @@ export function spawnDetachedSupervisor({
   fileOperations.mkdirSync(paths.globalHome, { recursive: true, mode: 0o700 });
   try { fileOperations.chmodSync(paths.globalHome, 0o700); } catch {}
   let logDescriptor;
+  let child;
+  let monitor;
   try {
     logDescriptor = fileOperations.openSync(paths.logPath, "a", 0o600);
     try { fileOperations.fchmodSync(logDescriptor, 0o600); } catch {}
-    const child = spawnImpl(process.execPath, [SUPERVISOR_ENTRY], {
+    child = spawnImpl(process.execPath, [SUPERVISOR_ENTRY], {
       cwd: resolve(PACKAGE_ROOT),
       env: { ...process.env, CRP_HOME: home },
       detached: true,
-      stdio: ["ignore", logDescriptor, logDescriptor],
+      stdio: ["ignore", logDescriptor, logDescriptor, "ipc"],
+      serialization: "json",
       shell: false
     });
-    child.once?.("error", () => {});
+    monitor = observeStartupFailure(child);
+    Object.defineProperties(child, {
+      startupFailure: { value: monitor.failure, configurable: true },
+      disposeStartupMonitor: { value: monitor.dispose, configurable: true }
+    });
     child.unref();
     return child;
   } catch {
+    try { monitor?.dispose(); } catch {}
+    try {
+      if (child?.listenerCount?.("error") === 0) child.on("error", ignoreLateChildError);
+    } catch {}
+    try { child?.kill?.("SIGTERM"); } catch {}
+    if (child?.connected === true && typeof child.disconnect === "function") {
+      try { child.disconnect(); } catch {}
+    }
     throw clientError("SUPERVISOR_START_FAILED");
   } finally {
     if (logDescriptor !== undefined) fileOperations.closeSync(logDescriptor);
@@ -523,13 +607,29 @@ async function ensureSupervisorInternal({
     throw clientError("SUPERVISOR_START_FAILED");
   }
 
+  const startupOutcome = spawnedChild?.startupFailure
+    && typeof spawnedChild.startupFailure.then === "function"
+    ? Promise.resolve(spawnedChild.startupFailure).then(
+      (error) => ({
+        type: "startup-error",
+        error: error instanceof CrpError ? error : clientError("SUPERVISOR_START_FAILED")
+      }),
+      () => ({ type: "startup-error", error: clientError("SUPERVISOR_START_FAILED") })
+    )
+    : null;
   try {
     const deadline = now() + timeoutMs;
     while (now() <= deadline) {
-      const discovered = await discoverSupervisor(discoveryOptions);
+      const discovered = await raceStartupFailure(
+        discoverSupervisor(discoveryOptions),
+        startupOutcome
+      );
       if (discovered) return { ...discovered, spawned: true };
       if (now() >= deadline) break;
-      await wait(Math.min(pollIntervalMs, deadline - now()));
+      await raceStartupFailure(
+        wait(Math.min(pollIntervalMs, deadline - now())),
+        startupOutcome
+      );
     }
     throw clientError("SUPERVISOR_START_TIMEOUT");
   } catch (error) {
@@ -539,6 +639,8 @@ async function ensureSupervisorInternal({
       // Preserve the readiness/discovery error when cleanup is unavailable.
     }
     throw error;
+  } finally {
+    try { spawnedChild?.disposeStartupMonitor?.(); } catch {}
   }
 }
 

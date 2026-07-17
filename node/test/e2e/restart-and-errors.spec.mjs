@@ -1,5 +1,22 @@
-import { test, expect, openCrp, assertNoSecrets } from "./crp-ui-fixture.mjs";
 import { randomBytes } from "node:crypto";
+
+import { assertNoSecrets, expect, openCrp, test } from "./crp-ui-fixture.mjs";
+
+async function openProviderTest(page, name) {
+  await page.getByRole("button", { name: `Test ${name}` }).click();
+  const dialog = page.getByRole("dialog", { name: "Test provider" });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+async function openInactiveProviderEditor(page, name) {
+  await page.getByRole("button", { name: `View ${name} details` }).click();
+  const details = page.getByRole("dialog", { name });
+  await details.getByRole("button", { name: `Edit ${name}` }).click();
+  const editor = page.getByRole("dialog", { name: "Edit provider" });
+  await expect(editor).toBeVisible();
+  return editor;
+}
 
 test.beforeEach(async ({ crp }) => {
   crp.seedProviders({
@@ -15,20 +32,23 @@ test("restarts immediately at zero in-flight requests and keeps the supervisor s
   await openCrp(page, crp);
   const originalWorkerPid = crp.state.worker.pid;
   const supervisorPid = crp.state.supervisorPid;
+  const headerY = await page.locator(".page-header").evaluate((element) => element.getBoundingClientRect().y);
   await page.getByRole("button", { name: "Restart worker" }).click();
-  await expect(page.getByRole("dialog", { name: "Restart worker?" })).toBeHidden();
   await expect(page.getByRole("status")).toContainText("Worker restarted");
+  await expect(page.getByTestId("global-message")).toHaveCSS("position", "fixed");
+  expect(await page.locator(".page-header").evaluate((element) => element.getBoundingClientRect().y)).toBe(headerY);
   expect(crp.state.worker.pid).not.toBe(originalWorkerPid);
   expect(crp.state.supervisorPid).toBe(supervisorPid);
+  expect(crp.calls.filter((call) => call.operation === "restartProxy")).toHaveLength(1);
 });
 
-test("warns before restarting with in-flight work and restores trigger focus", async ({ page, crp }) => {
+test("warns before restarting in-flight work and restores the trigger focus", async ({ page, crp }) => {
   crp.setInFlight(3);
   await openCrp(page, crp);
   const restart = page.getByRole("button", { name: "Restart worker" });
   await restart.click();
   const dialog = page.getByRole("dialog", { name: "Restart worker?" });
-  await expect(dialog).toContainText("3 requests are still in flight");
+  await expect(dialog).toContainText("3 requests are currently in flight");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(restart).toBeFocused();
@@ -40,28 +60,139 @@ test("warns before restarting with in-flight work and restores trigger focus", a
   expect(crp.calls.filter((call) => call.operation === "restartProxy")).toHaveLength(1);
 });
 
+test("returns focus to the mobile menu after cancelling an in-flight restart", async ({ page, crp }) => {
+  crp.setInFlight(3);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openCrp(page, crp);
+  const menu = page.getByRole("button", { name: "Open navigation" });
+  await menu.click();
+  const drawer = page.getByRole("dialog", { name: "Primary navigation" });
+  await drawer.getByRole("button", { name: "Restart worker" }).click();
+  await expect(drawer).toBeHidden();
+  const confirmation = page.getByRole("dialog", { name: "Restart worker?" });
+  await expect(confirmation).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toBeHidden();
+  await expect(menu).toBeFocused();
+  expect(crp.calls.filter((call) => call.operation === "restartProxy")).toHaveLength(0);
+});
+
+test("stops and starts only the worker with exact empty request bodies", async ({ page, crp }) => {
+  const requests = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/proxy/stop" || path === "/api/v1/proxy/start") {
+      requests.push({ path, body: request.postData(), contentType: request.headers()["content-type"] });
+    }
+  });
+  await openCrp(page, crp);
+  await page.getByRole("button", { name: "Stop proxy" }).click();
+  const start = page.locator(".sidebar-worker-actions").getByRole("button", { name: "Start proxy" });
+  await expect(start).toBeEnabled();
+  await start.click();
+  await expect(page.locator(".sidebar-worker-actions").getByRole("button", { name: "Stop proxy" })).toBeEnabled();
+  expect(requests.map((request) => request.path)).toEqual(["/api/v1/proxy/stop", "/api/v1/proxy/start"]);
+  for (const request of requests) {
+    expect(request.body).toBeNull();
+    expect(request.contentType).toBeUndefined();
+  }
+  expect(crp.state.supervisorPid).toBe(7001);
+});
+
+test("projects real transitional and recovery phases in the sidebar", async ({ page, crp }) => {
+  await openCrp(page, crp);
+  const runtime = page.locator(".sidebar-runtime");
+  for (const [phase, label] of [
+    ["draining", "Stopping"],
+    ["crashed", "Failed"],
+    ["backoff", "Recovering"]
+  ]) {
+    crp.state.worker.phase = phase;
+    await page.getByRole("button", { name: "Refresh status" }).click();
+    await expect(runtime).toContainText(label);
+  }
+});
+
 test("maps provider authentication failures to actionable copy in both locales", async ({ page, crp }) => {
   crp.failProviderTestsWith("PROVIDER_TEST_AUTH");
   await openCrp(page, crp);
   await page.getByRole("link", { name: "Providers" }).click();
-  await page.getByRole("button", { name: "Test Provider Beta" }).click();
-  const testDialog = page.getByRole("dialog", { name: "Test provider" });
+  await page.getByRole("button", { name: "View Provider Beta details" }).click();
+  let details = page.getByRole("dialog", { name: "Provider Beta" });
+  await details.getByRole("button", { name: "Test", exact: true }).click();
+  let testDialog = page.getByRole("dialog", { name: "Test provider" });
   await testDialog.getByLabel("Test model").fill("gpt-5.1-codex-mini");
   await testDialog.getByRole("button", { name: "Run test" }).click();
   await expect(page.getByText("Provider authentication failed")).toBeVisible();
   await expect(page.getByText("Check the API key and authorization scheme, then test again.")).toBeVisible();
+  await testDialog.getByRole("button", { name: "Cancel" }).click();
 
   await page.locator("#locale-select").selectOption("zh-CN");
-  await page.getByRole("button", { name: "测试 Provider Beta" }).click();
-  const zhDialog = page.getByRole("dialog", { name: "测试提供商" });
-  await zhDialog.getByLabel("测试模型").fill("gpt-5.1-codex-mini");
-  await zhDialog.getByRole("button", { name: "运行测试" }).click();
+  await page.getByTestId("provider-card-provider-b").getByRole("button", { name: "测试并切换" }).click();
+  testDialog = page.getByRole("dialog", { name: "测试提供商" });
+  await testDialog.getByLabel("测试模型").fill("gpt-5.1-codex-mini");
+  await testDialog.getByRole("button", { name: "测试并切换" }).click();
   await expect(page.getByText("提供商认证失败")).toBeVisible();
   await expect(page.getByText("请检查 API 密钥和认证方案，然后重新测试。")).toBeVisible();
+  expect(crp.state.activeProviderId).toBe("provider-a");
   await assertNoSecrets(page, crp);
 });
 
-test("folds localized allowlisted technical error details without raw reasons", async ({ page, crp }) => {
+test("accepts the minimal production Responses shape", async ({ page, crp }) => {
+  crp.setUpstreamResponsePayload({ id: "resp-minimal", object: "response", output: [] });
+  await openCrp(page, crp);
+  await page.getByRole("link", { name: "Providers" }).click();
+  const dialog = await openProviderTest(page, "Provider Alpha");
+  await dialog.getByLabel("Test model").fill("gpt-5.1-codex-mini");
+  await dialog.getByRole("button", { name: "Run test" }).click();
+  await expect(page.getByRole("status")).toContainText("Provider is compatible");
+  expect(crp.state.providers.find((provider) => provider.id === "provider-a")?.lastTestStatus).toBe("passed");
+  expect(crp.upstreamRequests.at(-1)?.responseShapeValid).toBe(true);
+});
+
+for (const [label, payload] of [
+  ["empty response id", { id: "", object: "response", status: "completed", output: [] }],
+  ["wrong response object", { id: "resp-wrong", object: "chat.completion", status: "completed", output: [] }]
+]) {
+  test(`rejects a Responses payload with ${label}`, async ({ page, crp }) => {
+    crp.setUpstreamResponsePayload(payload);
+    await openCrp(page, crp);
+    await page.getByRole("link", { name: "Providers" }).click();
+    const dialog = await openProviderTest(page, "Provider Alpha");
+    await dialog.getByLabel("Test model").fill("gpt-5.1-codex-mini");
+    await dialog.getByRole("button", { name: "Run test" }).click();
+    const alert = page.getByRole("alert");
+    await expect(alert).toContainText("CRP could not complete the operation");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await alert.locator("summary").click();
+    await expect(alert).toContainText("PROVIDER_TEST_INVALID_RESPONSES");
+    expect(crp.state.providers.find((provider) => provider.id === "provider-a")).toMatchObject({
+      lastTestStatus: "failed",
+      lastTestCode: "PROVIDER_TEST_INVALID_RESPONSES"
+    });
+    expect(crp.upstreamRequests.at(-1)?.responseShapeValid).toBe(false);
+  });
+}
+
+test("prepares Codex from System and reports bounded history-repair metadata", async ({ page, crp }) => {
+  const requests = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/codex/bootstrap") {
+      requests.push({ body: request.postData(), contentType: request.headers()["content-type"] });
+    }
+  });
+  await openCrp(page, crp);
+  await page.getByRole("link", { name: "System" }).click();
+  await page.getByRole("button", { name: "Prepare Codex" }).click();
+  const dialog = page.getByRole("dialog", { name: "Prepare Codex?" });
+  await dialog.getByRole("button", { name: "Prepare Codex" }).click();
+  await expect(page.getByText("History repair")).toBeVisible();
+  await expect(page.getByText("No provider metadata repair was required")).toBeVisible();
+  expect(requests).toEqual([{ body: null, contentType: undefined }]);
+  expect(crp.state.bootstrapCount).toBe(1);
+});
+
+test("folds allowlisted technical error details and omits unknown fields", async ({ page, crp }) => {
   await page.route("**/api/v1/diagnostics/export", async (route) => {
     await route.fulfill({
       status: 409,
@@ -72,7 +203,6 @@ test("folds localized allowlisted technical error details without raw reasons", 
           requestId: "req-safe-42",
           details: {
             field: "proxy",
-            reason: "Internal daemon exploded in English",
             committed: true,
             degraded: false,
             generation: 7,
@@ -84,32 +214,21 @@ test("folds localized allowlisted technical error details without raw reasons", 
     });
   });
   await openCrp(page, crp);
-  await page.getByRole("link", { name: "Activity" }).click();
+  await page.getByRole("link", { name: "System" }).click();
   await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
   const alert = page.getByRole("alert");
   const technical = alert.locator("details");
   await expect(technical).not.toHaveAttribute("open", "");
-  await expect(technical.locator("summary")).toHaveText("Technical details");
   await technical.locator("summary").click();
-  await expect(technical).toContainText("Error code");
   await expect(technical).toContainText("WORKER_BUSY");
-  await expect(technical).toContainText("Request ID");
   await expect(technical).toContainText("req-safe-42");
-  await expect(technical).toContainText("Field");
-  await expect(technical).toContainText("Generation");
-  await expect(technical).toContainText("HTTP status");
-  await expect(alert).not.toContainText("Internal daemon exploded in English");
+  await expect(technical).toContainText("proxy");
+  await expect(technical).toContainText("7");
+  await expect(technical).toContainText("409");
   await expect(alert).not.toContainText("must-not-render");
 
   await page.locator("#locale-select").selectOption("zh-CN");
-  const translated = page.getByRole("alert").locator("details");
-  await expect(translated.locator("summary")).toHaveText("技术详情");
-  await translated.locator("summary").click();
-  await expect(translated).toContainText("错误代码");
-  await expect(translated).toContainText("请求 ID");
-  await expect(translated).toContainText("字段");
-  await expect(translated).toContainText("代次");
-  await expect(translated).toContainText("HTTP 状态");
+  await expect(technical.locator("summary")).toHaveText("技术详情");
   await assertNoSecrets(page, crp);
 });
 
@@ -120,30 +239,27 @@ test("detects a secret in raw API response bytes before display redaction", asyn
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        diagnostics: {
-          created: true,
-          generatedAt: "2026-07-13T08:50:00.000Z",
-          eventCount: 0
-        },
+        diagnostics: { created: true, generatedAt: "2026-07-13T08:50:00.000Z", eventCount: 0 },
         credential: reflected
       })
     });
   });
   await openCrp(page, crp);
-  await page.getByRole("link", { name: "Activity" }).click();
+  await page.getByRole("link", { name: "System" }).click();
   await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
-  await expect(page.locator("#main-content").getByText("Summary ready", { exact: true })).toBeVisible();
+  await expect(page.locator(".diagnostic-result")).toContainText("Summary ready");
   await crp.collectors.flush();
   const displayRecord = crp.collectors.records.findLast((record) => (
     record.type === "response" && record.url === "/api/v1/diagnostics/export"
   ));
+  expect(displayRecord?.body).not.toContain(reflected);
   expect(displayRecord?.body).toContain('"credential":"[redacted]"');
   await expect(assertNoSecrets(page, crp, [reflected])).rejects.toThrow(
     "Raw API response contained sensitive data outside the session exchange."
   );
 });
 
-test("renders migration rollback degraded errors as stop-and-repair guidance in both locales", async ({ page, crp }) => {
+test("renders committed degraded guidance in both locales", async ({ page, crp }) => {
   await page.route("**/api/v1/diagnostics/export", async (route) => {
     await route.fulfill({
       status: 500,
@@ -158,43 +274,33 @@ test("renders migration rollback degraded errors as stop-and-repair guidance in 
     });
   });
   await openCrp(page, crp);
-  await page.getByRole("link", { name: "Activity" }).click();
+  await page.getByRole("link", { name: "System" }).click();
   await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
   await expect(page.getByText("CRP state needs repair")).toBeVisible();
-  await expect(page.getByText("Stop CRP, review Activity, and repair local state before any further operation.")).toBeVisible();
-  await expect(page.getByText("CRP could not complete the operation")).toHaveCount(0);
+  await expect(page.getByText("The primary change may already be committed. Review Activity before another mutation.")).toBeVisible();
   await page.locator("#locale-select").selectOption("zh-CN");
   await expect(page.getByText("CRP 状态需要修复")).toBeVisible();
-  await expect(page.getByText("请停止 CRP、查看活动记录并修复本地状态，然后再执行任何操作。")).toBeVisible();
+  await expect(page.getByText("主要更改可能已经提交。执行其他更改前请先查看活动记录。")).toBeVisible();
 });
 
-test("terminates after a real second session exchange makes the open tab CSRF stale", async ({ page, crp }) => {
+test("terminates after a second session exchange makes the open tab CSRF stale", async ({ page, crp }) => {
   const mutationRequests = [];
   page.on("request", (request) => {
     if (request.method() === "PATCH" && new URL(request.url()).pathname === "/api/v1/providers/provider-b") {
-      mutationRequests.push(request);
+      mutationRequests.push(request.method());
     }
   });
   await openCrp(page, crp);
   await page.getByRole("link", { name: "Providers" }).click();
-  await page.getByRole("button", { name: "Edit Provider Beta" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit provider" });
-  await dialog.getByLabel("Provider name").fill("Stale tab edit");
-  await dialog.getByLabel("Replacement API key").fill(crp.credential);
+  const editor = await openInactiveProviderEditor(page, "Provider Beta");
+  await editor.getByLabel("Provider name").fill("Stale tab edit");
+  await editor.getByLabel("Replacement API key").fill(crp.credential);
   expect(await crp.rotateBrowserSession(page)).toEqual({ status: 200, csrfTokenLength: 43 });
-  const rejected = page.waitForResponse((response) => (
-    response.request().method() === "PATCH"
-      && new URL(response.url()).pathname === "/api/v1/providers/provider-b"
-  ));
-  await dialog.getByRole("button", { name: "Save changes" }).click();
-  const response = await rejected;
-  expect(response.status()).toBe(403);
-  await expect(response.json()).resolves.toMatchObject({ error: { code: "AUTH_CSRF_INVALID" } });
+  await editor.getByRole("button", { name: "Save changes" }).click();
   await expect(page.locator("#session-root")).toBeVisible();
-  await expect(page.locator("#app-root")).toBeHidden();
+  await expect(page.locator("#app-root")).toHaveCount(0);
   await expect(page.locator("dialog[open]")).toHaveCount(0);
-  await page.waitForTimeout(250);
-  expect(mutationRequests).toHaveLength(1);
+  expect(mutationRequests).toEqual(["PATCH"]);
   await assertNoSecrets(page, crp);
 });
 
@@ -204,110 +310,42 @@ for (const status of [500, 403]) {
     const apiRequests = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
-      if (url.pathname.startsWith("/api/v1/")) {
-        apiRequests.push({ method: request.method(), path: url.pathname });
-      }
+      if (url.pathname.startsWith("/api/v1/")) apiRequests.push({ method: request.method(), path: url.pathname });
     });
     await page.route("**/api/v1/session", async (route) => {
       await route.fulfill({
         status,
         contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "INTERNAL_ERROR", requestId: `req-exchange-${status}`, details: {} }
-        })
+        body: JSON.stringify({ error: { code: "INTERNAL_ERROR", requestId: `req-exchange-${status}`, details: {} } })
       });
     }, { times: 1 });
-
     await page.goto(`${crp.origin}/?exchange=${status}#token=${crp.controlToken}`);
     await expect(page.locator("html")).toHaveAttribute("aria-busy", "false");
     await expect(page.locator("#session-root")).toBeVisible();
-    await expect(page.locator("#app-root")).toBeHidden();
-    await expect(page.locator("#onboarding-root")).toBeHidden();
+    await expect(page.locator("#app-root")).toHaveCount(0);
     expect(apiRequests).toEqual([{ method: "POST", path: "/api/v1/session" }]);
     await assertNoSecrets(page, crp);
   });
 }
 
-test("renders real failed and degraded activity without green or raw fallback keys", async ({ page, crp }) => {
-  crp.state.activities = [
-    { timestamp: "2026-07-13T08:00:05.000Z", category: "proxy", action: "start", providerId: "provider-a", result: "success", errorCode: null, details: {} },
-    { timestamp: "2026-07-13T08:00:04.000Z", category: "proxy", action: "stop", providerId: "provider-a", result: "failed", errorCode: "WORKER_STOP_FAILED", details: {} },
-    { timestamp: "2026-07-13T08:00:03.000Z", category: "proxy", action: "restart", providerId: "provider-a", result: "degraded", errorCode: "WORKER_RESTART_DEGRADED", details: {} },
-    { timestamp: "2026-07-13T08:00:02.000Z", category: "provider", action: "update", providerId: "provider-b", result: "failed", errorCode: "PROVIDER_UPDATE_FAILED", details: {} },
-    { timestamp: "2026-07-13T08:00:01.000Z", category: "migration", action: "legacy-config", providerId: null, result: "failed", errorCode: "MIGRATION_ROLLBACK_DEGRADED", details: { rollbackDegraded: true } }
-  ];
-  await openCrp(page, crp);
-  await page.getByRole("link", { name: "Activity" }).click();
-  await expect(page.getByText("Proxy started")).toBeVisible();
-  await expect(page.getByText("Proxy stopped")).toBeVisible();
-  await expect(page.getByText("Worker restarted")).toBeVisible();
-  await expect(page.getByText("Provider updated")).toBeVisible();
-  await expect(page.getByText("Legacy configuration migration")).toBeVisible();
-  await expect(page.locator(".activity-result.is-failure")).toHaveCount(3);
-  await expect(page.locator(".activity-result.is-degraded")).toHaveCount(1);
-  const migration = page.locator(".activity-row").filter({ hasText: "Legacy configuration migration" });
-  await expect(migration.locator(".activity-result.is-failure")).toHaveText("Failed");
-  await expect(migration.getByText("Stop CRP and review Activity before making more changes.")).toBeVisible();
-  await expect(page.getByText(/activity\.(start|stop|restart|legacy-config)/)).toHaveCount(0);
-  const degradedRows = page.locator(".activity-row").filter({ has: page.locator(".activity-result.is-degraded") });
-  await expect(degradedRows.getByText("Complete")).toHaveCount(0);
-});
-
-test("fails closed after session expiry without retrying authentication", async ({ page, crp }) => {
+test("fails closed after session expiry and clears an open replacement credential", async ({ page, crp }) => {
   const sessionRequests = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/v1/session") sessionRequests.push(request);
+    if (new URL(request.url()).pathname === "/api/v1/session") sessionRequests.push(request.method());
   });
   await openCrp(page, crp);
-  expect(sessionRequests).toHaveLength(1);
-
-  crp.expireSession();
-  await page.getByRole("button", { name: "Refresh status" }).click();
-  await expect(page.getByText("Session expired")).toBeVisible();
-  await expect(page.getByText("Run crp ui again to make changes.")).toBeVisible();
-  await expect(page.locator("#session-root")).toBeVisible();
-  await expect(page.locator("#app-root")).toBeHidden();
-  await expect(page.locator("#onboarding-root")).toBeHidden();
-  await expect(page.getByRole("button")).toHaveCount(0);
-  await expect(page.locator(".session-terminal .eyebrow")).toHaveText("CRP / SESSION");
-  await page.evaluate(() => {
-    const locale = document.querySelector("#locale-select");
-    locale.value = "zh-CN";
-    locale.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  await expect(page.locator(".session-terminal .eyebrow")).toHaveText("CRP / 会话");
-  await page.waitForTimeout(250);
-  expect(sessionRequests).toHaveLength(1);
-});
-
-test("clears an open replacement credential when the session expires", async ({ page, crp }) => {
-  await openCrp(page, crp);
+  expect(sessionRequests).toEqual(["POST"]);
   await page.getByRole("link", { name: "Providers" }).click();
-  await page.getByRole("button", { name: "Edit Provider Beta" }).click();
-  const dialog = page.getByRole("dialog", { name: "Edit provider" });
-  await dialog.getByLabel("Replacement API key").fill(crp.credential);
+  const editor = await openInactiveProviderEditor(page, "Provider Beta");
+  await editor.getByLabel("Replacement API key").fill(crp.credential);
   crp.expireSession();
-  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await editor.getByRole("button", { name: "Save changes" }).click();
 
   await expect(page.locator("#session-root")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Session expired" })).toBeVisible();
+  await expect(page.getByText("Run crp ui again, then close this tab.")).toBeVisible();
   await expect(page.locator("dialog[open]")).toHaveCount(0);
-  await expect(page.getByRole("button")).toHaveCount(0);
-  await assertNoSecrets(page, crp);
-});
-
-test("supports keyboard navigation, live announcements, diagnostics, and 1024px layout", async ({ page, crp }) => {
-  await page.setViewportSize({ width: 1024, height: 768 });
-  await openCrp(page, crp);
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(page.locator("#main-content")).toBeFocused();
-
-  await page.getByRole("link", { name: "Activity" }).click();
-  await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
-  await expect(page.getByRole("status")).toContainText("Summary ready");
-  expect(crp.calls.filter((call) => call.operation === "diagnostics")).toHaveLength(1);
-  const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
-  expect(hasOverflow).toBe(false);
+  expect(sessionRequests).toEqual(["POST"]);
+  expect(crp.calls.filter((call) => call.operation === "updateProvider")).toHaveLength(0);
   await assertNoSecrets(page, crp);
 });

@@ -19,9 +19,13 @@ import { CrpError, toPublicError } from "../src/shared/errors.mjs";
 const CONTROL_BYTES = Buffer.alloc(32, 0x11);
 const SESSION_BYTES = Buffer.alloc(32, 0x22);
 const CSRF_BYTES = Buffer.alloc(32, 0x33);
+const RESUMED_SESSION_BYTES = Buffer.alloc(32, 0x44);
+const RESUMED_CSRF_BYTES = Buffer.alloc(32, 0x55);
 const CONTROL_TOKEN = CONTROL_BYTES.toString("base64url");
 const SESSION_TOKEN = SESSION_BYTES.toString("base64url");
 const CSRF_TOKEN = CSRF_BYTES.toString("base64url");
+const RESUMED_SESSION_TOKEN = RESUMED_SESSION_BYTES.toString("base64url");
+const RESUMED_CSRF_TOKEN = RESUMED_CSRF_BYTES.toString("base64url");
 const START_MS = Date.parse("2026-07-13T00:00:00.000Z");
 
 function makeTempAuth(t, prefix = "crp-session-auth-") {
@@ -140,6 +144,83 @@ test("expired browser sessions are rejected and request cookie clearing", (t) =>
   assert.equal(JSON.stringify(toPublicError(caught, "request-1")).includes(SESSION_TOKEN), false);
   assert.equal(JSON.stringify(toPublicError(caught, "request-1")).includes(CSRF_TOKEN), false);
   assert.equal(session.csrfToken, CSRF_TOKEN);
+});
+
+test("explicit browser resume rotates session and CSRF without extending absolute expiry", (t) => {
+  const { tokenPath } = makeTempAuth(t);
+  let now = START_MS;
+  const auth = new SessionAuth({
+    controlTokenPath: tokenPath,
+    randomBytes: sequenceRandomBytes(
+      CONTROL_BYTES,
+      SESSION_BYTES,
+      CSRF_BYTES,
+      RESUMED_SESSION_BYTES,
+      RESUMED_CSRF_BYTES
+    ),
+    now: () => now,
+    sessionTtlMs: 60_000
+  });
+  const original = auth.createBrowserSession(`Bearer ${CONTROL_TOKEN}`);
+  now += 20_500;
+
+  const resumed = auth.resumeBrowserSession({ cookie: `crp_session=${SESSION_TOKEN}` });
+  assert.equal(resumed.csrfToken, RESUMED_CSRF_TOKEN);
+  assert.equal(resumed.expiresAt, original.expiresAt);
+  assert.match(resumed.setCookie, new RegExp(`^crp_session=${RESUMED_SESSION_TOKEN};`));
+  assert.match(resumed.setCookie, /Max-Age=40$/);
+  assert.throws(
+    () => auth.authorize({ cookie: `crp_session=${SESSION_TOKEN}`, mutation: false }),
+    assertCrpError("AUTH_REQUIRED", 401)
+  );
+  assert.throws(
+    () => auth.authorize({
+      cookie: `crp_session=${RESUMED_SESSION_TOKEN}`,
+      csrfToken: CSRF_TOKEN,
+      mutation: true
+    }),
+    assertCrpError("AUTH_CSRF_INVALID", 403)
+  );
+  assert.deepEqual(auth.authorize({
+    cookie: `crp_session=${RESUMED_SESSION_TOKEN}`,
+    csrfToken: RESUMED_CSRF_TOKEN,
+    mutation: true
+  }), { kind: "browser" });
+  assert.throws(
+    () => auth.resumeBrowserSession({
+      cookie: `crp_session=${RESUMED_SESSION_TOKEN}`,
+      authorization: `Bearer ${CONTROL_TOKEN}`
+    }),
+    assertCrpError("AUTH_REQUIRED", 401)
+  );
+});
+
+test("browser resume rejects missing, duplicate, and expired cookies", (t) => {
+  const { tokenPath } = makeTempAuth(t);
+  let now = START_MS;
+  const auth = new SessionAuth({
+    controlTokenPath: tokenPath,
+    randomBytes: sequenceRandomBytes(CONTROL_BYTES, SESSION_BYTES, CSRF_BYTES),
+    now: () => now,
+    sessionTtlMs: 1_000
+  });
+  auth.createBrowserSession(`Bearer ${CONTROL_TOKEN}`);
+
+  for (const cookie of [undefined, "unrelated=value", `crp_session=${SESSION_TOKEN}; crp_session=${SESSION_TOKEN}`]) {
+    assert.throws(
+      () => auth.resumeBrowserSession({ cookie }),
+      assertCrpError("AUTH_REQUIRED", 401)
+    );
+  }
+  now += 1_001;
+  let expired;
+  try {
+    auth.resumeBrowserSession({ cookie: `crp_session=${SESSION_TOKEN}` });
+  } catch (error) {
+    expired = error;
+  }
+  assertCrpError("AUTH_SESSION_EXPIRED", 401)(expired);
+  assert.equal(expired.clearCookie, true);
 });
 
 test("rejects invalid bearer, missing or duplicate cookies, and destroys sessions on close", (t) => {

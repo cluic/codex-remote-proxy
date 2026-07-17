@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -18,14 +18,65 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-const OPENAI_SECTION_HEADER = "[model_providers.OpenAI]";
+import {
+  hasPendingCodexHistoryRepair,
+  inspectPendingCodexHistoryRepair,
+  patchCodexProviderConfigText,
+  planCodexProviderTransition,
+  runCodexHistoryRepairTransition
+} from "./codex-history-repair.mjs";
+
 const STABLE_CONFIG_ERROR_CODES = new Set([
   "CODEX_CONFIG_PARENT_UNSAFE",
   "CODEX_CONFIG_BUSY",
   "CODEX_CONFIG_CHANGED",
+  "CODEX_CONFIG_COMMITTED_DEGRADED",
   "CODEX_CONFIG_READ_FAILED",
-  "CODEX_CONFIG_WRITE_FAILED"
+  "CODEX_CONFIG_WRITE_FAILED",
+  "CODEX_HISTORY_REPAIR_INVALID",
+  "CODEX_HISTORY_REPAIR_CONFLICT",
+  "CODEX_HISTORY_REPAIR_FAILED",
+  "CODEX_HISTORY_REPAIR_COMMITTED_DEGRADED"
 ]);
+const TARGET_PROVIDER = "OpenAI";
+const CONFIG_LOCK_SCHEMA_VERSION = 1;
+const CONFIG_LOCK_MANAGED_BY = "codex-remote-proxy/config-lock";
+const CONFIG_LOCK_FIELDS = new Set([
+  "schemaVersion",
+  "managedBy",
+  "owner",
+  "phase",
+  "binding"
+]);
+const CONFIG_LOCK_OWNER_FIELDS = new Set(["pid", "startedAt", "instanceId"]);
+const CONFIG_LOCK_BINDING_FIELDS = new Set([
+  "operationId",
+  "sourceConfigSha256",
+  "targetConfigSha256",
+  "pendingRequired"
+]);
+const SAFE_LOCK_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const PROCESS_STARTED_AT = new Date(
+  Date.now() - Math.floor(process.uptime() * 1000)
+).toISOString();
+const NO_HISTORY_REPAIR = Object.freeze({
+  required: false,
+  completed: false,
+  resumed: false,
+  backupCreated: false,
+  rolloutFiles: 0,
+  rolloutRecords: 0,
+  sqliteFiles: 0,
+  sqliteRows: 0,
+  encryptedContentDetected: false
+});
+const DEFAULT_HISTORY_REPAIR = Object.freeze({
+  plan: planCodexProviderTransition,
+  hasPending: hasPendingCodexHistoryRepair,
+  inspectPending: inspectPendingCodexHistoryRepair,
+  run: runCodexHistoryRepairTransition
+});
 const DEFAULT_FILE_OPERATIONS = {
   chmodSync,
   closeSync,
@@ -40,67 +91,60 @@ const DEFAULT_FILE_OPERATIONS = {
   readFileSync,
   renameSync,
   rmSync,
+  fsyncDirectorySync: defaultFsyncDirectorySync,
   statSync,
   writeFileSync
 };
 
-function splitLines(text) {
-  const lines = text.split(/\r?\n/);
-  if (lines.at(-1) === "") {
-    lines.pop();
+function defaultFsyncDirectorySync(path) {
+  if (process.platform === "win32") return;
+  const directoryFlag = typeof constants.O_DIRECTORY === "number"
+    ? constants.O_DIRECTORY
+    : 0;
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | directoryFlag);
+    const stats = fstatSync(descriptor);
+    if (!stats.isDirectory()) throw new Error("Directory identity is invalid.");
+    fsyncSync(descriptor);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
-  return lines;
 }
 
-function findSectionRange(lines, sectionHeader) {
-  for (let start = 0; start < lines.length; start += 1) {
-    if (lines[start].trim() !== sectionHeader) {
-      continue;
-    }
-    let end = lines.length;
-    for (let index = start + 1; index < lines.length; index += 1) {
-      const stripped = lines[index].trim();
-      if (stripped.startsWith("[") && stripped.endsWith("]")) {
-        end = index;
-        break;
-      }
-    }
-    return [start, end];
+function syncDirectory(path, fileOperations) {
+  if (typeof fileOperations.fsyncDirectorySync !== "function") {
+    throw new Error("Directory fsync is unavailable.");
   }
-  return null;
+  fileOperations.fsyncDirectorySync(path);
 }
 
-function renderTomlString(value) {
-  return JSON.stringify(value);
+function exactObjectFields(value, fields) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length === fields.size
+    && Object.keys(value).every((key) => fields.has(key));
 }
 
-function upsertKey(lines, startIndex, endIndex, key, value) {
-  const rendered = typeof value === "boolean"
-    ? (value ? "true" : "false")
-    : renderTomlString(String(value));
-
-  for (let index = startIndex; index < endIndex; index += 1) {
-    const stripped = lines[index].trim();
-    if (!stripped || stripped.startsWith("#") || !stripped.includes("=")) {
-      continue;
-    }
-    const currentKey = stripped.split("=", 1)[0].trim();
-    if (currentKey === key) {
-      lines[index] = `${key} = ${rendered}`;
-      return;
-    }
-  }
-  lines.splice(endIndex, 0, `${key} = ${rendered}`);
+function configSha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
-function firstSectionIndex(lines) {
-  for (let index = 0; index < lines.length; index += 1) {
-    const stripped = lines[index].trim();
-    if (stripped.startsWith("[") && stripped.endsWith("]")) {
-      return index;
-    }
+function createDefaultConfigLockOwner() {
+  return Object.freeze({
+    pid: process.pid,
+    startedAt: PROCESS_STARTED_AT,
+    instanceId: randomUUID()
+  });
+}
+
+function defaultConfigLockOwnerLiveness(owner) {
+  if (owner.pid === process.pid && owner.startedAt === PROCESS_STARTED_AT) return "live";
+  try {
+    process.kill(owner.pid, 0);
+    return "live";
+  } catch (error) {
+    return error?.code === "ESRCH" ? "dead" : "unknown";
   }
-  return lines.length;
 }
 
 function makeBackupStem(configPath, date) {
@@ -123,6 +167,22 @@ function copyBackupExclusively(configPath, date, fileOperations) {
         backupPath,
         fileOperations.constants.COPYFILE_EXCL
       );
+      let descriptor;
+      try {
+        descriptor = fileOperations.openSync(
+          backupPath,
+          fileOperations.constants.O_RDONLY
+            | (typeof fileOperations.constants.O_NOFOLLOW === "number"
+              ? fileOperations.constants.O_NOFOLLOW
+              : 0)
+        );
+        const stats = fileOperations.fstatSync(descriptor);
+        if (!stats.isFile()) throw new Error("Backup identity is invalid.");
+        fileOperations.fsyncSync(descriptor);
+      } finally {
+        if (descriptor !== undefined) fileOperations.closeSync(descriptor);
+      }
+      syncDirectory(dirname(backupPath), fileOperations);
       return backupPath;
     } catch (error) {
       if (error?.code !== "EEXIST") {
@@ -137,6 +197,18 @@ function copyBackupExclusively(configPath, date, fileOperations) {
 function createConfigError(code, message, cause) {
   const error = new Error(message, { cause });
   error.code = code;
+  return error;
+}
+
+function configCommittedDegraded(cause) {
+  const error = createConfigError(
+    "CODEX_CONFIG_COMMITTED_DEGRADED",
+    "The Codex configuration was updated, but completion could not be confirmed.",
+    cause
+  );
+  error.action = "Review the Codex configuration and retry before starting the proxy.";
+  error.status = 500;
+  error.details = { committed: true, degraded: true, pending: false };
   return error;
 }
 
@@ -170,6 +242,7 @@ function parentUnsafe(cause) {
 function ensureConfigParent(configPath, fileOperations) {
   const parentPath = dirname(configPath);
   let parent;
+  let created = false;
   try {
     parent = fileOperations.lstatSync(parentPath);
   } catch (error) {
@@ -177,6 +250,7 @@ function ensureConfigParent(configPath, fileOperations) {
     try {
       fileOperations.mkdirSync(parentPath, { mode: 0o700 });
       fileOperations.chmodSync(parentPath, 0o700);
+      created = true;
     } catch (mkdirError) {
       if (mkdirError?.code !== "EEXIST") throw mkdirError;
     }
@@ -189,6 +263,8 @@ function ensureConfigParent(configPath, fileOperations) {
   if (parent.isSymbolicLink() || !parent.isDirectory()) {
     throw parentUnsafe();
   }
+  syncDirectory(parentPath, fileOperations);
+  if (created) syncDirectory(dirname(parentPath), fileOperations);
   return { path: parentPath, identity: parent };
 }
 
@@ -252,9 +328,19 @@ function readConfigSource(path, fileOperations, { missing = false } = {}) {
     if (!after.isFile() || after.isSymbolicLink() || !sameIdentity(opened, after)) {
       throw configChanged();
     }
+    let text;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (error) {
+      throw createConfigError(
+        "CODEX_CONFIG_READ_FAILED",
+        "Codex configuration could not be read safely.",
+        error
+      );
+    }
     return {
       bytes,
-      text: bytes.toString("utf8"),
+      text,
       identity: opened,
       mode: opened.mode & 0o7777
     };
@@ -283,6 +369,7 @@ function ensureCanonicalBlocker(path, residualPath, fileOperations) {
   if (residualPath !== null) {
     try {
       fileOperations.linkSync(residualPath, path);
+      syncDirectory(dirname(path), fileOperations);
       return true;
     } catch (error) {
       if (error?.code === "EEXIST") return true;
@@ -296,6 +383,7 @@ function ensureCanonicalBlocker(path, residualPath, fileOperations) {
     fileOperations.fsyncSync(descriptor);
     fileOperations.closeSync(descriptor);
     descriptor = undefined;
+    syncDirectory(dirname(path), fileOperations);
     return true;
   } catch (error) {
     if (descriptor !== undefined) {
@@ -337,6 +425,7 @@ function readClaimedPath(path, fileOperations) {
 function restoreCanonicalBlocker(claimPath, path, fileOperations) {
   try {
     fileOperations.linkSync(claimPath, path);
+    syncDirectory(dirname(path), fileOperations);
   } catch (error) {
     if (error?.code === "EEXIST") return true;
     return ensureCanonicalBlocker(path, claimPath, fileOperations);
@@ -358,6 +447,7 @@ function claimOwnedPath(
   const claimPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.${suffix}`);
   try {
     fileOperations.renameSync(path, claimPath);
+    syncDirectory(dirname(path), fileOperations);
   } catch (error) {
     if (error?.code === "ENOENT" && missingIsRemoved) return true;
     ensureCanonicalBlocker(path, null, fileOperations);
@@ -378,6 +468,7 @@ function claimOwnedPath(
   }
   try {
     fileOperations.rmSync(claimPath);
+    syncDirectory(dirname(path), fileOperations);
     return true;
   } catch {
     restoreCanonicalBlocker(claimPath, path, fileOperations);
@@ -385,28 +476,167 @@ function claimOwnedPath(
   }
 }
 
-function acquireConfigLock(lockPath, fileOperations) {
+function validConfigLockOwner(owner) {
+  return exactObjectFields(owner, CONFIG_LOCK_OWNER_FIELDS)
+    && Number.isInteger(owner.pid) && owner.pid > 0 && owner.pid <= 0xffffffff
+    && typeof owner.startedAt === "string" && owner.startedAt.length <= 64
+    && !Number.isNaN(Date.parse(owner.startedAt))
+    && new Date(owner.startedAt).toISOString() === owner.startedAt
+    && typeof owner.instanceId === "string"
+    && SAFE_LOCK_ID_PATTERN.test(owner.instanceId);
+}
+
+function validConfigLockBinding(binding) {
+  return exactObjectFields(binding, CONFIG_LOCK_BINDING_FIELDS)
+    && SAFE_LOCK_ID_PATTERN.test(binding.operationId)
+    && (binding.sourceConfigSha256 === null
+      || SHA256_PATTERN.test(binding.sourceConfigSha256))
+    && SHA256_PATTERN.test(binding.targetConfigSha256)
+    && typeof binding.pendingRequired === "boolean";
+}
+
+function configLockBytes(owner, phase = "acquired", binding = null) {
+  if (!validConfigLockOwner(owner)
+    || !new Set(["acquired", "prepared", "completed"]).has(phase)
+    || (binding === null ? phase !== "acquired" : !validConfigLockBinding(binding))) {
+    throw createConfigError(
+      "CODEX_CONFIG_WRITE_FAILED",
+      "Codex configuration lock metadata is invalid."
+    );
+  }
+  return Buffer.from(`${JSON.stringify({
+    schemaVersion: CONFIG_LOCK_SCHEMA_VERSION,
+    managedBy: CONFIG_LOCK_MANAGED_BY,
+    owner,
+    phase,
+    binding
+  })}\n`, "utf8");
+}
+
+function parseConfigLock(source) {
+  let value;
+  try {
+    value = JSON.parse(source.bytes.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!exactObjectFields(value, CONFIG_LOCK_FIELDS)
+    || value.schemaVersion !== CONFIG_LOCK_SCHEMA_VERSION
+    || value.managedBy !== CONFIG_LOCK_MANAGED_BY
+    || !validConfigLockOwner(value.owner)
+    || !new Set(["acquired", "prepared", "completed"]).has(value.phase)
+    || (value.binding === null
+      ? value.phase !== "acquired"
+      : !validConfigLockBinding(value.binding))) {
+    return null;
+  }
+  return value;
+}
+
+function samePendingAndLockBinding(pending, binding) {
+  return pending !== null && binding !== null
+    && pending.operationId === binding.operationId
+    && pending.sourceConfigSha256 === binding.sourceConfigSha256
+    && pending.targetConfigSha256 === binding.targetConfigSha256;
+}
+
+function configHashForRecovery(configPath, fileOperations) {
+  const source = readConfigSource(configPath, fileOperations, { missing: true });
+  return source === null ? null : configSha256(source.bytes);
+}
+
+function staleLockCanBeRecovered({
+  document,
+  pending,
+  configHash
+}) {
+  if (document.binding === null) return pending === null;
+  const binding = document.binding;
+  const sourceMatches = configHash === binding.sourceConfigSha256;
+  const targetMatches = configHash === binding.targetConfigSha256;
+  if (document.phase === "completed") {
+    return targetMatches && (pending === null
+      || binding.pendingRequired && samePendingAndLockBinding(pending, binding));
+  }
+  if (pending !== null) {
+    return binding.pendingRequired
+      && samePendingAndLockBinding(pending, binding)
+      && (sourceMatches || targetMatches);
+  }
+  if (document.phase !== "prepared") return false;
+  if (!binding.pendingRequired) return sourceMatches || targetMatches;
+  return sourceMatches;
+}
+
+function busyConfigLock(cause) {
+  return createConfigError(
+    "CODEX_CONFIG_BUSY",
+    "Codex configuration is already being updated.",
+    cause
+  );
+}
+
+function acquireConfigLock(lockPath, fileOperations, {
+  owner,
+  ownerLiveness,
+  pending,
+  configPath,
+  initialBinding = null,
+  allowRecovery = true
+}) {
   let descriptor;
   try {
     descriptor = fileOperations.openSync(lockPath, "wx", 0o600);
   } catch (error) {
-    if (error?.code === "EEXIST") {
+    if (error?.code !== "EEXIST") throw error;
+    if (!allowRecovery) throw busyConfigLock(error);
+    let existing;
+    try {
+      existing = readClaimedPath(lockPath, fileOperations);
+    } catch (readError) {
+      throw busyConfigLock(readError);
+    }
+    const document = parseConfigLock(existing);
+    if (document === null) throw busyConfigLock(error);
+    let liveness = "unknown";
+    try {
+      liveness = ownerLiveness(Object.freeze({ ...document.owner }));
+    } catch {}
+    if (!new Set(["live", "dead", "unknown"]).has(liveness)) liveness = "unknown";
+    if (liveness !== "dead") throw busyConfigLock(error);
+    const configHash = configHashForRecovery(configPath, fileOperations);
+    if (!staleLockCanBeRecovered({ document, pending, configHash })) {
       throw createConfigError(
-        "CODEX_CONFIG_BUSY",
-        "Codex configuration is already being updated.",
-        error
+        "CODEX_HISTORY_REPAIR_CONFLICT",
+        "Codex history repair state conflicts with the configuration."
       );
     }
-    throw error;
+    if (!claimOwnedPath(lockPath, existing.identity, fileOperations, {
+      expectedBytes: existing.bytes,
+      missingIsRemoved: false,
+      suffix: "stale"
+    })) {
+      throw busyConfigLock(error);
+    }
+    return acquireConfigLock(lockPath, fileOperations, {
+      owner,
+      ownerLiveness,
+      pending,
+      configPath,
+      initialBinding,
+      allowRecovery: false
+    });
   }
 
   let identity;
-  const token = Buffer.from(`${randomUUID()}\n`, "utf8");
+  const phase = initialBinding === null ? "acquired" : "prepared";
+  const token = configLockBytes(owner, phase, initialBinding);
   try {
     identity = fileOperations.fstatSync(descriptor);
     fileOperations.writeFileSync(descriptor, token);
     fileOperations.fsyncSync(descriptor);
-    return { descriptor, identity, token };
+    syncDirectory(dirname(lockPath), fileOperations);
+    return { descriptor, identity, token, owner, phase, binding: initialBinding };
   } catch (error) {
     let closed = false;
     try {
@@ -422,12 +652,60 @@ function acquireConfigLock(lockPath, fileOperations) {
   }
 }
 
+function assertConfigLockOwned(lockPath, lock, fileOperations) {
+  const current = readClaimedPath(lockPath, fileOperations);
+  if (!sameIdentity(current.identity, lock.identity)
+    || !current.bytes.equals(lock.token)) {
+    throw createConfigError(
+      "CODEX_CONFIG_WRITE_FAILED",
+      "Codex configuration lock ownership changed."
+    );
+  }
+}
+
+function replaceConfigLockMetadata(
+  lockPath,
+  lock,
+  owner,
+  phase,
+  binding,
+  fileOperations
+) {
+  assertConfigLockOwned(lockPath, lock, fileOperations);
+  if (lock.descriptor !== undefined) {
+    fileOperations.closeSync(lock.descriptor);
+    lock.descriptor = undefined;
+  }
+  const bytes = configLockBytes(owner, phase, binding);
+  writeFileAtomically(
+    lockPath,
+    bytes,
+    0o600,
+    fileOperations,
+    () => assertConfigLockOwned(lockPath, lock, fileOperations)
+  );
+  const current = readClaimedPath(lockPath, fileOperations);
+  if (!current.bytes.equals(bytes)) {
+    throw createConfigError(
+      "CODEX_CONFIG_CHANGED",
+      "Codex configuration lock metadata changed."
+    );
+  }
+  lock.identity = current.identity;
+  lock.token = current.bytes;
+  lock.phase = phase;
+  lock.binding = binding;
+}
+
 function releaseConfigLock(lockPath, lock, parent, fileOperations) {
   let cleanupError;
-  try {
-    fileOperations.closeSync(lock.descriptor);
-  } catch (error) {
-    cleanupError = error;
+  if (lock.descriptor !== undefined) {
+    try {
+      fileOperations.closeSync(lock.descriptor);
+      lock.descriptor = undefined;
+    } catch (error) {
+      cleanupError = error;
+    }
   }
   try {
     assertConfigParent(parent, fileOperations);
@@ -498,6 +776,7 @@ function writeFileAtomically(
     } else {
       fileOperations.renameSync(tempPath, path);
     }
+    syncDirectory(dirname(path), fileOperations);
     tempIdentity = undefined;
   } catch (error) {
     if (fileDescriptor !== undefined) {
@@ -519,114 +798,267 @@ function writeFileAtomically(
 }
 
 export function patchCodexConfigText(text, proxyUrl) {
-  const lineEnding = text.match(/\r\n|\n/)?.[0] ?? "\n";
-  const lines = splitLines(text);
-  const topEnd = firstSectionIndex(lines);
-  upsertKey(lines, 0, topEnd, "model_provider", "OpenAI");
-  let sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-
-  if (!sectionRange) {
-    if (lines.length && lines.at(-1).trim()) {
-      lines.push("");
-    }
-    lines.push(
-      OPENAI_SECTION_HEADER,
-      'name = "OpenAI"',
-      `base_url = ${renderTomlString(proxyUrl)}`,
-      'wire_api = "responses"',
-      "requires_openai_auth = true"
-    );
-    return `${lines.join(lineEnding)}${lineEnding}`;
-  }
-
-  const [sectionStart] = sectionRange;
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "name", "OpenAI");
-  sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "base_url", proxyUrl);
-  sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "wire_api", "responses");
-  sectionRange = findSectionRange(lines, OPENAI_SECTION_HEADER);
-  upsertKey(lines, sectionStart + 1, sectionRange[1], "requires_openai_auth", true);
-  return `${lines.join(lineEnding)}${lineEnding}`;
+  return patchCodexProviderConfigText(text, proxyUrl);
 }
 
-export function bootstrapCodexConfig({
+export async function bootstrapCodexConfig({
   configPath,
   proxyUrl,
   now = () => new Date(),
-  fileOperations = DEFAULT_FILE_OPERATIONS
+  fileOperations: fileOverrides = DEFAULT_FILE_OPERATIONS,
+  historyRepair = DEFAULT_HISTORY_REPAIR,
+  configLockOwner = createDefaultConfigLockOwner(),
+  configLockOwnerLiveness = defaultConfigLockOwnerLiveness
 }) {
+  const fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...fileOverrides };
+  const customFileOperations = fileOverrides !== DEFAULT_FILE_OPERATIONS;
+  if (!validConfigLockOwner(configLockOwner)
+    || typeof configLockOwnerLiveness !== "function") {
+    throw createConfigError(
+      "CODEX_CONFIG_WRITE_FAILED",
+      "Codex configuration lock ownership input is invalid."
+    );
+  }
   const lockPath = `${configPath}.crp.lock`;
   let parent;
   let lock;
   let primaryError;
+  let committedWithoutPending = false;
   let phase = "write";
 
   try {
     parent = ensureConfigParent(configPath, fileOperations);
-    lock = acquireConfigLock(lockPath, fileOperations);
+    const pendingOptions = { codexRoot: dirname(configPath) };
+    if (customFileOperations) pendingOptions.fileOperations = fileOperations;
+    const inspectedPending = typeof historyRepair.inspectPending === "function"
+      ? historyRepair.inspectPending(pendingOptions)
+      : null;
+    const historyRepairPending = inspectedPending !== null
+      || historyRepair.hasPending(pendingOptions);
+    const initialBinding = inspectedPending === null ? null : {
+      ...inspectedPending,
+      pendingRequired: true
+    };
+    lock = acquireConfigLock(lockPath, fileOperations, {
+      owner: configLockOwner,
+      ownerLiveness: configLockOwnerLiveness,
+      pending: inspectedPending,
+      configPath,
+      initialBinding
+    });
     assertConfigParent(parent, fileOperations);
     phase = "read";
     const source = readConfigSource(configPath, fileOperations, { missing: true });
     const sourceExists = source !== null;
     const originalText = source?.text ?? "";
     const patchedText = patchCodexConfigText(originalText, proxyUrl);
-    if (patchedText === originalText) {
-      return { changed: false, backupPath: null };
-    }
+    const targetBytes = Buffer.from(patchedText, "utf8");
+    const transition = historyRepair.plan({
+      sourceExists,
+      sourceText: originalText,
+      targetText: patchedText,
+      targetProvider: TARGET_PROVIDER,
+      targetBaseUrl: proxyUrl
+    });
+    const normalizeLockBinding = (binding) => {
+      if (!validConfigLockBinding(binding)
+        || binding.targetConfigSha256 !== transition.targetConfigSha256
+        || (inspectedPending !== null
+          ? !samePendingAndLockBinding(inspectedPending, binding)
+          : binding.sourceConfigSha256 !== transition.sourceConfigSha256)) {
+        throw createConfigError(
+          "CODEX_HISTORY_REPAIR_CONFLICT",
+          "Codex history repair lock binding is invalid."
+        );
+      }
+      return Object.freeze({ ...binding });
+    };
+    const bindPreparedLock = (binding) => {
+      phase = "write";
+      const normalized = normalizeLockBinding(binding);
+      if (lock.binding !== null) {
+        if (JSON.stringify(lock.binding) !== JSON.stringify(normalized)) {
+          throw createConfigError(
+            "CODEX_HISTORY_REPAIR_CONFLICT",
+            "Codex history repair lock binding changed."
+          );
+        }
+        assertConfigLockOwned(lockPath, lock, fileOperations);
+        return;
+      }
+      replaceConfigLockMetadata(
+        lockPath,
+        lock,
+        configLockOwner,
+        "prepared",
+        normalized,
+        fileOperations
+      );
+    };
+    const assertBoundLock = (binding) => {
+      const normalized = normalizeLockBinding(binding);
+      if (lock.binding === null
+        || JSON.stringify(lock.binding) !== JSON.stringify(normalized)) {
+        throw createConfigError(
+          "CODEX_HISTORY_REPAIR_CONFLICT",
+          "Codex history repair lock binding changed."
+        );
+      }
+      assertConfigLockOwned(lockPath, lock, fileOperations);
+    };
+    const completeBoundLock = (binding) => {
+      phase = "write";
+      const normalized = normalizeLockBinding(binding);
+      assertBoundLock(normalized);
+      replaceConfigLockMetadata(
+        lockPath,
+        lock,
+        configLockOwner,
+        "completed",
+        normalized,
+        fileOperations
+      );
+    };
 
-    if (!sourceExists) {
+    const publishConfig = (bytes = targetBytes) => {
+      const bytesToPublish = Buffer.from(bytes);
+      if (!bytesToPublish.equals(targetBytes)) {
+        throw createConfigError(
+          "CODEX_HISTORY_REPAIR_CONFLICT",
+          "Codex history repair target changed during bootstrap."
+        );
+      }
+      if (!sourceExists) {
+        phase = "write";
+        writeFileAtomically(
+          configPath,
+          patchedText,
+          0o600,
+          fileOperations,
+          () => {
+            assertConfigParent(parent, fileOperations);
+            try {
+              fileOperations.lstatSync(configPath);
+            } catch (error) {
+              if (error?.code === "ENOENT") return;
+              throw error;
+            }
+            throw createConfigError(
+              "CODEX_CONFIG_CHANGED",
+              "Codex configuration changed during bootstrap."
+            );
+          },
+          { exclusive: true }
+        );
+        return { changed: true, backupPath: null };
+      }
+
+      assertCurrentConfig(configPath, source, fileOperations);
+      phase = "write";
+      const backupPath = copyBackupExclusively(configPath, now(), fileOperations);
+      phase = "read";
+      assertCurrentConfig(configPath, source, fileOperations);
       phase = "write";
       writeFileAtomically(
         configPath,
         patchedText,
-        0o600,
+        source.mode,
         fileOperations,
         () => {
           assertConfigParent(parent, fileOperations);
-          try {
-            fileOperations.lstatSync(configPath);
-          } catch (error) {
-            if (error?.code === "ENOENT") return;
+          assertCurrentConfig(configPath, source, fileOperations);
+        }
+      );
+      return { changed: true, backupPath };
+    };
+
+    if (!transition.required && !historyRepairPending) {
+      let result;
+      if (patchedText === originalText) {
+        result = { changed: false, backupPath: null };
+      } else {
+        const configOnlyBinding = {
+          operationId: randomUUID(),
+          sourceConfigSha256: transition.sourceConfigSha256,
+          targetConfigSha256: transition.targetConfigSha256,
+          pendingRequired: false
+        };
+        bindPreparedLock(configOnlyBinding);
+        try {
+          result = publishConfig();
+        } catch (error) {
+          if (new Set([
+            "CODEX_CONFIG_PARENT_UNSAFE",
+            "CODEX_CONFIG_BUSY",
+            "CODEX_CONFIG_CHANGED",
+            "CODEX_CONFIG_READ_FAILED",
+            "CODEX_HISTORY_REPAIR_INVALID",
+            "CODEX_HISTORY_REPAIR_CONFLICT"
+          ]).has(error?.code)) {
             throw error;
           }
-          throw createConfigError(
-            "CODEX_CONFIG_CHANGED",
-            "Codex configuration changed during bootstrap."
-          );
-        },
-        { exclusive: true }
-      );
-      return { changed: true, backupPath: null };
+          let published;
+          try {
+            published = readConfigSource(configPath, fileOperations, { missing: true });
+          } catch (readError) {
+            throw configCommittedDegraded(readError);
+          }
+          if (published !== null && published.bytes.equals(targetBytes)) {
+            throw configCommittedDegraded(error);
+          }
+          throw error;
+        }
+        try {
+          completeBoundLock(configOnlyBinding);
+          const completed = readConfigSource(configPath, fileOperations, { missing: true });
+          if (completed === null || !completed.bytes.equals(targetBytes)) {
+            throw createConfigError(
+              "CODEX_CONFIG_CHANGED",
+              "Codex configuration changed after publication."
+            );
+          }
+        } catch (error) {
+          throw configCommittedDegraded(error);
+        }
+        committedWithoutPending = true;
+      }
+      return { ...result, historyRepair: NO_HISTORY_REPAIR };
     }
 
-    assertCurrentConfig(configPath, source, fileOperations);
-    phase = "write";
-    const backupPath = copyBackupExclusively(configPath, now(), fileOperations);
-    phase = "read";
-    assertCurrentConfig(configPath, source, fileOperations);
-    phase = "write";
-    writeFileAtomically(
-      configPath,
-      patchedText,
-      source.mode,
-      fileOperations,
-      () => {
-        assertConfigParent(parent, fileOperations);
-        assertCurrentConfig(configPath, source, fileOperations);
-      }
-    );
-    return { changed: true, backupPath };
+    const repaired = await historyRepair.run({
+      codexRoot: dirname(configPath),
+      currentConfigBytes: source?.bytes ?? Buffer.alloc(0),
+      targetConfigBytes: targetBytes,
+      transition,
+      publishConfig,
+      beforeJournalPublish: bindPreparedLock,
+      beforePendingClear: completeBoundLock,
+      assertConfigLock: assertBoundLock,
+      ...(customFileOperations ? { fileOperations } : {})
+    });
+    if (repaired?.handled !== true) {
+      throw createConfigError(
+        "CODEX_HISTORY_REPAIR_CONFLICT",
+        "Codex history repair state changed during bootstrap."
+      );
+    }
+    committedWithoutPending = true;
+    return {
+      ...(repaired.publishResult ?? { changed: false, backupPath: null }),
+      historyRepair: repaired.historyRepair
+    };
   } catch (error) {
     primaryError = classifyConfigError(error, phase);
     throw primaryError;
   } finally {
-    if (lock !== undefined) {
+    if (lock !== undefined && primaryError?.retainConfigLock !== true) {
       try {
         releaseConfigLock(lockPath, lock, parent, fileOperations);
       } catch (cleanupError) {
         if (primaryError === undefined) {
-          throw classifyConfigError(cleanupError, "write");
+          throw committedWithoutPending
+            ? configCommittedDegraded(cleanupError)
+            : classifyConfigError(cleanupError, "write");
         }
       }
     }

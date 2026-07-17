@@ -2,12 +2,53 @@
 
 ## Current Milestone
 
-Core-first CLI acceptance is COMPLETE on the local macOS gate: clean-home bootstrap, bilingual CLI contracts, deterministic D1, the reviewed timeout/URL and host-locale/capture-reconciliation corrections, and production native-keyring/real-upstream D2 pass. Web refinement remains frozen, and Task 12 release execution remains separately gated.
+M2E/V8 local Web management implementation and acceptance are complete on the working tree, and V8.1 post-acceptance interaction fixes are implemented. The responsive bilingual Vite + React + TypeScript SPA remains an exact three-file static UI. V8.1 adds complete model selection with manual fallback, fixed non-reflowing feedback, sidebar route/lifecycle controls, explicit bounded recovery from a valid read-only cookie session, and secret-free Provider duplication. Capture management remains out of scope, and Task 12 release execution remains separately gated.
 
-## In Progress
+The current release-preparation adjustment sets English as the deterministic default for every human CLI path and first-time Web launch. Chinese now requires explicit `--locale zh-CN` for a CLI invocation or an explicit Web language selection; only the Web selection persists as `crp.locale`. The repository and release package now include the MIT License.
 
-- No local core implementation workstream remains active.
-- Keep the existing Admin API, registry schema, `OpenAI` provider identity, `127.0.0.1:15100` proxy address, package allowlist, and frozen Web source/tests unchanged unless a new scope is approved.
+## Open External Gates
+
+- Rehearse V7 against a copied large real-home history corpus with Codex fully stopped; measure the 300-second budget, storage growth, interruption, and retry behavior.
+- Run Task 12 remote macOS/Windows/Linux native, visual, process, filesystem/ACL, and release gates. Keep registry schema 2, `OpenAI`, `127.0.0.1:15100`, the accepted V8 product contracts, and release operations unchanged until separately authorized.
+
+## 2026-07-17 Release Readiness Audit
+
+The current working tree is not authorized for GitHub release or npm
+publication yet. The local implementation is substantially healthy, but the
+following release blockers remain:
+
+- the working tree contains the complete uncommitted V5 through V8.1 change
+  set plus untracked reviewed source and documentation, so pushing the current
+  branch would not publish the reviewed working-tree behavior;
+- `package.json` remains version `0.2.2`, which is already published, so direct
+  `npm publish --dry-run` correctly rejects an overwrite; the reviewed minor
+  Changesets flow must produce the next version through the release pull
+  request;
+- remote macOS, Windows, and Linux native-service, filesystem/process, and
+  visual evidence, copied-real-history rehearsal, and independent L3 approval
+  are still absent.
+
+Current-tree local passes recorded by this audit are: syntax 33 source files,
+UI typecheck/build/exact-output, exact `npm test` 466/466 (`414` unit-core +
+`8` Capture + `43` ordinary integration + `1` serial core-chain), both
+runtime-only and full dependency audits with zero vulnerabilities, focused
+history/lifecycle suites, exact 34-file package and release-workflow tests
+21/21, Chromium 39/39, package dry-run, minor Changesets status,
+installed-tarball CLI smoke, production/documentation sensitive-pattern scan,
+and `git diff --check`.
+
+The current MIT and locale rerun passes CLI/i18n 30/30, UI typecheck/build/
+exact-output, lint, runtime audit, package/release tests 21/21, package dry
+run with the exact 34-file allowlist, Chromium 39/39, and exact `npm test`
+467/467 (`415` unit-core + `8` Capture + `43` ordinary integration + `1`
+serial core chain) after both fixed ports were released.
+
+Local `.playwright-cli/`, `crp-web-product.zip`, and `output/` artifacts are now
+explicitly ignored; reviewed Web source, tests, design records, and future
+feature documents remain visible for deliberate staging. The user-authorized
+temporary Supervisor and Worker were shut down cleanly and fixed ports `15100`
+and `15101` were released. No Git ref, GitHub state, package version, real Codex
+configuration, or npm registry state was changed during this audit.
 
 ## Done
 
@@ -16,6 +57,16 @@ Core-first CLI acceptance is COMPLETE on the local macOS gate: clean-home bootst
 - Defined stable Codex provider and fixed proxy invariants.
 - Defined provider/credential model, local Admin API, guided utility UI, security boundary, and verification path.
 - Created the project harness and living docs.
+- Replaced the prior Web source with a responsive React + TypeScript implementation under `node/ui-src/` and a deterministic Vite build that emits exactly `node/ui/index.html`, `node/ui/app.js`, and `node/ui/styles.css`.
+- Implemented Overview anonymous 24h/7d Metrics, request/result and observed-Token trends, model distribution, Provider performance, data-quality/degradation states, and fixed-histogram latency bounds independently from Capture.
+- Implemented direct Provider-card switch/test-and-switch actions. Explicit activation applies or starts the Worker; conditional Setup instead runs save → test with first-wins CAS selection → Codex bootstrap/history repair → Worker start.
+- Implemented complete `en`/`zh-CN` Overview, Providers, Activity, System, and conditional Setup views, responsive narrow-width navigation, GET-only read-only behavior, terminal session handling, and blank write-only credential fields.
+- Implemented V8.1 interaction refinement: full model catalogs in real selects plus preserved manual input, fixed closable feedback without page reflow, compact sidebar Provider/start/stop/restart controls, explicit session/CSRF-rotating management recovery without expiry extension, and non-secret Provider duplication that requires a new credential.
+- Corrected the Setup model-refresh control alignment so the action tracks the model input/select top edge instead of the catalog-count help row; the focused Chromium geometry regression passes 1/1 and sanitized desktop evidence is retained at `output/playwright/v81/setup-model-alignment-fixed.png`.
+- V8.1 verification passes session/Admin focus 37/37, exact `npm test` 466/466 (`414` unit-core + `8` isolated Capture + `43` ordinary integration + `1` serial core-chain), Chromium 39/39, UI typecheck/build/exact-output, lint across 33 source files, exact package-content 3/3, runtime audit with zero vulnerabilities, diff checks, desktop/mobile visual inspection, and three independent read-only reviews.
+- Added the disabled bilingual Forwarding Records placeholder without a route, data request, mock records, payload view, or Capture control.
+- Expanded the exact reviewed package allowlist from 32 to 33 files for `src/supervisor/metrics-store.mjs`; frontend source/build tooling remains excluded from publication.
+- Completed the V8 local gate: exact `npm test` 463/463 (`412` unit-core + `8` capture + `42` integration + `1` core-chain), Metrics 6/6, lint 33, UI typecheck/build/exact-output pass, package-content 3/3 against 33 files, Chromium 33/33 with English/Chinese 1440/1024/390 coverage, audits 0, diff and sensitive-pattern scans pass, matched visual comparison/mobile overflow evidence in `design-qa.md`, and independent final review `PASS`.
 - Received written specification approval.
 - Created and self-reviewed the detailed V1 implementation plan.
 - Completed Task 1 portable syntax, unit-test, E2E script, packaging, and dependency gates.
@@ -38,24 +89,36 @@ Core-first CLI acceptance is COMPLETE on the local macOS gate: clean-home bootst
 - Completed deterministic D1 in `f83c9d6` (`test: add serial core production chain`). The serial path runs `runCli` through real SupervisorClient/Admin/registry/provider service/WorkerManager/forked worker to loopback upstreams, including A/B activation with an A request in flight, fixed-port restart, stop, shutdown, cleanup, and complete-secret scans. D1 landed with 289/289 and remains deterministic loopback evidence.
 - Completed and reviewed `4bbb97c` (`fix: complete live core request path`). `discoverSupervisor` now keeps its 2-second liveness probe separate from the returned client's 30-second operation timeout, and proxy forwarding structurally joins root, `/v1`, trailing-slash, encoded-path, and query cases instead of producing `//responses`. Final evidence is 295/295 (`262` unit-core + `7` capture + `25` integration + `1` core-chain), lint across 29 source files, audit 0, and the exact 30-file package.
 - Corrected the two user-observed `npm run test:unit` failure classes without changing CLI locale precedence or public contracts. CLI human-output helpers now force English instead of inheriting a Chinese host locale. Capture reconciliation now establishes a synchronous SHA-256 content fingerprint, always reloads at startup, checks every 500 ms, keeps `start` idempotent, and clears its interval, debounce timer, and fingerprint on `close`; a startup-rewrite regression covers the former first-async-stat race. Chinese-locale CLI focus passes 3/3, capture focus passes 8/8, the directed review set passes 58/58, two capture suites pass 20 concurrent repetitions, and final Chinese-environment `npm test` passes 296/296 (`262` unit-core + `8` capture + `25` integration + `1` core-chain). Lint still syntax-checks 29 source files, and independent review reports `PASS` with zero findings.
+- Repaired detached Supervisor startup error propagation for conflicting legacy credentials. A one-shot exact IPC contract returns allowlisted `MIGRATION_INPUT_INVALID` before readiness timeout; unknown or malformed child data becomes `SUPERVISOR_START_FAILED`, startup listeners and channels are cleaned safely, and divergent sources cause no backup creation, credential-store access, registry mutation, or source mutation while recording only a sanitized Activity outcome. Focused tests pass 69/69, exact `npm test` passes 304/304 (`268` unit-core + `8` capture + `27` integration + `1` core-chain), lint checks 29 source files, audit reports zero vulnerabilities, and independent read-only review found no blocker. Real HOME, native credentials, and existing processes were not changed.
 - Completed production macOS D2 with the real CLI, production native-keyring/login Keychain, real Dusapi upstream, and detached Supervisor. Provider test, activate/start/restart/health/stop/shutdown, proxied `/responses` HTTP `200 OK`, stable Supervisor PID, changed worker PID, and cleanup all passed. A separate isolated clean-home detached run also passed private bootstrap with fixed `OpenAI`/`15100`.
+- Historical M2B completion: terminal-safe provider/status rendering, exact no-discovery layered help, explicit Worker/Supervisor lifecycle copy, and then-current compatibility-alias guidance. CLI/i18n focus passed 24/24; exact `npm test` passed 313/313 (`277` unit-core + `8` capture + `27` integration + `1` core-chain); lint checked 29 source files; audit reported zero vulnerabilities; independent final code/test review reported `PASS`. V6 intentionally supersedes only the alias/help-default contract.
+- Historical M2C/V6 provider discovery and CLI ergonomics: `provider add --model` creates then tests without deleting a committed profile on second-stage failure; test/activate/delete/models accept ID XOR exact case-insensitive name; CLI model refresh uses additive Admin model routes backed by an independent schema-1 private `0600` cache and rejects complete credentials reflected through model IDs; successful CLI tests opt into first-wins initial selection only while the Worker is stopped and report `workerStarted: false`; the Admin default and then-current Web test were non-selecting; help defaults to English unless `--locale zh-CN` is explicit; `init`/`install`/`setup` return side-effect-free `CLI_COMMAND_REMOVED` guidance. V8 later superseded only the Web caller/source behavior.
+- Final M2C/V6 evidence: exact `npm test` passed 358/358 (`320` unit-core + `8` isolated capture + `29` ordinary integration + `1` serial core-chain); model-cache 20/20, CLI 70/70, control-plane 74/74, and post-review risk 157/157 focuses also passed. Lint checked 30 source files, package-content passed 3/3 against the exact 31-file allowlist, runtime audit reported zero vulnerabilities, `git diff --check` passed, and unchanged-Web Chromium passed 41/41. The isolated development Supervisor previously on `15101` was authenticated and shut down normally before D1. The lifecycle design received L3 expert confirmation for opt-in compare-and-set selection with no implicit Worker start; release L3 confirmation remains separate.
+- Implemented M2D/V7 selected-binding inspection and patching through one semantic statement scanner, with invalid UTF-8 and malformed/ambiguous selected bindings rejected before writes. Same effective URL and first creation skip history inspection; an empty history write set uses config-only commit, while a nonempty set receives byte-exact rollout backups, exclusive fsynced SQLite logical snapshots, and a discoverable pending/clearing journal before config publication.
+- Hardened forward recovery with exact backup validation, pre-rename rollout metadata durability, parent-directory fsync, source/target config hashes, final config/lock checks, fixed clearing-marker recovery, retained lock when no marker can be restored, single-link canonical SQLite/sidecar requirements, bounded public summaries, and separate config-only versus history-pending committed-degraded errors.
+- Serialized activation, start, restart, and unexpected-exit recovery with bootstrap through one FIFO Codex gate. Automatic recovery rechecks cancellation inside the gate, stop/close cannot release a stale spawn, and private readiness errors remain outside public state. CLI bootstrap alone receives a bounded 300-second request timeout; discovery and ordinary-operation timeouts remain 2 and 30 seconds.
+- Completed M2D/V7 local verification on Node 22.19: history/config 98/98, strict status/lifecycle 105/105, exact `npm test` 451/451 (`401` unit-core + `8` capture + `41` integration + `1` core-chain), Chromium 41/41, lint 31 source files, package-content 3/3 against the exact 32-file allowlist, audit 0, and passing diff checks. Both fixed ports were free afterward; no gate touched real Codex history, credentials, or an external provider. Final independent L3 review returned `PASS` with no unresolved P0/P1/P2.
 
 ## Blocked
 
-- No local core blocker remains.
+- No local V8 implementation blocker remains. Repository reads that initially returned sandbox `EPERM` now work through the required scoped escalation.
 - Release remains separately gated on remote platform runs, platform screenshots, real-home migration/rollback review, and L3 expert approval.
 
 ## Next
 
-1. Retain the completed local core evidence and keep Web frozen unless the user explicitly resumes it.
-2. Run Task 12 remote macOS/Windows/Linux native, visual, process, and filesystem gates on the final tree under a separate scope.
-3. Complete real-home migration/rollback review and obtain L3 expert confirmation before release execution.
+1. Keep copied-corpus and Task 12 cross-platform/release work parked under their separate L3 authorization.
+2. Obtain remote platform evidence and human L3 approval before any push, merge, versioning, publication, or release.
 
 ## Risks
 
 - V1 release, platform confirmation, and real-home migration approval remain L3 because they cover credentials, local browser security, Codex configuration, and process lifecycle.
 - Cross-platform credential APIs and restart semantics require real macOS and Windows verification.
+- V7 has only temporary-root deterministic history evidence. Real HOME history volume, 300-second CLI timeout sufficiency, concurrent external sidecar creation, storage growth, interruption behavior, and recovery time remain L3 performance/operations gates; Codex must be fully stopped.
+- The repair trigger intentionally compares effective URLs only. A provider-name-only change at the same URL does not rewrite history and requires operator review for custom layouts.
+- The shared scanner validates the selected provider binding and UTF-8, not arbitrary unrelated TOML semantics.
 - Provider-registry atomic rename and permission semantics remain unverified on real Windows and Linux hosts.
+- Provider-model cache atomic rename, private mode, lock-degradation, and source-fingerprint behavior are deterministically tested but remain unverified on real Windows and Linux filesystems.
+- Not every OpenAI-compatible provider exposes `/models`; discovery failure is intentionally non-destructive and users may continue to test with a manually supplied model.
 - Task 4 tests inject the native loader and never invoke the real addon loader; the separate production macOS D2 supplies local native evidence, while GitHub-runner macOS, Windows, and Linux native evidence remains L3 release work.
 - Task 10 tests use temporary homes and injected process/client boundaries; local macOS D2 covers the real CLI/native/external path, while browser launch behavior and cross-platform process identity and signal handling remain L3.
 - Task 11 browser tests use an injected loopback Admin server, in-memory services, temporary roots, and mock upstreams; real `crp ui`, native keyrings, real HOME, external providers, browser launch, and macOS/Windows platform behavior remain Task 12 L3 gates.
@@ -64,4 +127,4 @@ Core-first CLI acceptance is COMPLETE on the local macOS gate: clean-home bootst
 - `provider add --api-key <KEY>` remains intentionally unchanged by user decision and can expose credentials through shell history or process inspection; redesign is deferred.
 - Deterministic loopback/injected integration evidence must not be described as real provider or native-keyring evidence.
 - Cross-platform hardlink/`O_NOFOLLOW`/ACL behavior and general child-process environment minimization remain separate L3 hardening work and do not negate local core completion.
-- Web work remains intentionally paused: first-step field alignment, step-content residue, and the legacy bootstrap `INTERNAL_ERROR` flow have not been corrected or reverified on the core tree.
+- V8 local browser and visual acceptance is complete for the temporary-loopback tree; it does not replace remote macOS/Windows platform screenshots or real `crp ui` release evidence.

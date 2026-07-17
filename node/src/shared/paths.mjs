@@ -8,6 +8,8 @@ export function getPaths(home = os.homedir()) {
   return {
     globalHome,
     registryPath: resolve(globalHome, "providers.json"),
+    modelCachePath: resolve(globalHome, "provider-model-cache.json"),
+    metricsPath: resolve(globalHome, "metrics.json"),
     secretFallbackPath: resolve(globalHome, "secrets.json"),
     statePath: resolve(globalHome, "state.json"),
     controlTokenPath: resolve(globalHome, "control-token"),

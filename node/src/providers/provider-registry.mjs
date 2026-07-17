@@ -55,6 +55,7 @@ const TEST_INVALIDATING_FIELDS = [
 ];
 const TEST_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const LOCK_CLEANUP_ATTEMPTS = 2;
+const NO_CHANGE = Symbol("provider-registry-no-change");
 const DEFAULT_FILE_OPERATIONS = {
   chmodSync,
   closeSync,
@@ -70,6 +71,10 @@ const DEFAULT_FILE_OPERATIONS = {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function noChange(result) {
+  return { [NO_CHANGE]: true, result };
 }
 
 function emptyDocument() {
@@ -448,11 +453,12 @@ export class ProviderRegistry {
       lock = this.#acquireLock();
       const candidate = clone(this.#load());
       const mutationResult = mutator(candidate);
+      const changed = mutationResult?.[NO_CHANGE] !== true;
       validateDocument(candidate);
-      result = clone(mutationResult);
-      this.#persist(candidate);
+      result = clone(changed ? mutationResult : mutationResult.result);
+      if (changed) this.#persist(candidate);
       this.document = candidate;
-      committed = true;
+      committed = changed;
     } catch (error) {
       primaryError = error;
     }
@@ -613,6 +619,24 @@ export class ProviderRegistry {
       const index = this.#getIndex(document, id);
       document.activeProviderId = id;
       return document.providers[index];
+    });
+  }
+
+  setActiveIfNull(id) {
+    return this.#commit((document) => {
+      this.#getIndex(document, id);
+      if (document.activeProviderId !== null) return noChange(false);
+      document.activeProviderId = id;
+      return true;
+    });
+  }
+
+  clearActiveIf(id) {
+    return this.#commit((document) => {
+      this.#getIndex(document, id);
+      if (document.activeProviderId !== id) return noChange(false);
+      document.activeProviderId = null;
+      return true;
     });
   }
 

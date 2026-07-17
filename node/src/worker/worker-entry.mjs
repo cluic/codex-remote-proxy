@@ -61,6 +61,17 @@ function lifecycleMessage(type, requestId) {
   };
 }
 
+function emitMetric(observation) {
+  void sendChildMessage({
+    version: PROTOCOL_VERSION,
+    type: "metric",
+    requestId: "metric-observation",
+    observation
+  }).catch(() => {
+    // Metrics are best effort and must not change request or worker lifecycle state.
+  });
+}
+
 function trackRequests(server) {
   server.prependListener("request", (_req, res) => {
     inFlight += 1;
@@ -157,7 +168,10 @@ async function configure(message) {
     settings: message.settings
   });
   if (!app) {
-    app = createApp(message.settings, { settingsSource: runtimeSettings });
+    app = createApp(message.settings, {
+      settingsSource: runtimeSettings,
+      recordMetric: emitMetric
+    });
     trackRequests(app.server);
     try {
       await listen(app.server, message.settings);

@@ -469,6 +469,111 @@ test("marks passed and failed tests and manages active deletion", (t) => {
   assert.equal(registry.list().length, 1);
 });
 
+test("compare-and-set active operations change state only when their predicates match", (t) => {
+  const { registryPath } = makeTempRegistry(t, "crp-provider-active-cas-");
+  const lockPath = `${registryPath}.crp.lock`;
+  let persistenceOpenCount = 0;
+  let registryRenameCount = 0;
+  const registry = new ProviderRegistry({
+    path: registryPath,
+    createId: makeIds("provider-1", "provider-2"),
+    now: () => FIXED_NOW,
+    fileOperations: {
+      ...realFileOperations,
+      openSync(path, flags, mode) {
+        if (path !== lockPath) persistenceOpenCount += 1;
+        return realFileOperations.openSync(path, flags, mode);
+      },
+      renameSync(source, destination) {
+        if (destination === registryPath) registryRenameCount += 1;
+        return realFileOperations.renameSync(source, destination);
+      }
+    }
+  });
+  registry.create(validInput({ name: "Primary" }));
+  registry.create(validInput({
+    name: "Backup",
+    baseUrl: "https://backup.example/v1",
+    credentialRef: "provider-2"
+  }));
+
+  assert.equal(registry.setActiveIfNull("provider-1"), true);
+  let diskBytes = readFileSync(registryPath);
+  let persistenceOpens = persistenceOpenCount;
+  let registryRenames = registryRenameCount;
+  assert.equal(registry.setActiveIfNull("provider-1"), false);
+  assert.equal(registry.setActiveIfNull("provider-2"), false);
+  assert.equal(persistenceOpenCount, persistenceOpens);
+  assert.equal(registryRenameCount, registryRenames);
+  assert.deepEqual(readFileSync(registryPath), diskBytes);
+  assert.equal(registry.getDocument().activeProviderId, "provider-1");
+
+  assert.equal(registry.clearActiveIf("provider-2"), false);
+  assert.equal(persistenceOpenCount, persistenceOpens);
+  assert.equal(registryRenameCount, registryRenames);
+  assert.deepEqual(readFileSync(registryPath), diskBytes);
+  assert.equal(registry.getDocument().activeProviderId, "provider-1");
+  assert.equal(registry.clearActiveIf("provider-1"), true);
+  diskBytes = readFileSync(registryPath);
+  persistenceOpens = persistenceOpenCount;
+  registryRenames = registryRenameCount;
+  assert.equal(registry.clearActiveIf("provider-1"), false);
+  assert.equal(persistenceOpenCount, persistenceOpens);
+  assert.equal(registryRenameCount, registryRenames);
+  assert.deepEqual(readFileSync(registryPath), diskBytes);
+  assert.equal(registry.getDocument().activeProviderId, null);
+
+  assert.throws(
+    () => registry.setActiveIfNull("missing"),
+    assertCrpError("PROVIDER_NOT_FOUND", 404)
+  );
+  assert.throws(
+    () => registry.clearActiveIf("missing"),
+    assertCrpError("PROVIDER_NOT_FOUND", 404)
+  );
+});
+
+test("multi-instance initial activation compare-and-set is first-wins", (t) => {
+  const { registryPath } = makeTempRegistry(t, "crp-provider-active-first-wins-");
+  let staleInstanceRegistryRenames = 0;
+  const first = new ProviderRegistry({
+    path: registryPath,
+    createId: makeIds("provider-1", "provider-2"),
+    now: () => FIXED_NOW
+  });
+  const staleSecond = new ProviderRegistry({
+    path: registryPath,
+    now: () => FIXED_NOW,
+    fileOperations: {
+      ...realFileOperations,
+      renameSync(source, destination) {
+        if (destination === registryPath) staleInstanceRegistryRenames += 1;
+        return realFileOperations.renameSync(source, destination);
+      }
+    }
+  });
+  first.create(validInput({ name: "Primary" }));
+  first.create(validInput({
+    name: "Backup",
+    baseUrl: "https://backup.example/v1",
+    credentialRef: "provider-2"
+  }));
+
+  assert.equal(first.setActiveIfNull("provider-1"), true);
+  const firstWinnerBytes = readFileSync(registryPath);
+  assert.equal(staleSecond.setActiveIfNull("provider-2"), false);
+  assert.equal(staleInstanceRegistryRenames, 0);
+  assert.deepEqual(readFileSync(registryPath), firstWinnerBytes);
+  assert.equal(staleSecond.getDocument().activeProviderId, "provider-1");
+
+  assert.equal(staleSecond.clearActiveIf("provider-2"), false);
+  assert.equal(staleInstanceRegistryRenames, 0);
+  assert.deepEqual(readFileSync(registryPath), firstWinnerBytes);
+  assert.equal(first.clearActiveIf("provider-1"), true);
+  assert.equal(staleSecond.setActiveIfNull("provider-2"), true);
+  assert.equal(first.getDocument().activeProviderId, "provider-2");
+});
+
 test("preserves tests for name edits and invalidates them for operational changes", (t) => {
   const { registryPath } = makeTempRegistry(t, "crp-provider-test-invalidation-");
   const registry = new ProviderRegistry({

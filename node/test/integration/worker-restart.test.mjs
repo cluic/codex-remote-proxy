@@ -81,7 +81,8 @@ test("real worker restart changes PID and restores matching health on the same f
     ackTimeoutMs: 3_000,
     healthTimeoutMs: 3_000,
     terminateTimeoutMs: 1_000,
-    killTimeoutMs: 1_000
+    killTimeoutMs: 1_000,
+    runRecoveryWhenReady: (operation) => operation()
   });
   t.after(() => manager.close());
   const snapshot = makeSnapshot({ generation: 1, port, upstreamPort, dir });

@@ -11,6 +11,9 @@ import {
 const WORKER_ENTRY_PATH = fileURLToPath(new URL("../worker/worker-entry.mjs", import.meta.url));
 const CRASH_WINDOW_MS = 60_000;
 const CRASH_BACKOFF_MS = Object.freeze([250, 500, 1_000, 2_000, 4_000]);
+const MAX_METRIC_GENERATIONS = 256;
+const MAX_PROVIDER_ID_CODE_POINTS = 128;
+const PROVIDER_ID_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 
 const REAL_CLOCK = Object.freeze({
   now: () => Date.now(),
@@ -78,6 +81,21 @@ function publicStateCopy(state) {
   } : null;
 }
 
+function validProviderId(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= MAX_PROVIDER_ID_CODE_POINTS * 2
+    && [...value].length <= MAX_PROVIDER_ID_CODE_POINTS
+    && value.trim() === value
+    && !PROVIDER_ID_CONTROL_PATTERN.test(value);
+}
+
+function optionalSnapshotProviderId(snapshot) {
+  if (!snapshot || !Object.hasOwn(snapshot, "providerId")) return null;
+  if (!validProviderId(snapshot.providerId)) throw managerError("WORKER_SNAPSHOT_INVALID");
+  return snapshot.providerId;
+}
+
 export class WorkerManager {
   #host;
   #port;
@@ -90,6 +108,7 @@ export class WorkerManager {
   #terminateTimeoutMs;
   #killTimeoutMs;
   #waitForPortFree;
+  #runRecoveryWhenReady;
   #phase = "stopped";
   #child = null;
   #epoch = 0;
@@ -110,6 +129,9 @@ export class WorkerManager {
   #operation = null;
   #closed = false;
   #closePromise = null;
+  #recordMetric;
+  #noteDroppedMetric;
+  #metricProviders = new Map();
 
   constructor({
     host = "127.0.0.1",
@@ -122,8 +144,17 @@ export class WorkerManager {
     healthTimeoutMs = 5_000,
     terminateTimeoutMs = 1_000,
     killTimeoutMs = 1_000,
-    waitForPortFree = defaultWaitForPortFree
+    waitForPortFree = defaultWaitForPortFree,
+    runRecoveryWhenReady,
+    recordMetric = () => true,
+    noteDroppedMetric = () => {}
   } = {}) {
+    if (typeof runRecoveryWhenReady !== "function") {
+      throw new TypeError("Worker recovery operation runner is required.");
+    }
+    if (typeof recordMetric !== "function" || typeof noteDroppedMetric !== "function") {
+      throw new TypeError("Worker metrics callbacks are invalid.");
+    }
     this.#host = host;
     this.#port = port;
     this.#clock = clock;
@@ -135,6 +166,9 @@ export class WorkerManager {
     this.#terminateTimeoutMs = terminateTimeoutMs;
     this.#killTimeoutMs = killTimeoutMs;
     this.#waitForPortFree = waitForPortFree;
+    this.#runRecoveryWhenReady = runRecoveryWhenReady;
+    this.#recordMetric = recordMetric;
+    this.#noteDroppedMetric = noteDroppedMetric;
   }
 
   getPublicState() {
@@ -253,6 +287,7 @@ export class WorkerManager {
   }
 
   async #performStart(snapshot) {
+    const providerId = optionalSnapshotProviderId(snapshot);
     const requestId = this.#nextRequestId("configure");
     const configureMessage = {
       version: PROTOCOL_VERSION,
@@ -265,6 +300,7 @@ export class WorkerManager {
     if (snapshot.settings.server.host !== this.#host || snapshot.settings.server.port !== this.#port) {
       throw managerError("WORKER_START_FAILED");
     }
+    this.#rememberMetricProvider(snapshot.generation, providerId);
 
     this.#phase = "starting";
     let child;
@@ -365,6 +401,7 @@ export class WorkerManager {
     };
     try {
       validateParentMessage(message);
+      optionalSnapshotProviderId(snapshot);
     } catch {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
@@ -373,6 +410,7 @@ export class WorkerManager {
       || snapshot.settings.server.port !== this.#port) {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
+    this.#rememberMetricProvider(snapshot.generation, snapshot.providerId ?? null);
     const configured = await this.#sendAndWait(child, message, {
       epoch,
       requestId,
@@ -488,6 +526,7 @@ export class WorkerManager {
         generation: cloned?.generation,
         settings: cloned?.settings
       });
+      optionalSnapshotProviderId(cloned);
     } catch {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
@@ -560,6 +599,10 @@ export class WorkerManager {
             waiter.reject(error);
           }
         }
+        return;
+      }
+      if (message.type === "metric") {
+        this.#acceptMetric(message.observation);
         return;
       }
       for (const waiter of [...this.#waiters]) {
@@ -639,15 +682,34 @@ export class WorkerManager {
     this.#recoveryTimer = this.#clock.setTimeout(() => {
       if (recoveryVersion !== this.#recoveryVersion) return;
       this.#recoveryTimer = null;
-      if (this.#closed || this.#phase !== "backoff") return;
+      if (!this.#canRecover(recoveryVersion)) return;
+      let attemptStarted = false;
       const recovery = Promise.resolve()
         .then(() => this.#waitForPortFree(this.#host, this.#port))
-        .then(() => this.#performStart(snapshot));
-      this.#trackOperation(recovery);
+        .then(() => {
+          if (!this.#canRecover(recoveryVersion)) return undefined;
+          return this.#runRecoveryWhenReady(() => {
+            if (!this.#canRecover(recoveryVersion)) return this.getPublicState();
+            attemptStarted = true;
+            return this.#trackOperation(this.#performStart(snapshot));
+          });
+        });
       void recovery.catch(() => {
-        if (!this.#closed) this.#scheduleRecovery();
+        if (recoveryVersion === this.#recoveryVersion
+          && !this.#closed
+          && this.#child === null
+          && (this.#phase === "backoff" || attemptStarted)) {
+          this.#scheduleRecovery();
+        }
       });
     }, delay);
+  }
+
+  #canRecover(recoveryVersion) {
+    return recoveryVersion === this.#recoveryVersion
+      && !this.#closed
+      && this.#phase === "backoff"
+      && this.#child === null;
   }
 
   #cancelRecovery() {
@@ -655,6 +717,44 @@ export class WorkerManager {
     if (this.#recoveryTimer !== null) {
       this.#clock.clearTimeout(this.#recoveryTimer);
       this.#recoveryTimer = null;
+    }
+  }
+
+  #rememberMetricProvider(generation, providerId) {
+    if (!validProviderId(providerId)) return;
+    this.#metricProviders.delete(generation);
+    this.#metricProviders.set(generation, providerId);
+    while (this.#metricProviders.size > MAX_METRIC_GENERATIONS) {
+      this.#metricProviders.delete(this.#metricProviders.keys().next().value);
+    }
+  }
+
+  #acceptMetric(observation) {
+    const providerId = this.#metricProviders.get(observation.generation);
+    if (!providerId) {
+      this.#dropMetric();
+      return;
+    }
+    const { generation: _generation, ...fields } = observation;
+    try {
+      const result = this.#recordMetric({ providerId, ...fields });
+      if (result && typeof result.then === "function") {
+        void result.then((accepted) => {
+          if (accepted === false) this.#dropMetric();
+        }, () => this.#dropMetric());
+      } else if (result === false) {
+        this.#dropMetric();
+      }
+    } catch {
+      this.#dropMetric();
+    }
+  }
+
+  #dropMetric() {
+    try {
+      this.#noteDroppedMetric();
+    } catch {
+      // Metrics degradation must remain outside worker lifecycle state.
     }
   }
 

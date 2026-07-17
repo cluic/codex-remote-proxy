@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import * as realFileOperations from "node:fs";
 import {
   chmodSync,
@@ -17,6 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { getPaths } from "../src/shared/paths.mjs";
+import { CrpError } from "../src/shared/errors.mjs";
 import {
   discoverSupervisor,
   SupervisorClient,
@@ -234,7 +236,8 @@ function adminStatus(pid = 4242, worker = { phase: "stopped", pid: null, generat
     codex: {
       configured: false,
       modelProvider: "OpenAI",
-      proxyUrl: "http://127.0.0.1:15100"
+      proxyUrl: "http://127.0.0.1:15100",
+      historyRepairPending: false
     }
   };
 }
@@ -262,56 +265,38 @@ test("check does not emit sqlite experimental warnings", () => {
   }
 });
 
-test("init is a no-open ui alias and never writes legacy secret config", () => {
-  const homeDir = makeTempHome();
-  try {
-    const result = invokeCliInTempHome(["init", "--no-open", "--json"], homeDir);
-    const legacyConfigPath = join(homeDir, ".codex-remote-proxy", "config.json");
-
-    assert.equal(result.stdout.includes("apiKeyPreview"), false);
-    assert.equal(existsSync(legacyConfigPath), false);
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), {
-      ok: true,
-      opened: false,
-      origin: "http://127.0.0.1:15101",
-      supervisorPid: 4242,
-      url: `http://127.0.0.1:15101/#token=${CONTROL_TOKEN}`
-    });
-    assert.equal(result.ensureCalls, 1);
-    assert.equal(result.discoverCalls, 0);
-    assert.equal(result.openCalls, 0);
-  } finally {
-    rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("init rejects legacy secret options before supervisor discovery or disk writes", () => {
-  const homeDir = makeTempHome();
-  const secret = "init-complete-secret-sentinel";
-  try {
-    const result = invokeCliInTempHome([
-      "init",
-      "--api-key", secret,
-      "--upstream-base-url", "https://provider.example/v1",
-      "--no-open"
-    ], homeDir, [secret]);
-    const legacyConfigPath = join(homeDir, ".codex-remote-proxy", "config.json");
-
-    assertSecretAbsent(secret, {
-      stdout: result.stdout,
-      stderr: result.stderr,
-      files: [legacyConfigPath]
-    });
+test("removed aliases return exact migration guidance without discovery", async () => {
+  let ensureCalls = 0;
+  let discoverCalls = 0;
+  let openCalls = 0;
+  const dependencies = {
+    ensureSupervisorImpl: async () => { ensureCalls += 1; },
+    discoverSupervisorImpl: async () => { discoverCalls += 1; },
+    openManagementUrlImpl: () => { openCalls += 1; }
+  };
+  for (const [command, replacement] of [
+    ["init", "crp ui"],
+    ["install", "crp start"],
+    ["setup", "crp start"]
+  ]) {
+    const result = await invokeCli([command, "--json", "--locale", "en"], dependencies);
     assert.equal(result.status, 1);
     assert.equal(result.stdout, "");
-    assert.equal(result.stderr, "Error: The init command contains an unsupported option.\n");
-    assert.equal(result.ensureCalls, 0);
-    assert.equal(result.discoverCalls, 0);
-    assert.equal(existsSync(legacyConfigPath), false);
-  } finally {
-    rmSync(homeDir, { recursive: true, force: true });
+    assert.deepEqual(JSON.parse(result.stderr), {
+      ok: false,
+      command,
+      stage: null,
+      error: {
+        code: "CLI_COMMAND_REMOVED",
+        message: "This CLI command has been removed.",
+        action: `Use \`${replacement}\` instead.`,
+        details: {}
+      }
+    });
   }
+  assert.equal(ensureCalls, 0);
+  assert.equal(discoverCalls, 0);
+  assert.equal(openCalls, 0);
 });
 
 test("start reports a safe supervisor failure and exit code without real spawn", async () => {
@@ -348,25 +333,28 @@ test("imports the CLI module without executing a command", () => {
   assert.equal(result.stdout, "imported\n");
 });
 
-test("prints the approved supervisor CLI help without discovery", async () => {
+test("prints mature English-default CLI help without discovery", async () => {
   let discovered = false;
   const result = await invokeCli(["--help"], {
+    environment: { CRP_LOCALE: "zh-CN", LANG: "zh_CN.UTF-8" },
     discoverSupervisorImpl: async () => { discovered = true; },
     ensureSupervisorImpl: async () => { discovered = true; }
   });
 
   assert.equal(result.status, 0);
   assert.equal(result.stderr, "");
+  for (const heading of ["Usage:", "Commands:", "Options:", "Examples:"]) {
+    assert.equal(result.stdout.includes(heading), true);
+  }
   for (const line of [
-    "crp init [--no-open] [--json]",
     "crp ui [--no-open] [--json]",
     "crp restart [--json]",
     "crp shutdown [--json]",
-    "crp provider list|add|test|activate|delete [--json]"
+    "crp provider"
   ]) {
     assert.match(result.stdout, new RegExp(line.replace(/[|[\]]/g, "\\$&")));
   }
-  assert.doesNotMatch(result.stdout, /crp init[^\n]*--(?:api-key|upstream-base-url)/);
+  assert.doesNotMatch(result.stdout, /^\s*(?:crp\s+)?(?:init|install|setup)(?:\s|$)/m);
   assert.equal(discovered, false);
 });
 
@@ -377,8 +365,6 @@ test("positional argument errors never echo the original value", async () => {
   for (const args of [
     ["status", secret],
     ["status", "--json", secret],
-    ["init", secret],
-    ["init", "--no-open", secret],
     ["provider", "list", secret],
     ["provider", "list", "--json", secret],
     ["capture", "status", secret],
@@ -424,14 +410,24 @@ test("guide JSON describes the V1 supervisor flow without legacy mutations", () 
     assert.equal(result.status, 0, result.stderr);
     const guide = JSON.parse(result.stdout);
     const flowCommands = [
-      ["providerAdd", "crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --json"],
-      ["providerTest", "crp provider test --id <ID> --model <MODEL> --json"],
-      ["providerActivate", "crp provider activate --id <ID> --json"],
+      ["providerAdd", "crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --model <MODEL> --json"],
       ["start", "crp start --json"],
       ["status", "crp status --json"],
       ["ui", "crp ui --json"],
       ["shutdown", "crp shutdown --json"]
     ];
+    assert.equal(
+      guide.commands.providerModels,
+      "crp provider models --name <NAME> --json"
+    );
+    assert.equal(
+      guide.commands.providerTest,
+      "crp provider test --name <NAME> --model <MODEL> --json"
+    );
+    assert.equal(
+      guide.commands.providerActivate,
+      "crp provider activate --name <NAME> --json"
+    );
     const expectedFlow = guide.expectedFlow.join("\n");
     let previousIndex = -1;
     for (const [name, command] of flowCommands) {
@@ -460,7 +456,10 @@ test("guide human output presents the V1 flow without stale fields", () => {
     assert.equal(result.stderr, "");
     assert.doesNotMatch(result.stdout, /undefined/);
     for (const command of [
-      "crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --json",
+      "crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --model <MODEL> --json",
+      "crp provider models --name <NAME> --json",
+      "crp provider test --name <NAME> --model <MODEL> --json",
+      "crp provider activate --name <NAME> --json",
       "crp start --json",
       "crp ui --json"
     ]) {
@@ -609,17 +608,33 @@ test("rejects misspelled restart options before supervisor discovery or mutation
 
 test("routes start, stop, and restart through exact Admin methods with empty bodies", async () => {
   const calls = [];
+  const historyRepair = {
+    required: false,
+    completed: false,
+    resumed: false,
+    backupCreated: false,
+    rolloutFiles: 0,
+    rolloutRecords: 0,
+    sqliteFiles: 0,
+    sqliteRows: 0,
+    encryptedContentDetected: false
+  };
   const client = {
-    async request(method, path, body) {
-      calls.push([method, path, body]);
-      if (path === "/codex/bootstrap") return { result: { changed: true, backupCreated: true } };
+    async request(method, path, body, options) {
+      calls.push([method, path, body, options]);
+      if (path === "/codex/bootstrap") {
+        return { result: { changed: true, backupCreated: true, historyRepair } };
+      }
       if (path === "/proxy/stop") {
         return { worker: { phase: "stopped", pid: null, generation: 1 } };
       }
       return { worker: { phase: "running", pid: path.endsWith("restart") ? 8002 : 8001, generation: 1 } };
     }
   };
-  const context = discoveredContext(client);
+  const status = adminStatus();
+  status.codex.configured = true;
+  status.codex.historyRepairPending = true;
+  const context = discoveredContext(client, status);
   const dependencies = {
     ensureSupervisorImpl: async () => context,
     discoverSupervisorImpl: async () => context
@@ -628,45 +643,205 @@ test("routes start, stop, and restart through exact Admin methods with empty bod
   const started = await invokeCli(["start", "--json"], dependencies);
   assert.equal(started.status, 0, started.stderr);
   assert.deepEqual(calls.splice(0), [
-    ["POST", "/codex/bootstrap", undefined],
-    ["POST", "/proxy/start", undefined]
+    ["POST", "/codex/bootstrap", undefined, { requestTimeoutMs: 300_000 }],
+    ["POST", "/proxy/start", undefined, undefined]
   ]);
+  assert.deepEqual(JSON.parse(started.stdout).codexBootstrap, {
+    changed: true,
+    backupCreated: true,
+    historyRepair
+  });
   assert.equal(JSON.parse(started.stdout).worker.pid, 8001);
 
   const stopped = await invokeCli(["stop", "--json"], dependencies);
   assert.equal(stopped.status, 0, stopped.stderr);
-  assert.deepEqual(calls.splice(0), [["POST", "/proxy/stop", undefined]]);
+  assert.deepEqual(calls.splice(0), [["POST", "/proxy/stop", undefined, undefined]]);
   assert.equal(JSON.parse(stopped.stdout).stopped, true);
 
   const restarted = await invokeCli(["restart", "--json"], dependencies);
   assert.equal(restarted.status, 0, restarted.stderr);
-  assert.deepEqual(calls.splice(0), [["POST", "/proxy/restart", undefined]]);
+  assert.deepEqual(calls.splice(0), [
+    ["POST", "/codex/bootstrap", undefined, { requestTimeoutMs: 300_000 }],
+    ["POST", "/proxy/restart", undefined, undefined]
+  ]);
+  assert.deepEqual(JSON.parse(restarted.stdout).codexBootstrap, {
+    changed: true,
+    backupCreated: true,
+    historyRepair
+  });
   assert.equal(JSON.parse(restarted.stdout).worker.pid, 8002);
 });
 
-test("install and setup add only one deprecation field to start JSON", async () => {
+test("start blocks Worker startup when the mandatory bootstrap fails", async () => {
+  const secret = "bootstrap-failure-complete-secret-sentinel";
+  const calls = [];
+  const failure = new CrpError(
+    "CODEX_HISTORY_REPAIR_COMMITTED_DEGRADED",
+    "Codex configuration was updated, but history repair remains pending.",
+    "Retry crp start to resume Codex history repair before using the proxy.",
+    {
+      status: 500,
+      details: { committed: true, degraded: true, pending: true },
+      cause: new Error(secret)
+    }
+  );
   const client = {
-    async request(method, path) {
-      assert.equal(method, "POST");
-      assert.equal(path, "/proxy/start");
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/codex/bootstrap") throw failure;
+      return assert.fail("Worker start must not run after bootstrap failure");
+    }
+  };
+  const status = adminStatus();
+  status.codex.configured = true;
+  status.codex.historyRepairPending = true;
+
+  const result = await invokeCli(["start", "--json"], {
+    ensureSupervisorImpl: async () => discoveredContext(client, status)
+  });
+
+  assert.equal(result.stdout.includes(secret), false);
+  assert.equal(result.stderr.includes(secret), false);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(JSON.parse(result.stderr).stage, "codex_bootstrap");
+  assert.deepEqual(calls, [["POST", "/codex/bootstrap", undefined]]);
+});
+
+test("start preserves config-only committed degradation and never starts Worker", async () => {
+  const secret = "config-only-bootstrap-secret-sentinel";
+  const calls = [];
+  const failure = new CrpError(
+    "CODEX_CONFIG_COMMITTED_DEGRADED",
+    "The Codex configuration was updated, but completion could not be confirmed.",
+    "Review the Codex configuration and retry before starting the proxy.",
+    {
+      status: 500,
+      details: { committed: true, degraded: true, pending: false },
+      cause: new Error(secret)
+    }
+  );
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/codex/bootstrap") throw failure;
+      return assert.fail("Worker start must not run after config-only degradation");
+    }
+  };
+  const status = adminStatus();
+  status.codex.configured = false;
+
+  const result = await invokeCli(["start", "--json"], {
+    ensureSupervisorImpl: async () => discoveredContext(client, status)
+  });
+
+  assert.equal(result.stdout.includes(secret), false);
+  assert.equal(result.stderr.includes(secret), false);
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stderr);
+  assert.equal(payload.stage, "codex_bootstrap");
+  assert.equal(payload.error.code, "CODEX_CONFIG_COMMITTED_DEGRADED");
+  assert.deepEqual(payload.error.details, {
+    committed: true,
+    degraded: true,
+    pending: false
+  });
+  assert.deepEqual(calls, [["POST", "/codex/bootstrap", undefined]]);
+});
+
+test("restart reports codex_bootstrap and never restarts Worker after bootstrap failure", async () => {
+  const secret = "restart-bootstrap-failure-complete-secret-sentinel";
+  const calls = [];
+  const failure = new CrpError(
+    "CODEX_HISTORY_REPAIR_COMMITTED_DEGRADED",
+    "Codex configuration was updated, but history repair remains pending.",
+    "Retry crp start to resume Codex history repair before using the proxy.",
+    {
+      status: 500,
+      details: { committed: true, degraded: true, pending: true },
+      cause: new Error(secret)
+    }
+  );
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/codex/bootstrap") throw failure;
+      return assert.fail("Worker restart must not run after bootstrap failure");
+    }
+  };
+  const status = adminStatus();
+  status.codex.configured = false;
+  status.codex.historyRepairPending = true;
+
+  const result = await invokeCli(["restart", "--json"], {
+    ensureSupervisorImpl: async () => discoveredContext(client, status)
+  });
+
+  assert.equal(result.stdout.includes(secret), false);
+  assert.equal(result.stderr.includes(secret), false);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(JSON.parse(result.stderr).stage, "codex_bootstrap");
+  assert.deepEqual(calls, [["POST", "/codex/bootstrap", undefined]]);
+});
+
+test("human start prints only a static encrypted-history warning after repair", async () => {
+  const secret = "history-warning-private-complete-secret";
+  const historyRepair = {
+    required: true,
+    completed: true,
+    resumed: false,
+    backupCreated: true,
+    rolloutFiles: 1,
+    rolloutRecords: 2,
+    sqliteFiles: 1,
+    sqliteRows: 3,
+    encryptedContentDetected: true,
+    privatePath: `/private/${secret}`,
+    sessionBody: secret
+  };
+  const calls = [];
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/codex/bootstrap") {
+        return { result: { changed: true, backupCreated: true, historyRepair } };
+      }
       return { worker: { phase: "running", pid: 8001, generation: 1 } };
     }
   };
   const status = adminStatus();
   status.codex.configured = true;
+  status.codex.historyRepairPending = true;
   const dependencies = {
     ensureSupervisorImpl: async () => discoveredContext(client, status)
   };
-  const start = JSON.parse((await invokeCli(["start", "--json"], dependencies)).stdout);
 
-  for (const alias of ["install", "setup"]) {
-    const result = await invokeCli([alias, "--json"], dependencies);
+  const english = await invokeCli(["start", "--locale", "en"], dependencies);
+  const chinese = await invokeCli(["start", "--locale", "zh-CN"], dependencies);
+
+  for (const result of [english, chinese]) {
+    assert.equal(result.stdout.includes(secret), false);
+    assert.equal(result.stderr.includes(secret), false);
     assert.equal(result.status, 0, result.stderr);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.deprecated, true);
-    delete payload.deprecated;
-    assert.deepEqual(payload, start);
+    assert.equal(result.stderr, "");
   }
+  assert.equal(english.stdout, [
+    "Codex Remote Proxy is ready.",
+    "Warning: Some historical sessions contain encrypted content. Their provider metadata was repaired, but some messages may remain unavailable.",
+    ""
+  ].join("\n"));
+  assert.equal(chinese.stdout, [
+    "Codex Remote Proxy 已就绪。",
+    "警告：部分历史会话包含加密内容。提供商元数据已修复，但部分消息可能仍不可用。",
+    ""
+  ].join("\n"));
+  assert.deepEqual(calls, [
+    ["POST", "/codex/bootstrap", undefined],
+    ["POST", "/proxy/start", undefined],
+    ["POST", "/codex/bootstrap", undefined],
+    ["POST", "/proxy/start", undefined]
+  ]);
 });
 
 test("shutdown cross-checks authenticated status before SIGTERM and never removes state", async (t) => {
@@ -830,7 +1005,7 @@ test("routes automation-safe provider commands without returning the write-only 
       credential: secret
     }]],
     ["test", ["--id", "provider/1", "--model", "test-model"], [
-      "POST", "/providers/provider%2F1/test", { model: "test-model" }
+      "POST", "/providers/provider%2F1/test", { model: "test-model", activateIfNone: true }
     ]],
     ["activate", ["--id", "provider/1"], [
       "POST", "/providers/provider%2F1/activate", undefined
@@ -854,6 +1029,322 @@ test("routes automation-safe provider commands without returning the write-only 
     }
   }
   assert.deepEqual(calls, []);
+});
+
+test("provider add without a model preserves its one-request JSON contract", async () => {
+  const secret = "provider-add-old-json-complete-secret";
+  const provider = { id: "provider-1", name: "Primary", credentialConfigured: true };
+  const calls = [];
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      return { provider };
+    }
+  };
+  const result = await invokeCli([
+    "provider", "add",
+    "--name", "Primary",
+    "--base-url", "https://provider.example/v1",
+    "--api-key", secret,
+    "--json",
+    "--locale", "en"
+  ], { ensureSupervisorImpl: async () => discoveredContext(client) });
+
+  assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(calls, [["POST", "/providers", {
+    provider: { name: "Primary", baseUrl: "https://provider.example/v1" },
+    credential: secret
+  }]]);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    action: "add",
+    provider
+  });
+});
+
+test("provider add with a model creates first and reports the automatic test result", async () => {
+  const secret = "provider-add-and-test-complete-secret";
+  const provider = { id: "provider/1", name: "Primary", credentialConfigured: true };
+  const calls = [];
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/providers") return { provider };
+      return { result: { ok: false, code: "PROVIDER_TEST_AUTH" } };
+    }
+  };
+  const result = await invokeCli([
+    "provider", "add",
+    "--name", "Primary",
+    "--base-url", "https://provider.example/v1",
+    "--api-key", secret,
+    "--model", "test-model",
+    "--json",
+    "--locale", "en"
+  ], { ensureSupervisorImpl: async () => discoveredContext(client) });
+
+  assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(calls, [
+    ["POST", "/providers", {
+      provider: { name: "Primary", baseUrl: "https://provider.example/v1" },
+      credential: secret
+    }],
+    ["POST", "/providers/provider%2F1/test", { model: "test-model", activateIfNone: true }]
+  ]);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    action: "add",
+    provider,
+    test: { ok: false, code: "PROVIDER_TEST_AUTH" }
+  });
+});
+
+test("provider add keeps the created provider when automatic test transport fails", async () => {
+  const secret = "provider-add-test-transport-complete-secret";
+  const provider = { id: "provider-1", name: "Primary", credentialConfigured: true };
+  const calls = [];
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/providers") return { provider };
+      throw new Error(`transport failed: ${secret}`);
+    }
+  };
+  const result = await invokeCli([
+    "provider", "add",
+    "--name", "Primary",
+    "--base-url", "https://provider.example/v1",
+    "--api-key", secret,
+    "--model", "test-model",
+    "--json",
+    "--locale", "en"
+  ], { ensureSupervisorImpl: async () => discoveredContext(client) });
+
+  assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(JSON.parse(result.stderr), {
+    ok: false,
+    command: "provider",
+    stage: null,
+    error: {
+      code: "PROVIDER_ADD_TEST_FAILED",
+      message: "The provider was added, but its automatic compatibility test could not be completed.",
+      action: "Run provider list, then retry provider test for the saved provider.",
+      details: { committed: true }
+    }
+  });
+  assert.deepEqual(calls.map(([method, path]) => [method, path]), [
+    ["POST", "/providers"],
+    ["POST", "/providers/provider-1/test"]
+  ]);
+});
+
+test("provider add preserves committed-degraded automatic test semantics", async () => {
+  const secret = "provider-add-test-committed-complete-secret";
+  const provider = { id: "provider-1", name: "Primary", credentialConfigured: true };
+  const safeAction = "Repair Activity persistence before retrying the provider test.";
+  const failure = new CrpError(
+    "PROVIDER_TEST_COMMITTED_DEGRADED",
+    "The provider test result was saved, but its Activity record degraded.",
+    safeAction,
+    {
+      status: 500,
+      details: { committed: true, degraded: true }
+    }
+  );
+  failure.requestId = "request-add-test-safe";
+  const calls = [];
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      if (path === "/providers") return { provider };
+      throw failure;
+    }
+  };
+  const result = await invokeCli([
+    "provider", "add",
+    "--name", "Primary",
+    "--base-url", "https://provider.example/v1",
+    "--api-key", secret,
+    "--model", "test-model",
+    "--json",
+    "--locale", "en"
+  ], { ensureSupervisorImpl: async () => discoveredContext(client) });
+  const payload = JSON.parse(result.stderr);
+
+  assertSecretAbsent(secret, { stdout: result.stdout, stderr: result.stderr, objects: [payload] });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(payload.error.code, "PROVIDER_ADD_TEST_COMMITTED_DEGRADED");
+  assert.equal(payload.error.action, safeAction);
+  assert.equal(payload.error.requestId, "request-add-test-safe");
+  assert.deepEqual(payload.error.details, { committed: true, degraded: true });
+  assert.notEqual(
+    payload.error.action,
+    "Run provider list, then retry provider test for the saved provider."
+  );
+  assert.deepEqual(calls.map(([method, path]) => [method, path]), [
+    ["POST", "/providers"],
+    ["POST", "/providers/provider-1/test"]
+  ]);
+});
+
+test("provider actions resolve names case-insensitively before the selected operation", async () => {
+  const provider = { id: "provider/1", name: "Primary", credentialConfigured: true };
+  const cases = [
+    [
+      "test",
+      ["--model", "test-model"],
+      "POST",
+      "/providers/provider%2F1/test",
+      { model: "test-model", activateIfNone: true }
+    ],
+    ["activate", [], "POST", "/providers/provider%2F1/activate", undefined],
+    ["delete", [], "DELETE", "/providers/provider%2F1", undefined],
+    ["models", [], "POST", "/providers/provider%2F1/models", undefined]
+  ];
+
+  for (const [action, extraArgs, expectedMethod, expectedPath, expectedBody] of cases) {
+    const calls = [];
+    const client = {
+      async request(method, path, body) {
+        calls.push([method, path, body]);
+        if (method === "GET" && path === "/providers") return { providers: [provider] };
+        if (method === "GET" && path === "/providers/provider%2F1") return { provider };
+        if (action === "test") return { result: { ok: true, code: null } };
+        if (action === "activate") return { activation: { activeProviderId: provider.id, generation: 1 } };
+        if (action === "models") {
+          return {
+            modelCatalog: {
+              providerId: provider.id,
+              state: "fresh",
+              fetchedAt: "2026-07-16T00:00:00.000Z",
+              expiresAt: "2026-07-17T00:00:00.000Z",
+              models: ["model-a"]
+            }
+          };
+        }
+        return { provider };
+      }
+    };
+    const result = await invokeCli([
+      "provider", action,
+      "--name", "pRiMaRy",
+      ...extraArgs,
+      "--json",
+      "--locale", "en"
+    ], { ensureSupervisorImpl: async () => discoveredContext(client) });
+
+    assert.equal(result.status, 0, `${action}: ${result.stderr}`);
+    assert.deepEqual(calls, [
+      ["GET", "/providers", undefined],
+      ["GET", "/providers/provider%2F1", undefined],
+      [expectedMethod, expectedPath, expectedBody]
+    ]);
+  }
+});
+
+test("name selectors revalidate the resolved provider snapshot before mutation", async () => {
+  const listedProvider = { id: "provider/1", name: "Primary", credentialConfigured: true };
+  const renamedProvider = { ...listedProvider, name: "Renamed" };
+  const cases = [
+    ["test", ["--model", "test-model"]],
+    ["activate", []],
+    ["delete", []],
+    ["models", []]
+  ];
+
+  for (const [action, extraArgs] of cases) {
+    const calls = [];
+    const client = {
+      async request(method, path, body) {
+        calls.push([method, path, body]);
+        if (method === "GET" && path === "/providers") {
+          return { providers: [listedProvider] };
+        }
+        if (method === "GET" && path === "/providers/provider%2F1") {
+          return { provider: renamedProvider };
+        }
+        if (action === "test") return { result: { ok: true, code: null } };
+        if (action === "activate") {
+          return { activation: { activeProviderId: listedProvider.id, generation: 1 } };
+        }
+        if (action === "models") {
+          return { modelCatalog: { providerId: listedProvider.id, models: [] } };
+        }
+        return { provider: listedProvider };
+      }
+    };
+    const result = await invokeCli([
+      "provider", action,
+      "--name", "pRiMaRy",
+      ...extraArgs,
+      "--json",
+      "--locale", "en"
+    ], { ensureSupervisorImpl: async () => discoveredContext(client) });
+
+    assert.equal(result.status, 1, `${action}: ${result.stdout}`);
+    assert.equal(result.stdout, "");
+    const payload = JSON.parse(result.stderr);
+    assert.equal(payload.error.code, "PROVIDER_NOT_FOUND");
+    assert.deepEqual(calls, [
+      ["GET", "/providers", undefined],
+      ["GET", "/providers/provider%2F1", undefined]
+    ]);
+  }
+});
+
+test("provider selectors reject missing or conflicting id/name before discovery", async () => {
+  let ensureCalls = 0;
+  for (const [action, requiredArgs] of [
+    ["test", ["--model", "test-model"]],
+    ["activate", []],
+    ["delete", []],
+    ["models", []]
+  ]) {
+    for (const selectorArgs of [
+      [],
+      ["--id", "provider-1", "--name", "Primary"]
+    ]) {
+      const result = await invokeCli([
+        "provider", action,
+        ...selectorArgs,
+        ...requiredArgs,
+        "--json",
+        "--locale", "en"
+      ], { ensureSupervisorImpl: async () => { ensureCalls += 1; } });
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.equal(JSON.parse(result.stderr).error.code, "CLI_INPUT_INVALID");
+    }
+  }
+  assert.equal(ensureCalls, 0);
+});
+
+test("a missing provider name performs only the public lookup and never mutates", async () => {
+  const selector = "missing-provider-name-secret-sentinel";
+  const calls = [];
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      return { providers: [{ id: "provider-1", name: "Primary" }] };
+    }
+  };
+  const result = await invokeCli([
+    "provider", "delete",
+    "--name", selector,
+    "--json",
+    "--locale", "en"
+  ], { ensureSupervisorImpl: async () => discoveredContext(client) });
+
+  assertSecretAbsent(selector, { stdout: result.stdout, stderr: result.stderr });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(JSON.parse(result.stderr).error.code, "PROVIDER_NOT_FOUND");
+  assert.deepEqual(calls, [["GET", "/providers", undefined]]);
 });
 
 test("provider add rejects public fallback consent before supervisor discovery", async () => {
@@ -1275,16 +1766,17 @@ test("detached spawn redirects logs, sets CRP_HOME, and unrefs without a shell",
   const paths = getPaths(homeDir);
   let received = null;
   let unrefCalls = 0;
+  let channelUnrefCalls = 0;
   const child = spawnDetachedSupervisor({
     paths,
     home: homeDir,
     spawnImpl(command, args, options) {
       received = { command, args, options };
-      return {
-        pid: 4242,
-        once() {},
-        unref() { unrefCalls += 1; }
-      };
+      const spawned = new EventEmitter();
+      spawned.pid = 4242;
+      spawned.channel = { unref() { channelUnrefCalls += 1; } };
+      spawned.unref = () => { unrefCalls += 1; };
+      return spawned;
     }
   });
 
@@ -1292,14 +1784,286 @@ test("detached spawn redirects logs, sets CRP_HOME, and unrefs without a shell",
   assert.equal(received.command, process.execPath);
   assert.match(received.args[0], /supervisor-entry\.mjs$/);
   assert.equal(received.options.detached, true);
+  assert.equal(received.options.stdio.length, 4);
   assert.deepEqual(received.options.stdio.slice(0, 1), ["ignore"]);
   assert.equal(received.options.stdio[1], received.options.stdio[2]);
+  assert.equal(received.options.stdio[3], "ipc");
+  assert.equal(received.options.serialization, "json");
   assert.equal(received.options.env.CRP_HOME, homeDir);
   assert.equal(received.options.shell, false);
   assert.equal(unrefCalls, 1);
+  assert.equal(channelUnrefCalls, 1);
+  assert.equal(typeof child.startupFailure?.then, "function");
+  assert.equal(typeof child.disposeStartupMonitor, "function");
+  child.disposeStartupMonitor();
+  assert.equal(child.listenerCount("message"), 0);
+  assert.equal(child.listenerCount("error"), 1);
+  assert.equal(child.listenerCount("close"), 0);
   if (process.platform !== "win32") {
     assert.equal(statSync(paths.logPath).mode & 0o777, 0o600);
   }
+});
+
+test("detached spawn tears down a child when post-spawn setup fails", (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  const child = new EventEmitter();
+  child.pid = 4243;
+  child.connected = true;
+  child.channel = { unref() {} };
+  const signals = [];
+  let disconnectCalls = 0;
+  child.unref = () => { throw new Error("post-spawn setup failed"); };
+  child.kill = (signal) => { signals.push(signal); return true; };
+  child.disconnect = () => {
+    disconnectCalls += 1;
+    child.connected = false;
+  };
+
+  assert.throws(
+    () => spawnDetachedSupervisor({
+      paths,
+      home: homeDir,
+      spawnImpl: () => child
+    }),
+    (error) => error?.code === "SUPERVISOR_START_FAILED"
+  );
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(disconnectCalls, 1);
+  assert.equal(child.listenerCount("message"), 0);
+  assert.equal(child.listenerCount("close"), 0);
+  assert.equal(child.listenerCount("error"), 1);
+  assert.doesNotThrow(() => child.emit("error", new Error("late teardown error")));
+});
+
+test("detached startup failure interrupts CLI discovery with the safe child error", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  let child;
+  let spawnCalls = 0;
+  let childUnrefCalls = 0;
+  let channelUnrefCalls = 0;
+  const signals = [];
+  let clock = 0;
+  let waitCalls = 0;
+
+  const result = await invokeCli(["provider", "list", "--json"], {
+    ensureSupervisorImpl: () => ensureSupervisor({
+      paths,
+      adminPort: 15101,
+      spawnSupervisor: () => spawnDetachedSupervisor({
+        paths,
+        home: homeDir,
+        spawnImpl(_command, _args, options) {
+          spawnCalls += 1;
+          assert.equal(options.stdio[3], "ipc");
+          child = new EventEmitter();
+          child.pid = 5000;
+          child.channel = { unref() { channelUnrefCalls += 1; } };
+          child.unref = () => { childUnrefCalls += 1; };
+          child.kill = (signal) => {
+            signals.push(signal);
+            queueMicrotask(() => child.emit("close", 1, signal));
+            return true;
+          };
+          queueMicrotask(() => {
+            child.emit("close", 1, null);
+            child.emit("message", {
+              version: 1,
+              type: "startup-failed",
+              error: {
+                code: "MIGRATION_INPUT_INVALID",
+                message: "The legacy provider configuration is invalid.",
+                action: "Restore a complete legacy provider URL and credential before migrating.",
+                status: 400,
+                details: {}
+              }
+            });
+          });
+          return child;
+        }
+      }),
+      isProcessAlive: () => true,
+      fetchImpl: async () => assert.fail("startup failure must not reach Admin"),
+      now: () => clock,
+      wait: async (milliseconds) => {
+        waitCalls += 1;
+        clock += milliseconds;
+      },
+      timeoutMs: 8_000,
+      pollIntervalMs: 100
+    })
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(JSON.parse(result.stderr), {
+    ok: false,
+    command: "provider",
+    stage: null,
+    error: {
+      code: "MIGRATION_INPUT_INVALID",
+      message: "The legacy provider configuration is invalid.",
+      action: "Restore a complete legacy provider URL and credential before migrating.",
+      details: {}
+    }
+  });
+  assert.equal(spawnCalls, 1);
+  assert.equal(childUnrefCalls, 1);
+  assert.equal(channelUnrefCalls, 1);
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.ok(clock <= 100, `startup failure consumed ${clock} ms`);
+  assert.ok(waitCalls <= 1, `startup failure waited ${waitCalls} times`);
+  assert.equal(child.listenerCount("message"), 0);
+  assert.equal(child.listenerCount("error"), 1);
+  assert.equal(child.listenerCount("close"), 0);
+  assert.doesNotThrow(() => child.emit("error", new Error("late teardown error")));
+});
+
+test("detached startup monitor contains malformed child messages", async (t) => {
+  const secret = "malformed-startup-message-must-not-escape";
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  let child;
+  let clock = 0;
+
+  const failure = await ensureSupervisor({
+    paths,
+    adminPort: 15101,
+    spawnSupervisor: () => spawnDetachedSupervisor({
+      paths,
+      home: homeDir,
+      spawnImpl() {
+        child = new EventEmitter();
+        child.pid = 5001;
+        child.channel = { unref() {} };
+        child.unref = () => {};
+        child.kill = () => true;
+        queueMicrotask(() => child.emit("message", {
+          version: 1,
+          type: "startup-failed",
+          error: {
+            code: "MIGRATION_INPUT_INVALID",
+            message: secret,
+            action: "Restore a complete legacy provider URL and credential before migrating.",
+            status: 400,
+            details: {}
+          }
+        }));
+        return child;
+      }
+    }),
+    isProcessAlive: () => true,
+    fetchImpl: async () => assert.fail("malformed startup message must not reach Admin"),
+    now: () => clock,
+    wait: async (milliseconds) => { clock += milliseconds; },
+    timeoutMs: 8_000,
+    pollIntervalMs: 100
+  }).then(
+    () => null,
+    (error) => error
+  );
+
+  assertSecretAbsent(secret, { objects: [failure] });
+  assert.equal(failure?.code, "SUPERVISOR_START_FAILED");
+  assert.ok(clock <= 100, `malformed startup message consumed ${clock} ms`);
+  assert.equal(child.listenerCount("message"), 0);
+  assert.equal(child.listenerCount("error"), 1);
+  assert.equal(child.listenerCount("close"), 0);
+});
+
+test("detached child close before readiness returns a start failure", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  let child;
+  let clock = 0;
+
+  const failure = await ensureSupervisor({
+    paths,
+    adminPort: 15101,
+    spawnSupervisor: () => spawnDetachedSupervisor({
+      paths,
+      home: homeDir,
+      spawnImpl() {
+        child = new EventEmitter();
+        child.pid = 5002;
+        child.channel = { unref() {} };
+        child.unref = () => {};
+        child.kill = () => true;
+        queueMicrotask(() => child.emit("close", 1, null));
+        return child;
+      }
+    }),
+    isProcessAlive: () => true,
+    fetchImpl: async () => assert.fail("closed startup child must not reach Admin"),
+    now: () => clock,
+    wait: (milliseconds) => new Promise((resolvePromise) => {
+      setImmediate(() => {
+        clock += milliseconds;
+        resolvePromise();
+      });
+    }),
+    timeoutMs: 8_000,
+    pollIntervalMs: 100
+  }).then(
+    () => null,
+    (error) => error
+  );
+
+  assert.equal(failure?.code, "SUPERVISOR_START_FAILED");
+  assert.ok(clock <= 100, `closed startup child consumed ${clock} ms`);
+  assert.equal(child.listenerCount("message"), 0);
+  assert.equal(child.listenerCount("error"), 1);
+  assert.equal(child.listenerCount("close"), 0);
+});
+
+test("successful monitored supervisor discovery disposes startup IPC without killing child", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  let child;
+  let killCalls = 0;
+  let disconnectCalls = 0;
+
+  const context = await ensureSupervisor({
+    paths,
+    adminPort: 15101,
+    spawnSupervisor: () => spawnDetachedSupervisor({
+      paths,
+      home: homeDir,
+      spawnImpl() {
+        prepareSupervisorFiles(homeDir, { state: supervisorState(5003) });
+        child = new EventEmitter();
+        child.pid = 5003;
+        child.connected = true;
+        child.channel = { unref() {} };
+        child.unref = () => {};
+        child.disconnect = () => {
+          disconnectCalls += 1;
+          child.connected = false;
+        };
+        child.kill = () => { killCalls += 1; return true; };
+        return child;
+      }
+    }),
+    isProcessAlive: () => true,
+    fetchImpl: async () => new Response(JSON.stringify(adminStatus(5003)), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    })
+  });
+
+  assert.equal(context.spawned, true);
+  assert.equal(context.state.supervisorPid, 5003);
+  assert.equal(killCalls, 0);
+  assert.equal(disconnectCalls, 1);
+  assert.equal(child.listenerCount("message"), 0);
+  assert.equal(child.listenerCount("error"), 1);
+  assert.equal(child.listenerCount("close"), 0);
 });
 
 test("discovery timeout preserves an invalid state file", async (t) => {
