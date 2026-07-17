@@ -2189,7 +2189,13 @@ test("rejects a canonical SQLite inode replacement after open and before backup"
         assert.fail("An identity conflict must be rejected before config publication");
       }
     }),
-    (error) => assertSafeError(error, "CODEX_HISTORY_REPAIR_CONFLICT", harness)
+    (error) => assertSafeError(
+      error,
+      process.platform === "win32"
+        ? "CODEX_HISTORY_REPAIR_FAILED"
+        : "CODEX_HISTORY_REPAIR_CONFLICT",
+      harness
+    )
   );
 
   assert.equal(replaced, true);
