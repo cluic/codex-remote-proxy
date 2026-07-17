@@ -1645,7 +1645,11 @@ async function backupOpenDatabase(
     assertSafeDatabaseSidecars(candidate.path, fileOperations);
     const temp = fileOperations.lstatSync(tempPath);
     if (!temp.isFile() || temp.isSymbolicLink()) throw failed();
-    if (!sameIdentity(tempIdentity, identityOf(temp))) throw conflict();
+    if (!sameIdentity(tempIdentity, identityOf(temp))) {
+      // SQLite replaces the preallocated destination file on Windows.
+      if (process.platform !== "win32") throw conflict();
+      tempIdentity = identityOf(temp);
+    }
     const tempHash = sha256(readSafeFile(tempPath, fileOperations).bytes);
     fileOperations.chmodSync(tempPath, 0o600);
     let descriptor;
