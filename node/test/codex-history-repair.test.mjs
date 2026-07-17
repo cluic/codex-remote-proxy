@@ -2135,6 +2135,10 @@ test("updates only SQLite rows included in the completed online backup snapshot"
 });
 
 test("rejects a canonical SQLite inode replacement after open and before backup", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows prevents replacing an open SQLite database");
+    return;
+  }
   const harness = makeHarness("sqlite-open-identity");
   t.after(() => harness.cleanup());
   const sourceBytes = sourceConfig();
@@ -2146,13 +2150,6 @@ test("rejects a canonical SQLite inode replacement after open and before backup"
   ]);
   let openCalls = 0;
   let replaced = false;
-  const replacementIdentity = (stats) => {
-    const replacement = Object.create(stats);
-    Object.defineProperty(replacement, "ino", {
-      value: typeof stats.ino === "bigint" ? stats.ino + 1n : stats.ino + 1
-    });
-    return replacement;
-  };
 
   await assert.rejects(
     () => executeTransition(harness, sourceBytes, {
@@ -2162,12 +2159,10 @@ test("rejects a canonical SQLite inode replacement after open and before backup"
           openCalls += 1;
           const database = new DatabaseSync(path);
           if (openCalls === 2) {
-            if (process.platform !== "win32") {
-              realFileOperations.renameSync(databasePath, displacedPath);
-              createThreadsDatabase(databasePath, [
-                { id: "foreign", provider: "foreign", cwd: "/foreign", hasUserEvent: 0 }
-              ]);
-            }
+            realFileOperations.renameSync(databasePath, displacedPath);
+            createThreadsDatabase(databasePath, [
+              { id: "foreign", provider: "foreign", cwd: "/foreign", hasUserEvent: 0 }
+            ]);
             replaced = true;
           }
           return database;
@@ -2176,36 +2171,17 @@ test("rejects a canonical SQLite inode replacement after open and before backup"
           await sqliteBackup(database, destination);
         }
       },
-      fileOperations: {
-        ...realFileOperations,
-        lstatSync(path, ...args) {
-          const stats = realFileOperations.lstatSync(path, ...args);
-          return process.platform === "win32" && replaced && path === databasePath
-            ? replacementIdentity(stats)
-            : stats;
-        }
-      },
       publishConfig() {
         assert.fail("An identity conflict must be rejected before config publication");
       }
     }),
-    (error) => assertSafeError(
-      error,
-      process.platform === "win32"
-        ? "CODEX_HISTORY_REPAIR_FAILED"
-        : "CODEX_HISTORY_REPAIR_CONFLICT",
-      harness
-    )
+    (error) => assertSafeError(error, "CODEX_HISTORY_REPAIR_CONFLICT", harness)
   );
 
   assert.equal(replaced, true);
   assert.deepEqual(readFileSync(harness.configPath), sourceBytes);
-  if (process.platform === "win32") {
-    assert.equal(readThreads(databasePath)[0].id, "original");
-  } else {
-    assert.equal(readThreads(databasePath)[0].id, "foreign");
-    assert.equal(readThreads(displacedPath)[0].id, "original");
-  }
+  assert.equal(readThreads(databasePath)[0].id, "foreign");
+  assert.equal(readThreads(displacedPath)[0].id, "original");
   assert.equal(existsSync(pendingPath(harness.codexRoot)), false);
 });
 
