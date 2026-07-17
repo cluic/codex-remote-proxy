@@ -444,6 +444,10 @@ test("reports rollback degraded when a failed transaction lock cannot be release
 });
 
 test("rejects symlink legacy and registry paths without reading or replacing their targets", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows symlink creation requires Developer Mode or elevated privilege");
+    return;
+  }
   const secret = makeSecret();
   const harness = makeHarness(t, {
     upstreamBaseUrl: "https://legacy.example/v1",

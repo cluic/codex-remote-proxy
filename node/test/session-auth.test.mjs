@@ -277,6 +277,7 @@ test("rejects malformed, permissive, and symbolic-link control token files safel
     }]
   ]) {
     if (label === "permissive" && process.platform === "win32") continue;
+    if (label === "symlink" && process.platform === "win32") continue;
     const paths = makeTempAuth(t, `crp-session-${label}-`);
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
     prepare(paths);

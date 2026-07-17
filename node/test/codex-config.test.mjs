@@ -1139,7 +1139,11 @@ test("bootstrapCodexConfig rejects invalid UTF-8 before backup, journal, or conf
 });
 
 for (const replacementPhase of ["after-read", "after-backup"]) {
-  test(`bootstrapCodexConfig rejects a same-byte inode replacement ${replacementPhase}`, async () => {
+  test(`bootstrapCodexConfig rejects a same-byte inode replacement ${replacementPhase}`, async (t) => {
+    if (process.platform === "win32") {
+      t.skip("POSIX file identity semantics are required for this replacement-race fixture");
+      return;
+    }
     const homeDir = mkdtempSync(join(os.tmpdir(), `crp-codex-config-${replacementPhase}-`));
     const codexDir = join(homeDir, ".codex");
     const configPath = join(codexDir, "config.toml");

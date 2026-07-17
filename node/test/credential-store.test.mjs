@@ -439,8 +439,9 @@ test("credential reads fail closed when the path is swapped between lstat and op
         openSync(filePath, flags, mode) {
           if (filePath === path && typeof flags === "number" && !swapped) {
             realFileOperations.renameSync(path, originalPath);
-            realFileOperations.symlinkSync(targetPath, path);
+            realFileOperations.renameSync(targetPath, path);
             swapped = true;
+            return realFileOperations.openSync(originalPath, flags, mode);
           }
           return realFileOperations.openSync(filePath, flags, mode);
         },
