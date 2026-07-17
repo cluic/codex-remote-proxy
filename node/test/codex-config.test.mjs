@@ -485,7 +485,11 @@ test("bootstrapCodexConfig does not overwrite a config that appears during first
   }
 });
 
-test("bootstrapCodexConfig rejects a changed parent identity before publishing", async () => {
+test("bootstrapCodexConfig rejects a changed parent identity before publishing", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX file identity semantics are required for this parent-race fixture");
+    return;
+  }
   const homeDir = mkdtempSync(join(os.tmpdir(), "crp-codex-parent-race-"));
   const codexDir = join(homeDir, ".codex");
   const configPath = join(codexDir, "config.toml");
