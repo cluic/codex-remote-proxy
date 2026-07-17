@@ -226,34 +226,23 @@ async function executeTransition(harness, sourceBytes, {
   assertConfigLock,
   id = "op-test-001"
 } = {}) {
-  try {
-    return await runCodexHistoryRepairTransition({
-      codexRoot: harness.codexRoot,
-      currentConfigBytes,
-      targetConfigBytes,
-      transition,
-      publishConfig: publishConfig ?? ((bytes) => {
-        writeFileSync(harness.configPath, bytes);
-        return { changed: true };
-      }),
-      fileOperations,
-      databaseOperations,
-      beforeJournalPublish,
-      beforePendingClear,
-      assertConfigLock,
-      now: () => "2026-07-16T12:00:00.000Z",
-      createId: () => id
-    });
-  } catch (error) {
-    if (process.platform === "win32" && error?.code === "CODEX_HISTORY_REPAIR_FAILED") {
-      console.error("windows-history-repair-cause", JSON.stringify({
-        name: error.cause?.name ?? null,
-        code: error.cause?.code ?? null,
-        syscall: error.cause?.syscall ?? null
-      }));
-    }
-    throw error;
-  }
+  return runCodexHistoryRepairTransition({
+    codexRoot: harness.codexRoot,
+    currentConfigBytes,
+    targetConfigBytes,
+    transition,
+    publishConfig: publishConfig ?? ((bytes) => {
+      writeFileSync(harness.configPath, bytes);
+      return { changed: true };
+    }),
+    fileOperations,
+    databaseOperations,
+    beforeJournalPublish,
+    beforePendingClear,
+    assertConfigLock,
+    now: () => "2026-07-16T12:00:00.000Z",
+    createId: () => id
+  });
 }
 
 function pendingPath(codexRoot) {
