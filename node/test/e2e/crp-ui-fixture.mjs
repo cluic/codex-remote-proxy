@@ -12,6 +12,41 @@ import { CrpError } from "../../src/shared/errors.mjs";
 
 const REPO_UI_ROOT = resolve(import.meta.dirname, "../../ui");
 const STARTED_AT = "2026-07-13T08:00:00.000Z";
+const MODEL_CATALOG_FETCHED_AT = "2026-07-13T08:15:00.000Z";
+const MODEL_CATALOG_EXPIRES_AT = "2026-07-14T08:15:00.000Z";
+
+function emptyMetrics(window = "24h") {
+  return {
+    window,
+    bucketMinutes: 60,
+    storageState: "ready",
+    summary: {
+      requests: 0,
+      results: {
+        success: 0,
+        upstreamRejected: 0,
+        upstreamError: 0,
+        timeout: 0,
+        networkError: 0,
+        clientAbort: 0
+      },
+      tokens: { input: 0, output: 0, observedRequests: 0 },
+      latency: { p50UpperBoundMs: null, p95UpperBoundMs: null, overflowRequests: 0 },
+      responseStart: { p50UpperBoundMs: null, p95UpperBoundMs: null, overflowRequests: 0 }
+    },
+    series: [],
+    providers: [],
+    providerOtherRequests: 0,
+    models: [],
+    modelOtherRequests: 0,
+    dataQuality: {
+      unknownModelRequests: 0,
+      modelOverflowRequests: 0,
+      providerOverflowRequests: 0,
+      droppedObservations: 0
+    }
+  };
+}
 
 function publicProvider(input = {}, index = 0) {
   const now = `2026-07-13T08:0${index}:00.000Z`;
@@ -24,12 +59,12 @@ function publicProvider(input = {}, index = 0) {
     extraHeaders: input.extraHeaders ?? {},
     modelMode: input.modelMode ?? "passthrough",
     modelOverride: input.modelOverride ?? null,
-    lastTestAt: input.lastTestAt ?? now,
+    lastTestAt: Object.hasOwn(input, "lastTestAt") ? input.lastTestAt : now,
     lastTestStatus: input.lastTestStatus ?? "passed",
-    lastTestCode: input.lastTestCode ?? null,
+    lastTestCode: Object.hasOwn(input, "lastTestCode") ? input.lastTestCode : null,
     createdAt: input.createdAt ?? now,
     updatedAt: input.updatedAt ?? now,
-    credentialConfigured: true
+    credentialConfigured: input.credentialConfigured ?? true
   };
 }
 
@@ -48,6 +83,7 @@ function stoppedWorker(generation = 0) {
 function createServices({ upstream }) {
   const calls = [];
   const credentials = new Map();
+  const modelCatalogs = new Map();
   const state = {
     providers: [],
     activeProviderId: null,
@@ -60,11 +96,14 @@ function createServices({ upstream }) {
     codex: {
       configured: false,
       modelProvider: null,
-      proxyUrl: null
+      proxyUrl: null,
+      historyRepairPending: false
     },
     bootstrapCount: 0,
     activities: [],
-    diagnostics: null
+    diagnostics: null,
+    metrics: emptyMetrics(),
+    metricsByWindow: new Map()
   };
 
   function addActivity(category, action, providerId, result = "success", errorCode = null) {
@@ -107,6 +146,7 @@ function createServices({ upstream }) {
       assert.ok(credential.length > 0);
       calls.push({
         operation: "createProvider",
+        input: structuredClone(input),
         credentialLength: credential.length
       });
       const provider = publicProvider({
@@ -153,6 +193,7 @@ function createServices({ upstream }) {
       ];
       const operationalChange = replacementCredential !== undefined
         || invalidatingFields.some((field) => JSON.stringify(provider[field]) !== JSON.stringify(patch[field]));
+      if (operationalChange) modelCatalogs.delete(id);
       Object.assign(provider, patch, {
         updatedAt: "2026-07-13T08:30:00.000Z",
         ...(!operationalChange ? {} : {
@@ -178,15 +219,53 @@ function createServices({ upstream }) {
       if (index === -1) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
       const [deleted] = state.providers.splice(index, 1);
       credentials.delete(id);
+      modelCatalogs.delete(id);
       calls.push({ operation: "deleteProvider", id });
       addActivity("provider", "delete", id);
       return structuredClone(deleted);
     },
-    async testProvider(id, model) {
-      assert.ok(model.trim().length > 0);
+    async getProviderModels(id) {
       const provider = state.providers.find((item) => item.id === id);
       if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
-      calls.push({ operation: "testProvider", id, model });
+      calls.push({ operation: "getProviderModels", id });
+      return structuredClone(modelCatalogs.get(id) ?? {
+        providerId: id,
+        state: "missing",
+        fetchedAt: null,
+        expiresAt: null,
+        models: []
+      });
+    },
+    async refreshProviderModels(id) {
+      rejectNextMutation("refreshProviderModels");
+      const provider = state.providers.find((item) => item.id === id);
+      if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
+      const modelCatalog = {
+        providerId: id,
+        state: "fresh",
+        fetchedAt: MODEL_CATALOG_FETCHED_AT,
+        expiresAt: MODEL_CATALOG_EXPIRES_AT,
+        models: ["gpt-5.1-codex-mini", "fixture-model"]
+      };
+      modelCatalogs.set(id, modelCatalog);
+      calls.push({ operation: "refreshProviderModels", id });
+      addActivity("provider", "models", id);
+      return structuredClone(modelCatalog);
+    },
+    async testProvider(id, model, { activateIfNone = false } = {}) {
+      assert.ok(model.trim().length > 0);
+      assert.equal(typeof activateIfNone, "boolean");
+      const provider = state.providers.find((item) => item.id === id);
+      if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
+      if (activateIfNone && state.activeProviderId === null && state.worker.phase !== "stopped") {
+        throw new CrpError(
+          "PROVIDER_INITIAL_ACTIVATION_UNSAFE",
+          "The initial provider cannot be selected while the worker is running.",
+          "Stop the worker and try again.",
+          { status: 409 }
+        );
+      }
+      calls.push({ operation: "testProvider", id, model, activateIfNone });
       const target = new URL("responses", provider.baseUrl.endsWith("/")
         ? provider.baseUrl
         : `${provider.baseUrl}/`);
@@ -235,7 +314,13 @@ function createServices({ upstream }) {
       provider.lastTestStatus = code === null ? "passed" : "failed";
       provider.lastTestCode = code;
       addActivity("provider", "test", id, code === null ? "success" : "failed", code);
-      return { ok: code === null, code };
+      let initialActivation = null;
+      if (code === null && activateIfNone && state.activeProviderId === null) {
+        state.activeProviderId = id;
+        initialActivation = { automatic: true, activeProviderId: id, workerStarted: false };
+        addActivity("provider", "activate", id);
+      }
+      return { ok: code === null, code, initialActivation };
     },
     async activate(id) {
       rejectNextMutation("activate");
@@ -251,9 +336,31 @@ function createServices({ upstream }) {
       }
       state.activeProviderId = id;
       state.generation += 1;
-      state.worker.generation = state.generation;
-      if (state.worker.state) state.worker.state.generation = state.generation;
-      calls.push({ operation: "activate", id, generation: state.generation });
+      const workerStarted = state.worker.phase === "stopped";
+      if (workerStarted) {
+        const pid = state.nextWorkerPid++;
+        state.worker = {
+          phase: "running",
+          pid,
+          generation: state.generation,
+          state: {
+            phase: "running",
+            configured: true,
+            generation: state.generation,
+            listening: true,
+            listenHost: "127.0.0.1",
+            listenPort: 15100,
+            inFlight: 0
+          },
+          restartCount: 0,
+          startedAt: "2026-07-13T08:25:00.000Z",
+          error: null
+        };
+      } else {
+        state.worker.generation = state.generation;
+        if (state.worker.state) state.worker.state.generation = state.generation;
+      }
+      calls.push({ operation: "activate", id, generation: state.generation, workerStarted });
       addActivity("provider", "activate", id);
       return {
         activeProviderId: id,
@@ -340,10 +447,29 @@ function createServices({ upstream }) {
     seedCredential(id, credential) {
       credentials.set(id, credential);
     },
+    resetModelCatalogs() {
+      modelCatalogs.clear();
+    },
+    seedModelCatalog(id, input = {}) {
+      modelCatalogs.set(id, {
+        providerId: id,
+        state: input.state ?? "fresh",
+        fetchedAt: Object.hasOwn(input, "fetchedAt") ? input.fetchedAt : MODEL_CATALOG_FETCHED_AT,
+        expiresAt: Object.hasOwn(input, "expiresAt") ? input.expiresAt : MODEL_CATALOG_EXPIRES_AT,
+        models: structuredClone(input.models ?? ["gpt-5.1-codex-mini", "fixture-model"])
+      });
+    },
     providerService,
     activityStore: {
       list({ limit }) {
         return structuredClone(state.activities.slice(0, limit));
+      }
+    },
+    metricsService: {
+      getOverview({ window }) {
+        calls.push({ operation: "getMetrics", window });
+        const metrics = state.metricsByWindow.get(window) ?? state.metrics;
+        return structuredClone({ ...metrics, window });
       }
     },
     settingsService: {
@@ -364,10 +490,25 @@ function createServices({ upstream }) {
         state.codex = {
           configured: true,
           modelProvider: "OpenAI",
-          proxyUrl: "http://127.0.0.1:15100"
+          proxyUrl: "http://127.0.0.1:15100",
+          historyRepairPending: false
         };
         calls.push({ operation: "bootstrap", count: state.bootstrapCount });
-        return { changed: state.bootstrapCount === 1, backupPath: "/sanitized/backup" };
+        return {
+          changed: state.bootstrapCount === 1,
+          backupPath: "/sanitized/backup",
+          historyRepair: {
+            required: false,
+            completed: false,
+            resumed: false,
+            backupCreated: false,
+            rolloutFiles: 0,
+            rolloutRecords: 0,
+            sqliteFiles: 0,
+            sqliteRows: 0,
+            encryptedContentDetected: false
+          }
+        };
       },
       async getStatus() {
         return structuredClone(state.codex);
@@ -530,7 +671,7 @@ async function cleanupFixtureResources(resources, { throwOnError = true } = {}) 
   return errors;
 }
 
-async function createFixtureHarness({ failAt = null, onResource = () => {} } = {}) {
+export async function createFixtureHarness({ failAt = null, onResource = () => {} } = {}) {
   const resources = { tempRoot: null, upstream: null, auth: null, admin: null };
   try {
     resources.tempRoot = mkdtempSync(join(os.tmpdir(), "crp-ui-e2e-"));
@@ -606,18 +747,23 @@ async function createFixtureHarness({ failAt = null, onResource = () => {} } = {
         services.state.nextMutationError = { code, status, details };
       },
       seedProviders({ providers, activeProviderId = null, generation = 4 } = {}) {
+        services.resetModelCatalogs();
         services.state.providers = providers.map((provider, index) => publicProvider({
           baseUrl: `${resources.upstream.origin}/v1`,
           ...provider
         }, index));
-        for (const provider of services.state.providers) services.seedCredential(provider.id, "seed-credential");
+        for (const provider of services.state.providers) {
+          if (provider.credentialConfigured) services.seedCredential(provider.id, "seed-credential");
+        }
         services.state.activeProviderId = activeProviderId;
         services.state.generation = generation;
         services.state.codex = {
           configured: true,
           modelProvider: "OpenAI",
-          proxyUrl: "http://127.0.0.1:15100"
+          proxyUrl: "http://127.0.0.1:15100",
+          historyRepairPending: false
         };
+        services.state.worker = stoppedWorker(generation);
         if (activeProviderId) {
           services.state.worker = {
             phase: "running",
@@ -637,6 +783,93 @@ async function createFixtureHarness({ failAt = null, onResource = () => {} } = {
             error: null
           };
         }
+        const primary = services.state.providers[0]?.id ?? "unknown";
+        const secondary = services.state.providers[1]?.id ?? null;
+        const providerMetrics = [
+          {
+            providerId: primary,
+            requests: secondary ? 82 : 128,
+            successfulRequests: secondary ? 78 : 119,
+            tokens: {
+              input: secondary ? 530000 : 842000,
+              output: secondary ? 142000 : 214000,
+              observedRequests: secondary ? 64 : 96
+            },
+            latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 2500, overflowRequests: 0 }
+          },
+          ...(secondary ? [{
+            providerId: secondary,
+            requests: 46,
+            successfulRequests: 41,
+            tokens: { input: 312000, output: 72000, observedRequests: 32 },
+            latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 5000, overflowRequests: 0 }
+          }] : [])
+        ];
+        services.state.metrics = {
+          ...emptyMetrics(),
+          summary: {
+            requests: 128,
+            results: {
+              success: 119,
+              upstreamRejected: 3,
+              upstreamError: 2,
+              timeout: 1,
+              networkError: 1,
+              clientAbort: 2
+            },
+            tokens: { input: 842000, output: 214000, observedRequests: 96 },
+            latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 5000, overflowRequests: 0 },
+            responseStart: { p50UpperBoundMs: 250, p95UpperBoundMs: 1000, overflowRequests: 0 }
+          },
+          series: Array.from({ length: 24 }, (_, index) => ({
+            start: new Date(Date.parse(STARTED_AT) + index * 60 * 60 * 1_000).toISOString(),
+            requests: 3 + (index % 7),
+            results: {
+              success: 3 + (index % 5),
+              upstreamRejected: index % 6 === 0 ? 1 : 0,
+              upstreamError: index % 8 === 0 ? 1 : 0,
+              timeout: 0,
+              networkError: 0,
+              clientAbort: index % 11 === 0 ? 1 : 0
+            },
+            tokens: {
+              input: 12000 + index * 900,
+              output: 4000 + index * 300,
+              observedRequests: 3 + (index % 4)
+            }
+          })),
+          providers: providerMetrics,
+          models: [
+            {
+              model: "gpt-5.1-codex-mini",
+              requests: 88,
+              tokens: { input: 588000, output: 151000, observedRequests: 67 }
+            },
+            {
+              model: "gpt-4.1",
+              requests: 40,
+              tokens: { input: 254000, output: 63000, observedRequests: 29 }
+            }
+          ]
+        };
+        services.state.metricsByWindow.clear();
+      },
+      emptyMetrics(window = "24h") {
+        return structuredClone(emptyMetrics(window));
+      },
+      setMetrics(metrics, { window = null } = {}) {
+        const next = structuredClone(metrics);
+        if (window === null) {
+          services.state.metrics = next;
+          services.state.metricsByWindow.clear();
+          return;
+        }
+        assert.ok(window === "24h" || window === "7d", "metrics window must be supported");
+        services.state.metricsByWindow.set(window, next);
+      },
+      seedProviderModels(id, input = {}) {
+        assert.ok(services.state.providers.some((provider) => provider.id === id), "provider must exist");
+        services.seedModelCatalog(id, input);
       },
       setInFlight(count) {
         assert.ok(services.state.worker.state, "a running worker is required");
@@ -751,7 +984,11 @@ export const test = base.extend({
       pending.add(promise);
       void promise.finally(() => pending.delete(promise));
     };
-    const onConsole = (message) => records.push({ type: "console", text: message.text() });
+    const onConsole = (message) => records.push({
+      type: "console",
+      level: message.type(),
+      text: message.text()
+    });
     const onPageError = (error) => records.push({ type: "pageerror", text: error.stack ?? error.message });
     const onRequest = (request) => {
       const url = new URL(request.url());
@@ -769,7 +1006,8 @@ export const test = base.extend({
       const task = response.body().then((bytes) => {
         const rawBytes = Buffer.from(bytes);
         const allowedSecrets = new Set();
-        if (url.pathname === "/api/v1/session" && response.status() === 200) {
+        if ((url.pathname === "/api/v1/session" || url.pathname === "/api/v1/session/resume")
+          && response.status() === 200) {
           try {
             const payload = JSON.parse(rawBytes.toString("utf8"));
             if (typeof payload?.csrfToken === "string" && payload.csrfToken.length > 0) {
@@ -809,6 +1047,12 @@ export const test = base.extend({
       },
       async flush() {
         while (pending.size > 0) await Promise.allSettled([...pending]);
+      },
+      unexpectedClientErrors() {
+        return records.filter((record) => record.type === "pageerror" && record.text.trim().length > 0
+          || record.type === "console" && record.level === "error"
+            && record.text.trim().length > 0
+            && !record.text.startsWith("Failed to load resource:"));
       }
     };
     try {
@@ -816,6 +1060,7 @@ export const test = base.extend({
     } finally {
       await crp.collectors.flush();
       await assertNoSecrets(page, crp);
+      expect(crp.collectors.unexpectedClientErrors()).toEqual([]);
       page.off("console", onConsole);
       page.off("pageerror", onPageError);
       page.off("request", onRequest);
@@ -938,14 +1183,19 @@ export async function assertLayoutIntegrity(page) {
   const result = await page.evaluate(() => {
     const viewport = { width: innerWidth, height: innerHeight };
     const candidates = Array.from(document.querySelectorAll(
-      "h1, h2, h3, button, select, label, .eyebrow, .metric-label, [data-i18n], "
-        + ".activity-row > *, .provider-row > *, .setting-row > *, .status-band > *, "
-        + ".provider-band > *, .page-heading-actions > *, .topbar-actions > *"
+      "h1, h2, h3, button, input, select, textarea, label, .setup-eyebrow, "
+        + ".page-header > *, .runtime-facts > *, .metric-card, .section-heading > *, "
+        + ".provider-card-header > *, .provider-card-actions > *, .activity-event summary > *, "
+        + ".setup-progress li, .setup-stage-actions > *, .pagination > *, .topbar-actions > *, "
+        + ".modal-footer > *"
     )).filter((element) => {
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
-      return !element.matches(".visually-hidden")
+      const sidebar = element.closest(".sidebar");
+      return !element.closest(".visually-hidden")
         && !element.closest("[hidden]")
+        && !element.closest("dialog:not([open])")
+        && !(innerWidth <= 840 && sidebar && !sidebar.classList.contains("sidebar-open"))
         && style.visibility !== "hidden" && style.display !== "none"
         && rect.width > 0 && rect.height > 0;
     });
@@ -986,13 +1236,38 @@ export async function assertLayoutIntegrity(page) {
         }
       }
     }
+    const overflowSources = Array.from(document.querySelectorAll("body *")).filter((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const sidebar = element.closest(".sidebar");
+      return style.display !== "none" && style.visibility !== "hidden"
+        && !element.closest(".visually-hidden")
+        && !element.closest("dialog:not([open])")
+        && !element.closest(".table-scroll")
+        && !(innerWidth <= 840 && sidebar && !sidebar.classList.contains("sidebar-open"))
+        && rect.width > 0 && (rect.left < -0.5 || rect.right > innerWidth + 0.5);
+    }).slice(0, 12).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        tag: element.tagName,
+        className: typeof element.className === "string" ? element.className : "",
+        text: element.textContent.trim().slice(0, 60),
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        width: Math.round(rect.width)
+      };
+    });
     return {
       documentOverflow: document.documentElement.scrollWidth > innerWidth,
       clipped,
-      overlaps
+      overlaps,
+      overflowSources
     };
   });
-  expect(result.documentOverflow).toBe(false);
-  expect(result.clipped).toEqual([]);
-  expect(result.overlaps).toEqual([]);
+  expect(result).toEqual({
+    documentOverflow: false,
+    clipped: [],
+    overlaps: [],
+    overflowSources: []
+  });
 }

@@ -1,7 +1,16 @@
 {
   "name": "@cluic/codex-remote-proxy",
   "version": "0.2.2",
-  "description": "Node.js local proxy for Codex remote ChatGPT login patch",
+  "description": "Local supervisor and Web UI for routing Codex through OpenAI-compatible providers while preserving ChatGPT sign-in",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "openai",
+    "chatgpt",
+    "proxy",
+    "cli",
+    "provider"
+  ],
   "type": "module",
   "repository": {
     "type": "git",
@@ -26,7 +35,11 @@
     "check": "node bin/crp.mjs check",
     "status": "node bin/crp.mjs status",
     "guide": "node bin/crp.mjs guide",
+    "dev:cli": "node bin/crp.mjs",
     "lint": "node scripts/check-source.mjs",
+    "build:ui": "vite build --config vite.config.mjs",
+    "typecheck:ui": "tsc -p tsconfig.ui.json",
+    "verify:ui-build": "node scripts/verify-ui-build.mjs",
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-test-group.mjs unit",
     "test:integration": "node scripts/run-test-group.mjs integration",
@@ -48,6 +61,14 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
-    "@playwright/test": "1.61.1"
+    "@playwright/test": "1.61.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "typescript": "7.0.2",
+    "vite": "8.1.5"
   }
 }

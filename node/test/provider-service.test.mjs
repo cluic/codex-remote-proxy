@@ -6,7 +6,7 @@ import os from "node:os";
 import { join } from "node:path";
 
 import { ProviderRegistry } from "../src/providers/provider-registry.mjs";
-import { CrpError } from "../src/shared/errors.mjs";
+import { CrpError, toPublicError } from "../src/shared/errors.mjs";
 import { ProviderService } from "../src/supervisor/provider-service.mjs";
 
 const NOW = "2026-07-13T02:00:00.000Z";
@@ -60,6 +60,56 @@ class MemoryActivity {
 
   append(event) {
     this.events.push(structuredClone(event));
+  }
+}
+
+class MemoryModelCache {
+  constructor() {
+    this.entries = new Map();
+    this.getCalls = [];
+    this.putCalls = [];
+    this.deleteCalls = [];
+  }
+
+  get(providerId, sourceFingerprint) {
+    this.getCalls.push([providerId, sourceFingerprint]);
+    const entry = this.entries.get(providerId);
+    if (!entry || entry.sourceFingerprint !== sourceFingerprint) {
+      return {
+        providerId,
+        state: "missing",
+        fetchedAt: null,
+        expiresAt: null,
+        models: []
+      };
+    }
+    const { sourceFingerprint: _privateFingerprint, ...catalog } = entry;
+    return structuredClone(catalog);
+  }
+
+  put(entry) {
+    this.putCalls.push(structuredClone(entry));
+    const catalog = {
+      providerId: entry.providerId,
+      state: "fresh",
+      fetchedAt: entry.fetchedAt,
+      expiresAt: new Date(Date.parse(entry.fetchedAt) + 24 * 60 * 60 * 1_000).toISOString(),
+      models: [...entry.models]
+    };
+    this.entries.set(entry.providerId, {
+      ...structuredClone(catalog),
+      sourceFingerprint: entry.sourceFingerprint
+    });
+    return structuredClone(catalog);
+  }
+
+  delete(providerId) {
+    this.deleteCalls.push(providerId);
+    return this.entries.delete(providerId);
+  }
+
+  seed(entry) {
+    this.entries.set(entry.providerId, structuredClone(entry));
   }
 }
 
@@ -134,12 +184,14 @@ function makeHarness(t, overrides = {}) {
   const credentials = new MemoryCredentials();
   const activity = new MemoryActivity();
   const workerManager = new FakeWorkerManager();
+  const modelCache = overrides.modelCache ?? new MemoryModelCache();
   let credentialIndex = 0;
   const service = new ProviderService({
     registry,
     credentialStore: credentials,
     activityStore: activity,
     workerManager,
+    modelCache,
     now: () => NOW,
     createCredentialRef: () => `credential-${++credentialIndex}`,
     createTimeoutSignal: () => ({ aborted: false }),
@@ -150,7 +202,7 @@ function makeHarness(t, overrides = {}) {
     ...overrides
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { root, registry, credentials, activity, workerManager, service };
+  return { root, registry, credentials, activity, workerManager, modelCache, service };
 }
 
 function compatibleResponse() {
@@ -163,11 +215,21 @@ function compatibleResponse() {
   };
 }
 
-function committedError(code) {
+function modelListResponse(models, { status = 200, payload } = {}) {
+  return new Response(JSON.stringify(payload ?? {
+    object: "list",
+    data: models.map((id) => ({ id, object: "model", owned_by: "test" }))
+  }), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+function committedError(code, action = "Repair the residual state.") {
   return new CrpError(
     code,
     "Committed operation degraded.",
-    "Repair the residual state.",
+    action,
     { details: { committed: true } }
   );
 }
@@ -476,7 +538,7 @@ test("testProvider sends the fixed Responses request and classifies stable failu
   const secret = makeSecret();
   const requests = [];
   let nextFetch = async () => compatibleResponse();
-  const { service, credentials } = makeHarness(t, {
+  const { service, registry, credentials, workerManager } = makeHarness(t, {
     fetchImpl: async (...args) => {
       requests.push(args);
       return nextFetch(...args);
@@ -491,7 +553,8 @@ test("testProvider sends the fixed Responses request and classifies stable failu
 
   assert.deepEqual(await service.testProvider(provider.id, "model-test"), {
     ok: true,
-    code: null
+    code: null,
+    initialActivation: null
   });
   const [url, options] = requests.at(-1);
   assert.equal(url, "https://provider.example/v1/responses");
@@ -505,6 +568,8 @@ test("testProvider sends the fixed Responses request and classifies stable failu
   assert.equal(options.headers["x-provider-auth"], `Token ${secret}`);
   assert.equal(options.headers["x-region"], "test");
   assert.ok(options.signal);
+  assert.equal(registry.getDocument().activeProviderId, null);
+  assert.deepEqual(workerManager.calls, []);
 
   const scenarios = [
     ["PROVIDER_TEST_DNS", async () => { const error = new Error("private dns"); error.code = "ENOTFOUND"; throw error; }],
@@ -521,7 +586,8 @@ test("testProvider sends the fixed Responses request and classifies stable failu
     nextFetch = fetchScenario;
     assert.deepEqual(await service.testProvider(provider.id, "model-test"), {
       ok: false,
-      code
+      code,
+      initialActivation: null
     });
   }
 
@@ -565,12 +631,465 @@ test("never follows a redirect or forwards custom authentication to a second ori
 
   assert.deepEqual(await service.testProvider(provider.id, "model-test"), {
     ok: false,
-    code: "PROVIDER_TEST_REDIRECT"
+    code: "PROVIDER_TEST_REDIRECT",
+    initialActivation: null
   });
   assert.equal(firstRequests.length, 1);
   assert.equal(firstRequests[0].headers["x-private-auth"], `Token ${secret}`);
   assert.equal(secondRequests.length, 0);
   assert.equal(JSON.stringify(activity.events).includes(secret), false);
+});
+
+test("model discovery reads cache and refreshes a bounded authenticated catalog without lifecycle changes", async (t) => {
+  const secret = makeSecret("models");
+  const requests = [];
+  const harness = makeHarness(t, {
+    fetchImpl: async (...args) => {
+      requests.push(args);
+      return modelListResponse(["model-b", "model-a", "model-b"], { status: 206 });
+    }
+  });
+  const { service, registry, workerManager, modelCache } = harness;
+  const provider = await service.createProvider({
+    ...providerInput("Models", "https://provider.example/root/v1"),
+    authHeader: "x-provider-auth",
+    authScheme: "Token",
+    extraHeaders: { "x-region": "test" }
+  }, secret);
+  const before = registry.getDocument();
+
+  assert.deepEqual(await service.getProviderModels(provider.id), {
+    providerId: provider.id,
+    state: "missing",
+    fetchedAt: null,
+    expiresAt: null,
+    models: []
+  });
+  const refreshed = await service.refreshProviderModels(provider.id);
+  assert.deepEqual(refreshed, {
+    providerId: provider.id,
+    state: "fresh",
+    fetchedAt: NOW,
+    expiresAt: "2026-07-14T02:00:00.000Z",
+    models: ["model-b", "model-a"]
+  });
+  assert.deepEqual(await service.getProviderModels(provider.id), refreshed);
+
+  const [url, options] = requests[0];
+  assert.equal(url, "https://provider.example/root/v1/models");
+  assert.equal(options.method, "GET");
+  assert.equal(options.redirect, "manual");
+  assert.equal(options.body, undefined);
+  assert.equal(options.headers["x-provider-auth"], `Token ${secret}`);
+  assert.equal(options.headers["x-region"], "test");
+  assert.ok(options.signal);
+  assert.equal(modelCache.putCalls.length, 1);
+  assert.equal(typeof modelCache.putCalls[0].sourceFingerprint, "string");
+  assert.notEqual(modelCache.putCalls[0].sourceFingerprint.length, 0);
+  assert.equal(modelCache.putCalls[0].sourceFingerprint.includes(secret), false);
+  assert.deepEqual(modelCache.putCalls[0].models, ["model-b", "model-a"]);
+  assert.deepEqual(registry.getDocument(), before);
+  assert.deepEqual(workerManager.calls, []);
+});
+
+test("model refresh classifies failures, enforces bounds, and preserves the last good cache", async (t) => {
+  const secret = makeSecret("models-failure");
+  let nextFetch;
+  const harness = makeHarness(t, {
+    fetchImpl: async () => await nextFetch()
+  });
+  const { service, registry, workerManager, modelCache } = harness;
+  const provider = await service.createProvider(providerInput(), secret);
+  await service.getProviderModels(provider.id);
+  const sourceFingerprint = modelCache.getCalls.at(-1)[1];
+  const stale = {
+    providerId: provider.id,
+    sourceFingerprint,
+    state: "stale",
+    fetchedAt: "2026-07-11T00:00:00.000Z",
+    expiresAt: "2026-07-12T00:00:00.000Z",
+    models: ["last-good-model"]
+  };
+  modelCache.seed(stale);
+  const before = registry.getDocument();
+  const tooMany = Array.from({ length: 2_001 }, (_, index) => `model-${index}`);
+  const tooLong = "m".repeat(257);
+  const oversizedBody = JSON.stringify({
+    object: "list",
+    data: [{ id: "m".repeat(1_048_576), object: "model" }]
+  });
+  const scenarios = [
+    ["PROVIDER_MODELS_REDIRECT", async () => new Response(null, { status: 302 })],
+    ["PROVIDER_MODELS_AUTH", async () => new Response(null, { status: 401 })],
+    ["PROVIDER_MODELS_NOT_FOUND", async () => new Response(null, { status: 404 })],
+    ["PROVIDER_MODELS_HTTP", async () => new Response(null, { status: 503 })],
+    ["PROVIDER_MODELS_INVALID_JSON", async () => new Response("{", { status: 200 })],
+    ["PROVIDER_MODELS_INVALID_RESPONSE", async () => modelListResponse([], {
+      payload: { object: "list", data: [{ object: "model" }] }
+    })],
+    ["PROVIDER_MODELS_INVALID_RESPONSE", async () => modelListResponse([tooLong])],
+    ["PROVIDER_MODELS_INVALID_RESPONSE", async () => modelListResponse(tooMany)],
+    ["PROVIDER_MODELS_RESPONSE_TOO_LARGE", async () => new Response(oversizedBody, { status: 200 })],
+    ["PROVIDER_MODELS_DNS", async () => { const error = new Error(secret); error.code = "ENOTFOUND"; throw error; }],
+    ["PROVIDER_MODELS_TLS", async () => { const error = new Error(secret); error.code = "CERT_HAS_EXPIRED"; throw error; }],
+    ["PROVIDER_MODELS_TIMEOUT", async () => { const error = new Error(secret); error.name = "TimeoutError"; throw error; }],
+    ["PROVIDER_MODELS_NETWORK", async () => { throw new Error(secret); }]
+  ];
+
+  for (const [code, fetchScenario] of scenarios) {
+    nextFetch = fetchScenario;
+    await assert.rejects(
+      () => service.refreshProviderModels(provider.id),
+      (error) => error?.code === code
+    );
+    const cached = await service.getProviderModels(provider.id);
+    assert.deepEqual(cached, {
+      providerId: provider.id,
+      state: "stale",
+      fetchedAt: stale.fetchedAt,
+      expiresAt: stale.expiresAt,
+      models: stale.models
+    });
+  }
+  assert.equal(modelCache.putCalls.length, 0);
+  assert.deepEqual(registry.getDocument(), before);
+  assert.deepEqual(workerManager.calls, []);
+});
+
+test("model refresh reports committed degradation when Activity fails after the cache commit", async (t) => {
+  let fetchCalls = 0;
+  const { service, activity, modelCache } = makeHarness(t, {
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return modelListResponse(["model-a", "model-b"]);
+    }
+  });
+  const provider = await service.createProvider(
+    providerInput(),
+    makeSecret("models-committed")
+  );
+  const originalAppend = activity.append.bind(activity);
+  activity.append = () => {
+    throw new Error("forced Activity append failure after model cache commit");
+  };
+
+  const failure = await service.refreshProviderModels(provider.id).then(
+    () => null,
+    (error) => error
+  );
+
+  assert.notEqual(failure?.code, "PROVIDER_MODELS_NETWORK");
+  assert.equal(failure?.code, "PROVIDER_MODELS_COMMITTED_DEGRADED");
+  assert.deepEqual(failure?.details, { committed: true, degraded: true });
+  assert.equal(modelCache.putCalls.length, 1);
+  assert.deepEqual(await service.getProviderModels(provider.id), {
+    providerId: provider.id,
+    state: "fresh",
+    fetchedAt: NOW,
+    expiresAt: "2026-07-14T02:00:00.000Z",
+    models: ["model-a", "model-b"]
+  });
+  assert.equal(fetchCalls, 1);
+  await service.getProviderModels(provider.id);
+  assert.equal(fetchCalls, 1);
+  activity.append = originalAppend;
+});
+
+test("model refresh preserves cache-lock repair guidance after a committed cache put", async (t) => {
+  const cacheRepairAction = "Stop CRP, repair the residual model-cache lock, then restart CRP.";
+  const { service, modelCache } = makeHarness(t, {
+    fetchImpl: async () => modelListResponse(["model-a"])
+  });
+  const provider = await service.createProvider(
+    providerInput(),
+    makeSecret("models-cache-lock")
+  );
+  const originalPut = modelCache.put.bind(modelCache);
+  modelCache.put = (entry) => {
+    originalPut(entry);
+    throw committedError(
+      "PROVIDER_MODEL_CACHE_COMMITTED_LOCK_DEGRADED",
+      cacheRepairAction
+    );
+  };
+
+  const failure = await service.refreshProviderModels(provider.id).then(
+    () => null,
+    (error) => error
+  );
+
+  assert.equal(failure?.code, "PROVIDER_MODELS_COMMITTED_DEGRADED");
+  assert.deepEqual(failure?.details, { committed: true, degraded: true });
+  assert.equal(failure?.action, cacheRepairAction);
+  assert.doesNotMatch(failure?.action ?? "", /Activity/i);
+  assert.deepEqual(await service.getProviderModels(provider.id), {
+    providerId: provider.id,
+    state: "fresh",
+    fetchedAt: NOW,
+    expiresAt: "2026-07-14T02:00:00.000Z",
+    models: ["model-a"]
+  });
+});
+
+test("model discovery rejects credential-bearing model ids before any public or cached projection", async (t) => {
+  const secret = makeSecret("models-id-credential");
+  const { service, registry, activity, modelCache } = makeHarness(t, {
+    fetchImpl: async () => modelListResponse([`prefix-${secret}-suffix`])
+  });
+  const provider = await service.createProvider(providerInput(), secret);
+  await service.getProviderModels(provider.id);
+  const sourceFingerprint = modelCache.getCalls.at(-1)[1];
+  const previous = {
+    providerId: provider.id,
+    sourceFingerprint,
+    state: "stale",
+    fetchedAt: "2026-07-11T00:00:00.000Z",
+    expiresAt: "2026-07-12T00:00:00.000Z",
+    models: ["last-good-model"]
+  };
+  modelCache.seed(previous);
+
+  const failure = await service.refreshProviderModels(provider.id).then(
+    () => null,
+    (error) => error
+  );
+  const cached = await service.getProviderModels(provider.id);
+  const publicError = failure === null ? null : toPublicError(failure, "request-models-safe");
+  const publicProviders = await service.listProviders();
+  const publicStatus = await service.getStatus();
+  const reachable = JSON.stringify({
+    publicError,
+    cached,
+    publicProviders,
+    publicStatus,
+    activity: activity.events
+  });
+
+  assert.equal(reachable.includes(secret), false);
+  assert.equal(failure?.message?.includes(secret) ?? false, false);
+  assert.equal(failure?.action?.includes(secret) ?? false, false);
+  assert.equal(failure?.cause?.message?.includes(secret) ?? false, false);
+  assert.equal(failure?.code, "PROVIDER_MODELS_INVALID_RESPONSE");
+  assert.deepEqual(cached, {
+    providerId: provider.id,
+    state: "stale",
+    fetchedAt: previous.fetchedAt,
+    expiresAt: previous.expiresAt,
+    models: previous.models
+  });
+  assert.equal(modelCache.putCalls.length, 0);
+  assert.equal(registry.getDocument().activeProviderId, null);
+});
+
+test("successful opt-in tests select the first provider without starting the Worker", async (t) => {
+  const secret = makeSecret("initial-activation");
+  const { service, registry, workerManager } = makeHarness(t, {
+    fetchImpl: async () => compatibleResponse()
+  });
+  const provider = await service.createProvider(providerInput(), secret);
+
+  const before = workerManager.getPublicState();
+  const result = await service.testProvider(provider.id, "model-test", {
+    activateIfNone: true
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    code: null,
+    initialActivation: {
+      automatic: true,
+      activeProviderId: provider.id,
+      workerStarted: false
+    }
+  });
+  assert.equal(registry.get(provider.id).lastTestStatus, "passed");
+  assert.equal(registry.getDocument().activeProviderId, provider.id);
+  assert.deepEqual(workerManager.calls, []);
+  assert.equal(workerManager.getPublicState().phase, "stopped");
+  assert.equal(workerManager.getPublicState().generation, before.generation);
+});
+
+test("provider test reports committed degradation when Activity fails after markTest", async (t) => {
+  let fetchCalls = 0;
+  const { service, registry, activity, workerManager } = makeHarness(t, {
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return compatibleResponse();
+    }
+  });
+  const provider = await service.createProvider(
+    providerInput(),
+    makeSecret("test-committed")
+  );
+  const originalAppend = activity.append.bind(activity);
+  activity.append = () => {
+    throw new Error("forced Activity append failure after provider test commit");
+  };
+
+  const failure = await service.testProvider(provider.id, "model-test", {
+    activateIfNone: true
+  }).then(
+    () => null,
+    (error) => error
+  );
+
+  assert.equal(failure?.code, "PROVIDER_TEST_COMMITTED_DEGRADED");
+  assert.deepEqual(failure?.details, { committed: true, degraded: true });
+  assert.equal(registry.get(provider.id).lastTestStatus, "passed");
+  assert.equal(registry.get(provider.id).lastTestCode, null);
+  assert.equal(registry.getDocument().activeProviderId, null);
+  assert.deepEqual(workerManager.calls, []);
+
+  activity.append = originalAppend;
+  const retried = await service.testProvider(provider.id, "model-test", {
+    activateIfNone: true
+  });
+  assert.deepEqual(retried.initialActivation, {
+    automatic: true,
+    activeProviderId: provider.id,
+    workerStarted: false
+  });
+  assert.equal(registry.getDocument().activeProviderId, provider.id);
+  assert.deepEqual(workerManager.calls, []);
+  assert.equal(fetchCalls, 2);
+});
+
+test("provider test preserves registry-lock repair guidance after a committed markTest", async (t) => {
+  const registryRepairAction = "Stop CRP, repair the residual provider-registry lock, then restart CRP.";
+  const { service, registry, workerManager } = makeHarness(t, {
+    fetchImpl: async () => compatibleResponse()
+  });
+  const provider = await service.createProvider(
+    providerInput(),
+    makeSecret("test-registry-lock")
+  );
+  const originalMarkTest = registry.markTest.bind(registry);
+  registry.markTest = (id, result) => {
+    originalMarkTest(id, result);
+    throw committedError(
+      "PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED",
+      registryRepairAction
+    );
+  };
+
+  const failure = await service.testProvider(provider.id, "model-test", {
+    activateIfNone: true
+  }).then(
+    () => null,
+    (error) => error
+  );
+
+  assert.equal(failure?.code, "PROVIDER_TEST_COMMITTED_DEGRADED");
+  assert.deepEqual(failure?.details, { committed: true, degraded: true });
+  assert.equal(failure?.action, registryRepairAction);
+  assert.doesNotMatch(failure?.action ?? "", /Activity/i);
+  assert.equal(registry.get(provider.id).lastTestStatus, "passed");
+  assert.equal(registry.get(provider.id).lastTestCode, null);
+  assert.equal(registry.getDocument().activeProviderId, null);
+  assert.deepEqual(workerManager.calls, []);
+});
+
+test("committed initial selection survives a simultaneous Activity append failure", async (t) => {
+  const registryRepairAction = "Stop CRP, repair the residual provider-registry lock, then restart CRP.";
+  const { service, registry, activity, workerManager } = makeHarness(t, {
+    fetchImpl: async () => compatibleResponse()
+  });
+  const provider = await service.createProvider(
+    providerInput(),
+    makeSecret("initial-selection-double-failure")
+  );
+  const originalSetActiveIfNull = registry.setActiveIfNull.bind(registry);
+  registry.setActiveIfNull = (id) => {
+    originalSetActiveIfNull(id);
+    throw committedError(
+      "PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED",
+      registryRepairAction
+    );
+  };
+  const originalAppend = activity.append.bind(activity);
+  activity.append = (event) => {
+    if (event.action === "activate") {
+      throw new Error("forced Activity append failure after committed initial selection");
+    }
+    return originalAppend(event);
+  };
+
+  const failure = await service.testProvider(provider.id, "model-test", {
+    activateIfNone: true
+  }).then(
+    () => null,
+    (error) => error
+  );
+
+  assert.equal(failure?.code, "PROVIDER_ACTIVATION_COMMITTED_DEGRADED");
+  assert.deepEqual(failure?.details, { committed: true, degraded: true });
+  assert.equal(failure?.action, registryRepairAction);
+  assert.equal(registry.getDocument().activeProviderId, provider.id);
+  assert.equal(registry.get(provider.id).lastTestStatus, "passed");
+  assert.deepEqual(workerManager.calls, []);
+  assert.equal(activity.events.some((event) => event.action === "activate"), false);
+  assert.equal(activity.events.at(-1).action, "test");
+});
+
+test("opt-in tests never replace an existing active provider", async (t) => {
+  const { service, registry, workerManager } = makeHarness(t, {
+    fetchImpl: async () => compatibleResponse()
+  });
+  const active = await service.createProvider(providerInput("Active"), makeSecret("active"));
+  const candidate = await service.createProvider(
+    providerInput("Candidate", "https://candidate.example/v1"),
+    makeSecret("candidate")
+  );
+  registry.setActive(active.id);
+
+  assert.deepEqual(
+    await service.testProvider(candidate.id, "model-test", { activateIfNone: true }),
+    { ok: true, code: null, initialActivation: null }
+  );
+  assert.equal(registry.getDocument().activeProviderId, active.id);
+  assert.equal(registry.get(candidate.id).lastTestStatus, "passed");
+  assert.deepEqual(workerManager.calls, []);
+});
+
+test("failed opt-in tests do not select a provider", async (t) => {
+  const { service, registry, workerManager } = makeHarness(t, {
+    fetchImpl: async () => ({ ok: false, status: 401 })
+  });
+  const provider = await service.createProvider(providerInput(), makeSecret("failed"));
+
+  assert.deepEqual(
+    await service.testProvider(provider.id, "model-test", { activateIfNone: true }),
+    { ok: false, code: "PROVIDER_TEST_AUTH", initialActivation: null }
+  );
+  assert.equal(registry.get(provider.id).lastTestStatus, "failed");
+  assert.equal(registry.getDocument().activeProviderId, null);
+  assert.deepEqual(workerManager.calls, []);
+});
+
+test("opt-in tests reject an active-null state with a non-stopped Worker before I/O", async (t) => {
+  let fetchCalls = 0;
+  const { service, registry, credentials, workerManager } = makeHarness(t, {
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return compatibleResponse();
+    }
+  });
+  const provider = await service.createProvider(providerInput(), makeSecret("unsafe"));
+  credentials.operations.length = 0;
+  workerManager.phase = "running";
+  workerManager.generation = 7;
+
+  await assert.rejects(
+    () => service.testProvider(provider.id, "model-test", { activateIfNone: true }),
+    (error) => error?.code === "PROVIDER_INITIAL_ACTIVATION_UNSAFE"
+      && error.status === 409
+  );
+  assert.equal(fetchCalls, 0);
+  assert.deepEqual(credentials.operations, []);
+  assert.equal(registry.get(provider.id).lastTestStatus, "untested");
+  assert.equal(registry.getDocument().activeProviderId, null);
+  assert.deepEqual(workerManager.calls, []);
+  assert.equal(workerManager.getPublicState().generation, 7);
 });
 
 test("activate persists then confirms increasing generations and rolls back failures", async (t) => {
@@ -600,6 +1119,7 @@ test("activate persists then confirms increasing generations and rolls back fail
   assert.equal(first.generation, 1);
   assert.equal(registry.getDocument().activeProviderId, providerA.id);
   assert.equal(workerManager.calls[0][0], "start");
+  assert.equal(workerManager.calls[0][1].providerId, providerA.id);
   assert.equal(workerManager.calls[0][1].generation, 1);
   assert.equal(workerManager.calls[0][1].settings.upstream.apiKey, secretA);
   assert.deepEqual(healthCalls, [[1, 1]]);
@@ -633,6 +1153,7 @@ test("activate persists then confirms increasing generations and rolls back fail
   assert.equal(second.generation, 4);
   assert.equal(second.activeProviderId, providerB.id);
   assert.equal(workerManager.calls.at(-1)[0], "applySnapshot");
+  assert.equal(workerManager.calls.at(-1)[1].providerId, providerB.id);
   assert.equal(workerManager.calls.at(-1)[1].settings.upstream.apiKey, secretB);
   const credentialGets = credentials.operations
     .filter(([operation]) => operation === "get")
@@ -717,11 +1238,12 @@ test("restores the confirmed worker snapshot when post-ack health fails", async 
   assert.equal(workerManager.generation, 3);
   assert.deepEqual(workerManager.calls.slice(-2).map(([operation, snapshot]) => [
     operation,
+    snapshot.providerId,
     snapshot.generation,
     snapshot.settings.upstream.apiKey
   ]), [
-    ["applySnapshot", 2, secretB],
-    ["applySnapshot", 3, secretA]
+    ["applySnapshot", providerB.id, 2, secretB],
+    ["applySnapshot", providerA.id, 3, secretA]
   ]);
   assert.deepEqual(
     credentials.operations.filter(([operation]) => operation === "get"),
@@ -896,12 +1418,14 @@ test("proxy lifecycle facade resolves only the active credential and advances co
   assert.equal(started.phase, "running");
   assert.equal(started.generation, 2);
   assert.equal(workerManager.calls.at(-1)[0], "start");
+  assert.equal(workerManager.calls.at(-1)[1].providerId, providerA.id);
   assert.equal(workerManager.calls.at(-1)[1].settings.upstream.apiKey, secretA);
 
   const restarted = await service.restartProxy();
   assert.equal(restarted.phase, "running");
   assert.equal(restarted.generation, 3);
   assert.equal(workerManager.calls.at(-1)[0], "restart");
+  assert.equal(workerManager.calls.at(-1)[1].providerId, providerA.id);
   assert.equal(workerManager.calls.at(-1)[1].settings.upstream.apiKey, secretA);
   assert.deepEqual(
     credentials.operations.filter(([operation]) => operation === "get").map(([, ref]) => ref),

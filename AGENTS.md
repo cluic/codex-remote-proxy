@@ -23,6 +23,7 @@
 - Cancel stale asynchronous focus callbacks and preserve newer user focus.
 - Browser fixtures must mirror production enum values and response contracts.
 - Temporary-resource checks must stay within the current `$TMPDIR`; traversing all of `/var/folders` is prohibited.
+- Temporary-resource checks must target task-specific glob paths instead of recursively scanning every `$TMPDIR` entry.
 - Package-content tests must compare the exact reviewed allowlist.
 - CI native-backend gates must probe the intended platform service and must not accept fallback storage.
 - Tests must import only declared direct dependencies, and every checkout before pull-request code must set `persist-credentials: false`.
@@ -30,6 +31,35 @@
 - CLI human-output tests must set an explicit locale instead of inheriting the developer environment.
 - Deterministic loopback D1 evidence must not be reported as native-keyring or external-upstream D2 completion.
 - macOS native-keyring tests must isolate CRP paths through `CRP_HOME` while preserving the real `HOME` required to access the login Keychain.
+- Read-only diagnostics must not run tests or commands that create temporary resources.
+- Detached Supervisor startup failures must preserve only strictly allowlisted errors and must not collapse into readiness timeouts.
+- Sensitive-diff scans must use separately quoted simple patterns; nested shell quoting in one composite regex is prohibited.
+- Shell search patterns containing backticks must be single-quoted so command substitution cannot occur.
+- Automatic first-provider selection must use compare-and-set and must not start or reconfigure the Worker.
+- Partial-commit tests must encode deterministic resource order in fixture names instead of relying on filesystem traversal order.
+- Public numeric summaries must enforce explicit lower and upper bounds; safe-integer checks alone are insufficient.
+- Parallel-write coordination paths must exactly match the files assigned to each agent before writing begins.
+- Production recovery adapters must inject every inspection and execution method required by the lower-level recovery contract.
+- Any Codex configuration lock must make public readiness false until bootstrap safely resolves it.
+- A multi-resource repair may modify only snapshots that were durably backed up in the same attempt.
+- Recoverable deletion must use a fixed discoverable intermediate marker; a random claim alone is prohibited.
+- Exact Codex provider inspection and patching must share one semantic statement scanner.
+- The target config hash must be rechecked before history writes and before pending state is cleared.
+- Rollout metadata must be durable before rename, and final verification must fsync every affected parent directory.
+- Every committed `pending: true` failure must preserve a discoverable marker or retain the Codex config lock.
+- Unexpected Worker recovery must run inside the strict Codex readiness gate and recheck its cancellation generation before spawning.
+- When a workspace read returns `EPERM`, rerun the required command with sandbox escalation before attributing it to macOS privacy controls.
+- Verify a prior writer's actual status before spawning a replacement for a temporarily missing agent-list entry.
+- Response-start metrics must be measured at the first non-empty response body chunk, not when response headers arrive.
+- Initialization effects must not depend on state they mutate when cleanup can abort bootstrap.
+- Programmatic dialog transitions must cancel stale focus restoration and prioritize explicit autofocus.
+- Closed off-canvas navigation must leave the focus and accessibility order.
+- Setup selection must use no-start compare-and-set; stopped-worker activation must disclose that it starts the Worker.
+- Visually hidden tables must be clipped by a non-table wrapper.
+- Metrics storage limits must accommodate every valid maximum-cardinality document.
+- Temporary release-smoke cleanup must stay inside its exact `$TMPDIR` root and use an allowed bounded filesystem operation.
+- Session-bootstrap routes must compare the raw request target, and tests must preserve non-canonical targets.
+- Asynchronous catalog refresh must preserve nonempty manual selections and clear provider-scoped catalogs before switching.
 
 ## Required Checks
 

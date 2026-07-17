@@ -6,8 +6,9 @@ import { WorkerManager } from "../src/supervisor/worker-manager.mjs";
 
 const SECRET = "manager-unit-secret";
 
-function makeSnapshot(generation = 1, port = 15100) {
+function makeSnapshot(generation = 1, port = 15100, providerId = null) {
   return {
+    ...(providerId === null ? {} : { providerId }),
     generation,
     settings: {
       configPath: "/tmp/crp-worker-manager/proxy-config.json",
@@ -171,12 +172,17 @@ class FakeChild extends EventEmitter {
 function createHarness(scripts = [], {
   healthOk = true,
   forkError = false,
-  portError = false
+  portError = false,
+  runRecoveryWhenReady = (operation) => operation(),
+  recordMetric,
+  noteDroppedMetric
 } = {}) {
   const clock = createClock();
   const children = [];
   const healthCalls = [];
   const portChecks = [];
+  const metrics = [];
+  let droppedMetrics = 0;
   const manager = new WorkerManager({
     host: "127.0.0.1",
     port: 15100,
@@ -204,9 +210,27 @@ function createHarness(scripts = [], {
         error.code = "WORKER_PORT_BUSY";
         throw error;
       }
-    }
+    },
+    runRecoveryWhenReady,
+    recordMetric: recordMetric ?? ((observation) => {
+      metrics.push(structuredClone(observation));
+      return true;
+    }),
+    noteDroppedMetric: noteDroppedMetric ?? (() => {
+      droppedMetrics += 1;
+    })
   });
-  return { manager, clock, children, healthCalls, portChecks };
+  return {
+    manager,
+    clock,
+    children,
+    healthCalls,
+    portChecks,
+    metrics,
+    get droppedMetrics() {
+      return droppedMetrics;
+    }
+  };
 }
 
 async function settle(promise, clock, { maxSteps = 30 } = {}) {
@@ -287,6 +311,91 @@ test("applySnapshot updates the confirmed generation only after a matching ackno
   );
   assert.equal(harness.manager.getPublicState().generation, 2);
   assert.equal(harness.manager.getPublicState().state.generation, 2);
+});
+
+test("metric observations retain request-generation provider attribution across hot switching", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot(1, 15100, "provider-a")), harness.clock);
+  await settle(harness.manager.applySnapshot(makeSnapshot(2, 15100, "provider-b")), harness.clock);
+  const child = harness.children[0];
+  const metric = (generation, result, model) => ({
+    version: 1,
+    type: "metric",
+    requestId: "metric-observation",
+    observation: {
+      generation,
+      result,
+      model,
+      inputTokens: result === "success" ? 12 : null,
+      outputTokens: result === "success" ? 3 : null,
+      durationBin: 4,
+      responseStartBin: result === "success" ? 2 : null
+    }
+  });
+
+  child.emit("message", metric(2, "success", "model-b"));
+  child.emit("message", metric(1, "upstreamError", "model-a"));
+  child.emit("message", metric(999, "networkError", null));
+  await Promise.resolve();
+
+  assert.deepEqual(harness.metrics, [
+    {
+      providerId: "provider-b",
+      result: "success",
+      model: "model-b",
+      inputTokens: 12,
+      outputTokens: 3,
+      durationBin: 4,
+      responseStartBin: 2
+    },
+    {
+      providerId: "provider-a",
+      result: "upstreamError",
+      model: "model-a",
+      inputTokens: null,
+      outputTokens: null,
+      durationBin: 4,
+      responseStartBin: null
+    }
+  ]);
+  assert.equal(harness.droppedMetrics, 1);
+  assert.equal(harness.manager.getPublicState().phase, "running");
+  assert.equal(JSON.stringify(harness.manager.getPublicState()).includes("provider-a"), false);
+});
+
+test("metric callback failures are dropped without changing worker lifecycle state", async (t) => {
+  let dropped = 0;
+  const harness = createHarness([], {
+    recordMetric() {
+      throw new Error("private metrics persistence failure");
+    },
+    noteDroppedMetric() {
+      dropped += 1;
+    }
+  });
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot(1, 15100, "provider-a")), harness.clock);
+
+  harness.children[0].emit("message", {
+    version: 1,
+    type: "metric",
+    requestId: "metric-observation",
+    observation: {
+      generation: 1,
+      result: "success",
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      durationBin: 0,
+      responseStartBin: 0
+    }
+  });
+  await Promise.resolve();
+
+  assert.equal(dropped, 1);
+  assert.equal(harness.manager.getPublicState().phase, "running");
+  assert.equal(harness.manager.getPublicState().error, null);
 });
 
 test("stop drains, shuts down, observes exit, and confirms fixed-port release", async (t) => {
@@ -478,6 +587,152 @@ test("an unexpected exit backs off 250 ms and ignores the old child epoch after 
   assert.equal(harness.manager.getPublicState().generation, 1);
   assert.equal(harness.manager.getPublicState().phase, "running");
   assert.equal(harness.manager.getPublicState().restartCount, 1);
+});
+
+test("unexpected-exit recovery rechecks readiness immediately before spawning", async (t) => {
+  let ready = false;
+  let readinessChecks = 0;
+  const harness = createHarness([], {
+    async runRecoveryWhenReady(operation) {
+      readinessChecks += 1;
+      if (!ready) {
+        const error = new Error("private Codex readiness failure");
+        error.code = "CODEX_NOT_READY";
+        throw error;
+      }
+      return operation();
+    }
+  });
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot()), harness.clock);
+  harness.children[0].exit(1, null);
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "backoff",
+    "worker recovery backoff"
+  );
+
+  await harness.clock.advance(250);
+  await flushUntil(
+    () => readinessChecks === 1
+      && harness.manager.getPublicState().phase === "backoff"
+      && harness.clock.nextDelay() === 500,
+    "blocked recovery readiness check"
+  );
+  assert.equal(harness.children.length, 1);
+  assert.equal(harness.portChecks.length, 1);
+  assert.equal(harness.clock.nextDelay(), 500);
+
+  ready = true;
+  await harness.clock.advance(500);
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "running",
+    "readiness-approved recovery"
+  );
+  assert.equal(readinessChecks, 2);
+  assert.equal(harness.portChecks.length, 2);
+  assert.equal(harness.children.length, 2);
+});
+
+test("stop cancels an unexpected-exit recovery waiting inside the readiness gate", async (t) => {
+  let gateEntered = false;
+  let releaseGate;
+  const gate = new Promise((resolvePromise) => {
+    releaseGate = resolvePromise;
+  });
+  const harness = createHarness([], {
+    async runRecoveryWhenReady(operation) {
+      gateEntered = true;
+      await gate;
+      return operation();
+    }
+  });
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot()), harness.clock);
+  harness.children[0].exit(1, null);
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "backoff",
+    "worker recovery backoff"
+  );
+  await harness.clock.advance(250);
+  await flushUntil(() => gateEntered, "recovery readiness gate");
+
+  const stopped = await harness.manager.stop();
+  releaseGate();
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "stopped",
+    "cancelled recovery"
+  );
+  assert.equal(stopped.phase, "stopped");
+  assert.equal(harness.children.length, 1);
+  assert.equal(harness.clock.pending(), 0);
+});
+
+test("close cancels an unexpected-exit recovery waiting inside the readiness gate", async () => {
+  let gateEntered = false;
+  let releaseGate;
+  const gate = new Promise((resolvePromise) => {
+    releaseGate = resolvePromise;
+  });
+  const harness = createHarness([], {
+    async runRecoveryWhenReady(operation) {
+      gateEntered = true;
+      await gate;
+      return operation();
+    }
+  });
+  await settle(harness.manager.start(makeSnapshot()), harness.clock);
+  harness.children[0].exit(1, null);
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "backoff",
+    "worker recovery backoff"
+  );
+  await harness.clock.advance(250);
+  await flushUntil(() => gateEntered, "recovery readiness gate");
+
+  await harness.manager.close();
+  releaseGate();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(harness.manager.getPublicState().phase, "stopped");
+  assert.equal(harness.children.length, 1);
+  assert.equal(harness.clock.pending(), 0);
+});
+
+test("readiness rejection uses bounded backoff without exposing its private failure", async (t) => {
+  const sentinel = "recovery-readiness-secret-sentinel";
+  const unhandled = collectUnhandledRejections(t);
+  let readinessChecks = 0;
+  const harness = createHarness([], {
+    async runRecoveryWhenReady() {
+      readinessChecks += 1;
+      throw new Error(sentinel);
+    }
+  });
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot()), harness.clock);
+  harness.children[0].exit(1, null);
+  const delays = [];
+
+  for (const delay of [250, 500, 1_000, 2_000]) {
+    await flushUntil(
+      () => harness.manager.getPublicState().phase === "backoff"
+        && harness.clock.nextDelay() === delay,
+      `recovery delay ${delay}`
+    );
+    delays.push(harness.clock.nextDelay());
+    await harness.clock.advance(delay);
+  }
+  await flushUntil(
+    () => harness.manager.getPublicState().phase === "failed",
+    "terminal readiness failure"
+  );
+
+  assert.deepEqual(delays, [250, 500, 1_000, 2_000]);
+  assert.equal(readinessChecks, 4);
+  assert.equal(harness.children.length, 1);
+  assert.equal(harness.clock.pending(), 0);
+  assert.equal(unhandled.length, 0);
+  assert.equal(JSON.stringify(harness.manager.getPublicState()).includes(sentinel), false);
 });
 
 test("the fifth crash in 60 seconds enters failed without spawning again", async (t) => {

@@ -187,6 +187,72 @@ test("migrates the runtime flat config and scrubs every backed-up secret source"
   );
 });
 
+test("rejects divergent legacy credentials before migration side effects", async (t) => {
+  const legacySecret = makeSecret();
+  const runtimeSecret = makeSecret();
+  const harness = makeHarness(t, {
+    upstreamBaseUrl: "https://saved.example/v1",
+    apiKey: legacySecret,
+    captureEnabled: false
+  });
+  const runtimeBytes = writeRuntime(harness, {
+    upstream: {
+      baseUrl: "https://runtime.example/v1",
+      apiKey: runtimeSecret
+    }
+  });
+  const activity = [];
+  let credentialSetCalls = 0;
+  let credentialDeleteCalls = 0;
+  const credentials = {
+    async set() { credentialSetCalls += 1; },
+    async delete() { credentialDeleteCalls += 1; }
+  };
+
+  const failure = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    activityStore: {
+      async append(event) { activity.push(structuredClone(event)); }
+    }
+  }).then(
+    () => null,
+    (error) => error
+  );
+
+  const publicFailure = {
+    code: failure?.code,
+    message: failure?.message,
+    action: failure?.action,
+    status: failure?.status,
+    details: failure?.details
+  };
+  const serializedPublicState = JSON.stringify({ publicFailure, activity });
+  assert.equal(serializedPublicState.includes(legacySecret), false);
+  assert.equal(serializedPublicState.includes(runtimeSecret), false);
+  assert.equal(failure?.code, "MIGRATION_INPUT_INVALID");
+  assert.equal(failure?.status, 400);
+  assert.deepEqual(activity, [{
+    category: "migration",
+    action: "legacy-config",
+    providerId: null,
+    result: "failed",
+    errorCode: "MIGRATION_INPUT_INVALID",
+    details: { rollbackDegraded: false }
+  }]);
+  assert.equal(credentialSetCalls, 0);
+  assert.equal(credentialDeleteCalls, 0);
+  assert.equal(existsSync(harness.registryPath), false);
+  assert.equal(existsSync(`${harness.registryPath}.migration.lock`), false);
+  assert.equal(readFileSync(harness.legacyConfigPath).equals(harness.legacyBytes), true);
+  assert.equal(readFileSync(harness.runtimeConfigPath).equals(runtimeBytes), true);
+  assert.equal(readdirSync(harness.globalHome).some((name) => name.endsWith(".bak")), false);
+  assert.equal(
+    readdirSync(join(harness.globalHome, "node")).some((name) => name.endsWith(".bak")),
+    false
+  );
+});
+
 test("does not overwrite an exclusive backup collision and is idempotent after schema 2", async (t) => {
   const secret = makeSecret();
   const harness = makeHarness(t, {

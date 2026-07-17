@@ -41,13 +41,21 @@ const ENV_KEYS = {
   captureDbPath: "CRP_CAPTURE_DB_PATH"
 };
 const BOOLEAN_OPTIONS = new Set(["json", "no-open", "capture", "no-capture", "debug"]);
+const HELP_FLAGS = new Set(["-h", "--help"]);
+const PROVIDER_ACTIONS = new Set(["list", "add", "models", "test", "activate", "delete"]);
 const SAFE_CLI_COMMANDS = new Set([
-  "init", "ui", "start", "install", "setup", "status", "stop", "restart", "shutdown",
+  "ui", "start", "status", "stop", "restart", "shutdown",
   "provider", "check", "capture", "guide", "install-cli"
 ]);
-const SAFE_ERROR_DETAIL_FIELDS = new Set([
-  "field", "reason", "committed", "degraded", "generation", "httpStatus"
+const REMOVED_CLI_COMMANDS = new Map([
+  ["init", "crp ui"],
+  ["install", "crp start"],
+  ["setup", "crp start"]
 ]);
+const SAFE_ERROR_DETAIL_FIELDS = new Set([
+  "field", "reason", "committed", "degraded", "pending", "generation", "httpStatus"
+]);
+const CODEX_BOOTSTRAP_REQUEST_TIMEOUT_MS = 300_000;
 const CLI_ERROR_CONTRACTS = Object.freeze({
   CLI_INPUT_INVALID: Object.freeze({
     message: "The command input is invalid.",
@@ -64,24 +72,74 @@ export const CLI_MESSAGES = Object.freeze({
     "error.commandFailed": "CRP could not complete the command. Review CRP activity and try again.",
     "error.public": "{message} {action}",
     "help.usage": "Usage:",
+    "help.rootSyntax": "  crp <command> [options]",
+    "help.commands": "Commands:",
+    "help.examples": "Examples:",
+    "help.recommended": "Recommended commands:",
+    "help.providerCommands": "Provider commands:",
+    "help.otherCommands": "Other commands:",
+    "help.options": "Options:",
+    "help.option.json": "  --json                 Write the stable machine-readable response.",
+    "help.option.noOpen": "  --no-open              Start management without opening a browser.",
+    "help.option.locale": "  --locale <en|zh-CN>    Select human output language for this process.",
+    "help.option.help": "  -h, --help              Show help without starting CRP.",
+    "help.option.provider.name": "  --name <NAME>          Select a provider by its unique name.",
+    "help.option.provider.id": "  --id <ID>              Select a provider by its stable ID.",
+    "help.option.provider.baseUrl": "  --base-url <URL>       Provider API base URL, normally ending in /v1.",
+    "help.option.provider.apiKey": "  --api-key <KEY>        Write-only provider credential.",
+    "help.option.provider.model": "  --model <MODEL>        Model used for the compatibility test.",
+    "help.option.provider.authHeader": "  --auth-header <NAME>  Authentication header name (default: authorization).",
+    "help.option.provider.authScheme": "  --auth-scheme <TOKEN> Authentication scheme (default: Bearer).",
+    "help.option.provider.modelMode": "  --model-mode <MODE>    Routing mode: passthrough or override.",
+    "help.option.provider.modelOverride": "  --model-override <ID> Model sent upstream when override mode is used.",
+    "help.hint": "Run `crp <command> --help` for command-specific help.",
     "help.check": "  crp check [--json] [--codex-config PATH] [--auth PATH]",
-    "help.init": "  crp init [--no-open] [--json] (alias of ui)",
     "help.ui": "  crp ui [--no-open] [--json]",
     "help.start": "  crp start [--json]",
-    "help.install": "  crp install [same as start]",
     "help.capture": "  crp capture <on|off|status> [--json]",
     "help.status": "  crp status [--json]",
     "help.stop": "  crp stop [--json]",
     "help.restart": "  crp restart [--json]",
     "help.shutdown": "  crp shutdown [--json]",
-    "help.provider": "  crp provider list|add|test|activate|delete [--json]",
-    "help.setup": "  crp setup [same as start]",
+    "help.provider": "  crp provider <command> [options]",
     "help.guide": "  crp guide [--json]",
     "help.installCli": "  crp install-cli [--json]",
+    "help.description.check": "Inspect local Codex and legacy CRP configuration.",
+    "help.description.ui": "Start the Supervisor if needed and open the local management UI.",
+    "help.description.start": "Ensure the Supervisor is running, bootstrap Codex if needed, and start the proxy Worker.",
+    "help.description.capture": "Inspect or change the legacy capture preference.",
+    "help.description.status": "Show Supervisor, Worker, active-provider, Codex, and proxy status.",
+    "help.description.stop": "Stop the proxy Worker while the Supervisor and management UI remain running.",
+    "help.description.restart": "Drain and replace the proxy Worker while keeping the Supervisor running.",
+    "help.description.shutdown": "Stop the proxy Worker and Supervisor completely.",
+    "help.description.provider": "Provider commands manage named upstream profiles.",
+    "help.description.guide": "Show the recommended provider and lifecycle flow.",
+    "help.description.installCli": "Install the deprecated local command shim.",
+    "help.provider.list": "  crp provider list [--json]",
+    "help.provider.add": "  crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]",
+    "help.provider.models": "  crp provider models (--id <ID> | --name <NAME>) [--json]",
+    "help.provider.test": "  crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]",
+    "help.provider.activate": "  crp provider activate (--id <ID> | --name <NAME>) [--json]",
+    "help.provider.delete": "  crp provider delete (--id <ID> | --name <NAME>) [--json]",
+    "help.provider.addAdvanced": "  --model runs a compatibility test after saving. Routing override: --model-mode, --model-override. Authentication: --auth-header, --auth-scheme.",
+    "help.provider.description.list": "List configured providers and their non-secret status.",
+    "help.provider.description.add": "Add a named provider profile and write its credential.",
+    "help.provider.description.models": "Refresh and list available models for one provider.",
+    "help.provider.description.test": "Test Responses API compatibility for one provider.",
+    "help.provider.description.activate": "Make a tested provider the active provider for new requests.",
+    "help.provider.description.delete": "Delete an inactive provider and its saved credential.",
+    "help.example.providerAdd": "  crp provider add --name Primary --base-url https://api.example/v1 --api-key <KEY> --model <MODEL>",
+    "help.example.providerModels": "  crp provider models --name Primary",
+    "help.example.providerList": "  crp provider list",
+    "help.example.providerTest": "  crp provider test --name Primary --model <MODEL>",
+    "help.example.providerActivate": "  crp provider activate --name Backup",
+    "help.example.providerDelete": "  crp provider delete --name Retired",
+    "help.example.status": "  crp status",
     "validation.unexpectedPositional": "Unexpected positional argument.",
     "validation.providerAction": "Unknown provider action.",
     "validation.providerOption": "The provider command contains an unsupported option.",
     "validation.providerRequired": "The provider {name} option is required.",
+    "validation.providerSelector": "Provide exactly one of --id or --name.",
     "validation.commandOption": "The {command} command contains an unsupported option.",
     "validation.localeDuplicate": "The --locale option may only be provided once.",
     "validation.localeRequired": "The --locale option requires en or zh-CN.",
@@ -107,9 +165,10 @@ export const CLI_MESSAGES = Object.freeze({
     "check.proxySection": "Codex proxy section: {value}",
     "check.savedConfig": "Saved config: {value}",
     "guide.header": "CRP V1 guide:",
-    "guide.add": "  Add a provider with `{command}`.",
-    "guide.test": "  Validate it with `{command}`.",
-    "guide.activate": "  Activate it with `{command}`.",
+    "guide.add": "  Add and test a provider with `{command}`; the first successful provider is selected automatically.",
+    "guide.models": "  Refresh its model cache with `{command}`.",
+    "guide.test": "  Retest a saved provider with `{command}`.",
+    "guide.activate": "  Switch to another tested provider with `{command}`.",
     "guide.start": "  Start the proxy through the supervisor with `{command}`.",
     "guide.status": "  Confirm supervisor and worker health with `{command}`.",
     "guide.ui": "  Open the local management UI with `{command}`.",
@@ -125,21 +184,71 @@ export const CLI_MESSAGES = Object.freeze({
     "installCli.prefer": "For public distribution, prefer:",
     "ui.opened": "CRP management UI opened.",
     "status.running": "CRP supervisor is running.",
+    "status.header": "CRP status:",
+    "status.supervisor": "Supervisor: {state}",
+    "status.worker": "Worker: {state}",
+    "status.pid": "  PID: {value}",
+    "status.startedAt": "  Started at: {value}",
+    "status.generation": "  Generation: {value}",
+    "status.listening": "  Listening: {value}",
+    "status.inFlight": "  In flight: {value}",
+    "status.activeProvider": "Active provider: {name} ({id})",
+    "status.activeProviderNone": "Active provider: none",
+    "status.codex": "Codex: {state}",
+    "status.historyRepairPending": "History repair pending: {value}",
+    "status.modelProvider": "Model provider: {value}",
+    "status.proxyUrl": "Proxy URL: {value}",
+    "status.state.running": "running",
+    "status.state.stopped": "stopped",
+    "status.state.starting": "starting",
+    "status.state.draining": "draining",
+    "status.state.failed": "failed",
+    "status.state.crashed": "crashed",
+    "status.state.backoff": "waiting to retry",
+    "status.state.configured": "configured",
+    "status.state.notConfigured": "not configured",
     "provider.add.completed": "Provider add completed.",
+    "provider.add.testPassed": "Automatic compatibility test passed.",
+    "provider.add.testFailed": "Provider saved, but the automatic test failed ({code}).",
+    "provider.test.initialSelected": "This is the first tested provider, so it is now selected. Run `crp start` to start the proxy Worker.",
     "provider.activate.completed": "Provider activate completed.",
     "provider.delete.completed": "Provider delete completed.",
     "provider.list.completed": "Provider list completed.",
     "provider.test.completed": "Provider test completed.",
+    "provider.models.completed": "Provider model discovery completed.",
+    "provider.models.header": "Models for {name} ({id}) ({count}):",
+    "provider.models.empty": "No models were returned by this provider.",
+    "provider.models.item": "- {model}",
+    "provider.models.more": "... and {count} more models",
+    "provider.list.header": "Providers ({count}):",
+    "provider.list.empty": "No providers configured.",
+    "provider.list.active": "* {name} (active)",
+    "provider.list.inactive": "- {name}",
+    "provider.list.id": "  ID: {value}",
+    "provider.list.baseUrl": "  Base URL: {value}",
+    "provider.list.test": "  Test: {value}",
+    "provider.list.model": "  Model: {value}",
+    "provider.list.credential": "  Credential: {value}",
+    "provider.test.untested": "untested",
+    "provider.test.passed": "passed",
+    "provider.test.failed": "failed",
+    "provider.test.failedCode": "failed ({code})",
+    "provider.model.passthrough": "passthrough",
+    "provider.model.override": "override -> {model}",
+    "provider.credential.configured": "configured",
+    "provider.credential.notConfigured": "not configured",
+    "command.removed": "The `{command}` command has been removed. Use `{replacement}` instead.",
     "start.ready": "Codex Remote Proxy is ready.",
+    "start.historyRepairEncryptedWarning": "Warning: Some historical sessions contain encrypted content. Their provider metadata was repaired, but some messages may remain unavailable.",
     "status.notRunning": "CRP supervisor is not running.",
     "stop.notRunning": "No running proxy worker to stop.",
-    "stop.completed": "Proxy worker stopped.",
+    "stop.completed": "Proxy worker stopped. CRP Supervisor is still running; use `crp shutdown` to stop it.",
     "restart.completed": "Proxy worker restarted.",
     "shutdown.notRunning": "CRP supervisor is not running.",
     "shutdown.identityChanged": "Supervisor identity changed; shutdown was cancelled.",
     "shutdown.timeout": "The supervisor did not stop in time.",
     "shutdown.stateTimeout": "The supervisor state was not cleaned up in time.",
-    "shutdown.completed": "CRP supervisor stopped.",
+    "shutdown.completed": "CRP Supervisor and proxy Worker stopped.",
     "stage.supervisor_start.failed": "Supervisor startup failed. Review the supervisor log and try again.",
     "stage.codex_bootstrap.failed": "Codex configuration bootstrap failed. Review CRP activity and retry before starting the proxy.",
     "stage.proxy_start.failed": "Proxy startup failed. Review CRP activity and try again."
@@ -149,24 +258,74 @@ export const CLI_MESSAGES = Object.freeze({
     "error.commandFailed": "CRP 无法完成该命令。请查看 CRP 活动记录后重试。",
     "error.public": "命令失败（{code}）。请查看 CRP 活动记录后重试。",
     "help.usage": "用法：",
+    "help.rootSyntax": "  crp <命令> [选项]",
+    "help.commands": "命令：",
+    "help.examples": "示例：",
+    "help.recommended": "推荐命令：",
+    "help.providerCommands": "提供商命令：",
+    "help.otherCommands": "其他命令：",
+    "help.options": "选项：",
+    "help.option.json": "  --json                 输出稳定的机器可读响应。",
+    "help.option.noOpen": "  --no-open              启动管理服务但不打开浏览器。",
+    "help.option.locale": "  --locale <en|zh-CN>    选择当前进程的人类可读输出语言。",
+    "help.option.help": "  -h, --help              显示帮助且不启动 CRP。",
+    "help.option.provider.name": "  --name <NAME>          按唯一名称选择提供商。",
+    "help.option.provider.id": "  --id <ID>              按稳定 ID 选择提供商。",
+    "help.option.provider.baseUrl": "  --base-url <URL>       提供商 API 基础地址，通常以 /v1 结尾。",
+    "help.option.provider.apiKey": "  --api-key <KEY>        只写的提供商凭据。",
+    "help.option.provider.model": "  --model <MODEL>        用于兼容性测试的模型。",
+    "help.option.provider.authHeader": "  --auth-header <NAME>  认证请求头名称（默认：authorization）。",
+    "help.option.provider.authScheme": "  --auth-scheme <TOKEN> 认证方案（默认：Bearer）。",
+    "help.option.provider.modelMode": "  --model-mode <MODE>    路由模式：passthrough 或 override。",
+    "help.option.provider.modelOverride": "  --model-override <ID> override 模式下发送给上游的模型。",
+    "help.hint": "运行 `crp <命令> --help` 查看命令专用帮助。",
     "help.check": "  crp check [--json] [--codex-config PATH] [--auth PATH]",
-    "help.init": "  crp init [--no-open] [--json]（ui 的别名）",
     "help.ui": "  crp ui [--no-open] [--json]",
     "help.start": "  crp start [--json]",
-    "help.install": "  crp install [等同于 start]",
     "help.capture": "  crp capture <on|off|status> [--json]",
     "help.status": "  crp status [--json]",
     "help.stop": "  crp stop [--json]",
     "help.restart": "  crp restart [--json]",
     "help.shutdown": "  crp shutdown [--json]",
-    "help.provider": "  crp provider list|add|test|activate|delete [--json]",
-    "help.setup": "  crp setup [等同于 start]",
+    "help.provider": "  crp provider <command> [options]",
     "help.guide": "  crp guide [--json]",
     "help.installCli": "  crp install-cli [--json]",
+    "help.description.check": "检查本地 Codex 和旧版 CRP 配置。",
+    "help.description.ui": "按需启动监督进程并打开本地管理页面。",
+    "help.description.start": "确保监督进程运行，按需引导 Codex 配置，然后启动代理工作进程。",
+    "help.description.capture": "检查或修改旧版抓取偏好。",
+    "help.description.status": "显示监督进程、工作进程、当前提供商、Codex 和代理状态。",
+    "help.description.stop": "停止代理工作进程，监督进程和管理页面继续运行。",
+    "help.description.restart": "排空并替换代理工作进程，同时保持监督进程运行。",
+    "help.description.shutdown": "完全停止代理工作进程和监督进程。",
+    "help.description.provider": "提供商命令用于管理具名上游配置。",
+    "help.description.guide": "显示推荐的提供商和生命周期流程。",
+    "help.description.installCli": "安装已弃用的本地命令入口。",
+    "help.provider.list": "  crp provider list [--json]",
+    "help.provider.add": "  crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]",
+    "help.provider.models": "  crp provider models (--id <ID> | --name <NAME>) [--json]",
+    "help.provider.test": "  crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]",
+    "help.provider.activate": "  crp provider activate (--id <ID> | --name <NAME>) [--json]",
+    "help.provider.delete": "  crp provider delete (--id <ID> | --name <NAME>) [--json]",
+    "help.provider.addAdvanced": "  --model 会在保存后执行兼容性测试。路由覆盖：--model-mode、--model-override。认证：--auth-header、--auth-scheme。",
+    "help.provider.description.list": "列出已配置的提供商及其非敏感状态。",
+    "help.provider.description.add": "添加具名提供商配置并写入凭据。",
+    "help.provider.description.models": "刷新并列出一个提供商的可用模型。",
+    "help.provider.description.test": "测试一个提供商的 Responses API 兼容性。",
+    "help.provider.description.activate": "将已测试的提供商设为新请求的当前提供商。",
+    "help.provider.description.delete": "删除一个未激活的提供商及其已保存凭据。",
+    "help.example.providerAdd": "  crp provider add --name Primary --base-url https://api.example/v1 --api-key <KEY> --model <MODEL>",
+    "help.example.providerModels": "  crp provider models --name Primary",
+    "help.example.providerList": "  crp provider list",
+    "help.example.providerTest": "  crp provider test --name Primary --model <MODEL>",
+    "help.example.providerActivate": "  crp provider activate --name Backup",
+    "help.example.providerDelete": "  crp provider delete --name Retired",
+    "help.example.status": "  crp status",
     "validation.unexpectedPositional": "出现了意外的位置参数。",
     "validation.providerAction": "未知的提供商操作。",
     "validation.providerOption": "提供商命令包含不支持的选项。",
     "validation.providerRequired": "提供商选项 {name} 为必填项。",
+    "validation.providerSelector": "必须且只能提供 --id 或 --name 其中一个选项。",
     "validation.commandOption": "{command} 命令包含不支持的选项。",
     "validation.localeDuplicate": "--locale 选项只能提供一次。",
     "validation.localeRequired": "--locale 选项需要 en 或 zh-CN。",
@@ -192,9 +351,10 @@ export const CLI_MESSAGES = Object.freeze({
     "check.proxySection": "Codex 代理配置段：{value}",
     "check.savedConfig": "已保存配置：{value}",
     "guide.header": "CRP V1 指南：",
-    "guide.add": "  使用 `{command}` 添加提供商。",
-    "guide.test": "  使用 `{command}` 验证提供商。",
-    "guide.activate": "  使用 `{command}` 激活提供商。",
+    "guide.add": "  使用 `{command}` 添加并测试提供商；首个测试成功的提供商会被自动选中。",
+    "guide.models": "  使用 `{command}` 刷新其模型缓存。",
+    "guide.test": "  使用 `{command}` 重新测试已保存的提供商。",
+    "guide.activate": "  使用 `{command}` 切换到另一个已测试的提供商。",
     "guide.start": "  使用 `{command}` 通过监督进程启动代理。",
     "guide.status": "  使用 `{command}` 确认监督进程和工作进程状态。",
     "guide.ui": "  使用 `{command}` 打开本地管理页面。",
@@ -210,21 +370,71 @@ export const CLI_MESSAGES = Object.freeze({
     "installCli.prefer": "公开分发请优先使用：",
     "ui.opened": "CRP 管理页面已打开。",
     "status.running": "CRP 监督进程正在运行。",
+    "status.header": "CRP 状态：",
+    "status.supervisor": "监督进程：{state}",
+    "status.worker": "工作进程：{state}",
+    "status.pid": "  PID：{value}",
+    "status.startedAt": "  启动时间：{value}",
+    "status.generation": "  代次：{value}",
+    "status.listening": "  正在监听：{value}",
+    "status.inFlight": "  处理中：{value}",
+    "status.activeProvider": "当前提供商：{name}（{id}）",
+    "status.activeProviderNone": "当前提供商：无",
+    "status.codex": "Codex：{state}",
+    "status.historyRepairPending": "历史会话修复待完成：{value}",
+    "status.modelProvider": "模型提供商：{value}",
+    "status.proxyUrl": "代理地址：{value}",
+    "status.state.running": "运行中",
+    "status.state.stopped": "已停止",
+    "status.state.starting": "启动中",
+    "status.state.draining": "正在排空",
+    "status.state.failed": "失败",
+    "status.state.crashed": "已崩溃",
+    "status.state.backoff": "等待重试",
+    "status.state.configured": "已配置",
+    "status.state.notConfigured": "未配置",
     "provider.add.completed": "提供商添加操作已完成。",
+    "provider.add.testPassed": "自动兼容性测试已通过。",
+    "provider.add.testFailed": "提供商已保存，但自动测试失败（{code}）。",
+    "provider.test.initialSelected": "这是首个测试通过的提供商，现已自动选中。运行 `crp start` 启动代理工作进程。",
     "provider.activate.completed": "提供商激活操作已完成。",
     "provider.delete.completed": "提供商删除操作已完成。",
     "provider.list.completed": "提供商列表操作已完成。",
     "provider.test.completed": "提供商测试操作已完成。",
+    "provider.models.completed": "提供商模型发现操作已完成。",
+    "provider.models.header": "{name}（{id}）可用模型（{count}）：",
+    "provider.models.empty": "该提供商未返回模型。",
+    "provider.models.item": "- {model}",
+    "provider.models.more": "……另有 {count} 个模型",
+    "provider.list.header": "提供商（{count}）：",
+    "provider.list.empty": "尚未配置提供商。",
+    "provider.list.active": "* {name}（当前）",
+    "provider.list.inactive": "- {name}",
+    "provider.list.id": "  ID：{value}",
+    "provider.list.baseUrl": "  基础地址：{value}",
+    "provider.list.test": "  测试：{value}",
+    "provider.list.model": "  模型：{value}",
+    "provider.list.credential": "  凭据：{value}",
+    "provider.test.untested": "未测试",
+    "provider.test.passed": "已通过",
+    "provider.test.failed": "失败",
+    "provider.test.failedCode": "失败（{code}）",
+    "provider.model.passthrough": "透传",
+    "provider.model.override": "覆盖为 {model}",
+    "provider.credential.configured": "已配置",
+    "provider.credential.notConfigured": "未配置",
+    "command.removed": "`{command}` 命令已移除。请改用 `{replacement}`。",
     "start.ready": "Codex Remote Proxy 已就绪。",
+    "start.historyRepairEncryptedWarning": "警告：部分历史会话包含加密内容。提供商元数据已修复，但部分消息可能仍不可用。",
     "status.notRunning": "CRP 监督进程未运行。",
     "stop.notRunning": "没有正在运行的代理工作进程可停止。",
-    "stop.completed": "代理工作进程已停止。",
+    "stop.completed": "代理工作进程已停止。CRP 监督进程仍在运行；如需停止，请使用 `crp shutdown`。",
     "restart.completed": "代理工作进程已重启。",
     "shutdown.notRunning": "CRP 监督进程未运行。",
     "shutdown.identityChanged": "监督进程身份已变化，已取消关闭操作。",
     "shutdown.timeout": "监督进程未能及时停止。",
     "shutdown.stateTimeout": "监督进程状态未能及时清理。",
-    "shutdown.completed": "CRP 监督进程已停止。",
+    "shutdown.completed": "CRP 监督进程和代理工作进程已停止。",
     "stage.supervisor_start.failed": "启动监督进程失败。请检查监督进程日志后重试。",
     "stage.codex_bootstrap.failed": "引导 Codex 配置失败。请查看 CRP 活动记录，修复后再启动代理。",
     "stage.proxy_start.failed": "启动代理失败。请查看 CRP 活动记录后重试。"
@@ -252,7 +462,7 @@ function cliInputError(messageKey, values = {}) {
   return error;
 }
 
-function resolveCliLocale(argv, environment) {
+function resolveCliLocale(argv) {
   const stripped = [];
   let explicit = null;
   for (let index = 0; index < argv.length; index += 1) {
@@ -271,25 +481,35 @@ function resolveCliLocale(argv, environment) {
   if (explicit !== null) {
     const locale = normalizeLocale(explicit);
     if (locale === null) throw cliInputError("validation.localeUnsupported");
-    return { argv: stripped, locale };
+    return { argv: stripped, locale, explicit: true };
   }
-  for (const key of ["CRP_LOCALE", "LC_ALL", "LC_MESSAGES", "LANG"]) {
-    const locale = normalizeLocale(environment?.[key]);
-    if (locale !== null) return { argv: stripped, locale };
-  }
-  return { argv: stripped, locale: "en" };
+  return { argv: stripped, locale: "en", explicit: false };
 }
 
 function cliMessage(locale, key, values = {}) {
   let message = CLI_MESSAGES[locale][key];
   for (const [name, value] of Object.entries(values)) {
-    message = message.replaceAll(`{${name}}`, String(value));
+    message = message.replaceAll(`{${name}}`, () => String(value));
   }
   return message;
 }
 
 function safeCommandName(argv) {
-  return SAFE_CLI_COMMANDS.has(argv[0]) ? argv[0] : "unknown";
+  return SAFE_CLI_COMMANDS.has(argv[0]) || REMOVED_CLI_COMMANDS.has(argv[0])
+    ? argv[0]
+    : "unknown";
+}
+
+function removedCommandError(command, replacement) {
+  const error = new CrpError(
+    "CLI_COMMAND_REMOVED",
+    "This CLI command has been removed.",
+    `Use \`${replacement}\` instead.`,
+    { status: 400 }
+  );
+  error.cliMessageKey = "command.removed";
+  error.cliMessageValues = { command: `crp ${command}`, replacement };
+  return error;
 }
 
 function sanitizeCliErrorDetails(details) {
@@ -359,11 +579,6 @@ function humanCliError(error, locale) {
 }
 
 function parseCommandLine(argv, locale = "en") {
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
-    printHelp();
-    process.exit(0);
-  }
-
   const command = argv[0];
   const options = {};
 
@@ -389,24 +604,148 @@ function parseCommandLine(argv, locale = "en") {
   return { command, options };
 }
 
+function printHelpKeys(keys, writeLine, locale) {
+  for (const key of keys) writeLine(cliMessage(locale, key));
+}
+
 function printHelp(writeLine = (line) => console.log(line), locale = "en") {
-  for (const key of [
+  printHelpKeys([
     "help.usage",
-    "help.check",
-    "help.init",
+    "help.rootSyntax",
+    "help.commands",
     "help.ui",
+    "help.description.ui",
     "help.start",
-    "help.install",
-    "help.capture",
+    "help.description.start",
     "help.status",
+    "help.description.status",
     "help.stop",
+    "help.description.stop",
     "help.restart",
+    "help.description.restart",
     "help.shutdown",
+    "help.description.shutdown",
     "help.provider",
-    "help.setup",
+    "help.description.provider",
+    "help.check",
+    "help.description.check",
+    "help.capture",
+    "help.description.capture",
     "help.guide",
-    "help.installCli"
-  ]) writeLine(cliMessage(locale, key));
+    "help.description.guide",
+    "help.installCli",
+    "help.description.installCli",
+    "help.options",
+    "help.option.json",
+    "help.option.locale",
+    "help.option.help",
+    "help.examples",
+    "help.example.providerAdd",
+    "help.example.status",
+    "help.hint"
+  ], writeLine, locale);
+}
+
+function resolveHelpRequest(argv) {
+  if (argv.length === 0
+    || (argv.length === 1 && HELP_FLAGS.has(argv[0]))) return { type: "root" };
+  if (argv.length === 2 && HELP_FLAGS.has(argv[1]) && SAFE_CLI_COMMANDS.has(argv[0])) {
+    return argv[0] === "provider"
+      ? { type: "provider" }
+      : { type: "command", command: argv[0] };
+  }
+  if (argv.length === 3 && argv[0] === "provider"
+    && PROVIDER_ACTIONS.has(argv[1]) && HELP_FLAGS.has(argv[2])) {
+    return { type: "providerAction", action: argv[1] };
+  }
+  if (argv.length === 3 && argv[0] === "capture"
+    && ["on", "off", "status"].includes(argv[1]) && HELP_FLAGS.has(argv[2])) {
+    return { type: "command", command: "capture" };
+  }
+  return null;
+}
+
+function printCommandHelp(command, writeLine, locale) {
+  const keys = [
+    "help.usage",
+    `help.${command === "install-cli" ? "installCli" : command}`,
+    `help.description.${command === "install-cli" ? "installCli" : command}`,
+    "help.options"
+  ];
+  if (command === "ui") keys.push("help.option.noOpen");
+  keys.push("help.option.json", "help.option.locale", "help.option.help");
+  keys.push("help.examples", `help.${command === "install-cli" ? "installCli" : command}`);
+  printHelpKeys(keys, writeLine, locale);
+}
+
+function printProviderHelp(writeLine, locale) {
+  printHelpKeys([
+    "help.usage",
+    "help.provider",
+    "help.description.provider",
+    "help.commands",
+    "help.provider.list",
+    "help.provider.add",
+    "help.provider.models",
+    "help.provider.test",
+    "help.provider.activate",
+    "help.provider.delete",
+    "help.options",
+    "help.option.locale",
+    "help.option.help",
+    "help.examples",
+    "help.example.providerAdd",
+    "help.example.providerModels"
+  ], writeLine, locale);
+}
+
+function printProviderActionHelp(action, writeLine, locale) {
+  const keys = [
+    "help.usage",
+    `help.provider.${action}`,
+    `help.provider.description.${action}`
+  ];
+  if (action === "add") keys.push("help.provider.addAdvanced");
+  keys.push("help.options");
+  if (["models", "test", "activate", "delete"].includes(action)) {
+    keys.push("help.option.provider.name", "help.option.provider.id");
+  }
+  if (action === "add") {
+    keys.push(
+      "help.option.provider.name",
+      "help.option.provider.baseUrl",
+      "help.option.provider.apiKey",
+      "help.option.provider.model",
+      "help.option.provider.authHeader",
+      "help.option.provider.authScheme",
+      "help.option.provider.modelMode",
+      "help.option.provider.modelOverride"
+    );
+  } else if (action === "test") {
+    keys.push("help.option.provider.model");
+  }
+  keys.push("help.option.json", "help.option.locale", "help.option.help", "help.examples");
+  keys.push({
+    list: "help.example.providerList",
+    add: "help.example.providerAdd",
+    models: "help.example.providerModels",
+    test: "help.example.providerTest",
+    activate: "help.example.providerActivate",
+    delete: "help.example.providerDelete"
+  }[action]);
+  printHelpKeys(keys, writeLine, locale);
+}
+
+function printResolvedHelp(request, writeLine, locale) {
+  if (request.type === "root") {
+    printHelp(writeLine, locale);
+  } else if (request.type === "provider") {
+    printProviderHelp(writeLine, locale);
+  } else if (request.type === "providerAction") {
+    printProviderActionHelp(request.action, writeLine, locale);
+  } else {
+    printCommandHelp(request.command, writeLine, locale);
+  }
 }
 
 function maybePrintJson(options, payload, stdout = (text) => process.stdout.write(text)) {
@@ -813,9 +1152,10 @@ function buildGuideData() {
     preferredImplementation: "node",
     commands: {
       inspect: "crp check --json",
-      providerAdd: "crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --json",
-      providerTest: "crp provider test --id <ID> --model <MODEL> --json",
-      providerActivate: "crp provider activate --id <ID> --json",
+      providerAdd: "crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --model <MODEL> --json",
+      providerModels: "crp provider models --name <NAME> --json",
+      providerTest: "crp provider test --name <NAME> --model <MODEL> --json",
+      providerActivate: "crp provider activate --name <NAME> --json",
       start: "crp start --json",
       status: "crp status --json",
       ui: "crp ui --json",
@@ -825,15 +1165,15 @@ function buildGuideData() {
       runWithoutInstall: "npx @cluic/codex-remote-proxy guide --json"
     },
     expectedFlow: [
-      "Add a provider with `crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --json`.",
-      "Validate it with `crp provider test --id <ID> --model <MODEL> --json`.",
-      "Activate it with `crp provider activate --id <ID> --json`.",
+      "Add and test a provider with `crp provider add --name <NAME> --base-url <URL> --api-key <KEY> --model <MODEL> --json`; the first successful provider is selected automatically.",
       "Start the proxy through the supervisor with `crp start --json`.",
       "Confirm supervisor and worker health with `crp status --json`.",
       "Open the local management UI with `crp ui --json`.",
       "When finished, stop the supervisor with `crp shutdown --json`."
     ],
     notes: [
+      "Use `crp provider models --name <NAME> --json` to refresh the provider model cache.",
+      "Use provider test to retest a saved provider and provider activate to switch to another tested provider.",
       "The start command creates a backup only when it changes ~/.codex/config.toml.",
       "Provider credential is write-only and never echoed by CLI or Admin API responses.",
       "The supervisor owns proxy lifecycle and applies the active provider when start is requested.",
@@ -1134,7 +1474,7 @@ async function installCommand(options) {
   if (!existsSync(codexConfigPath)) {
     throw new Error(`Codex config not found: ${codexConfigPath}`);
   }
-  const { backupPath } = bootstrapCodexConfig({ configPath: codexConfigPath, proxyUrl });
+  const { backupPath } = await bootstrapCodexConfig({ configPath: codexConfigPath, proxyUrl });
 
   const existingState = loadManagedState();
   if (existingState?.pid && isProcessAlive(existingState.pid)) {
@@ -1239,6 +1579,7 @@ function guideCommand(options, locale, stdout) {
     stdout(`${cliMessage(locale, "guide.header")}\n`);
     for (const [key, command] of [
       ["guide.add", data.commands.providerAdd],
+      ["guide.models", data.commands.providerModels],
       ["guide.test", data.commands.providerTest],
       ["guide.activate", data.commands.providerActivate],
       ["guide.start", data.commands.start],
@@ -1432,6 +1773,311 @@ function writePayload(options, payload, stdout, humanMessage) {
   stdout(`${humanMessage}\n`);
 }
 
+function writeHumanProviderAdd(result, locale, stdout) {
+  const lines = [cliMessage(locale, "provider.add.completed")];
+  if (result?.test?.ok === true) {
+    lines.push(cliMessage(locale, "provider.add.testPassed"));
+  } else if (result?.test?.ok === false) {
+    const code = typeof result.test.code === "string" && /^[A-Z][A-Z0-9_]{0,127}$/.test(result.test.code)
+      ? result.test.code
+      : cliMessage(locale, "common.unknown");
+    lines.push(cliMessage(locale, "provider.add.testFailed", { code }));
+  }
+  if (result?.initialActivation?.automatic === true) {
+    lines.push(cliMessage(locale, "provider.test.initialSelected"));
+  }
+  stdout(`${lines.join("\n")}\n`);
+}
+
+function writeHumanProviderTestResult(result, locale, stdout) {
+  const lines = [cliMessage(locale, "provider.test.completed")];
+  if (result?.result?.ok === true) {
+    lines.push(cliMessage(locale, "provider.test.passed"));
+  } else {
+    const code = typeof result?.result?.code === "string"
+      && /^[A-Z][A-Z0-9_]{0,127}$/.test(result.result.code)
+      ? result.result.code
+      : cliMessage(locale, "common.unknown");
+    lines.push(cliMessage(locale, "provider.test.failedCode", { code }));
+  }
+  if (result?.result?.initialActivation?.automatic === true) {
+    lines.push(cliMessage(locale, "provider.test.initialSelected"));
+  }
+  stdout(`${lines.join("\n")}\n`);
+}
+
+function terminalSafeText(value, { maxCodePoints = 160, fallback = "" } = {}) {
+  if (typeof value !== "string" || value.length === 0) return fallback;
+  const codePoints = Array.from(value);
+  const truncated = codePoints.length > maxCodePoints;
+  let output = "";
+  for (const character of codePoints.slice(0, maxCodePoints)) {
+    if (character === "\\") {
+      output += "\\\\";
+      continue;
+    }
+    if (character === "\"") {
+      output += "\\\"";
+      continue;
+    }
+    if (character === "\b") {
+      output += "\\b";
+      continue;
+    }
+    if (character === "\f") {
+      output += "\\f";
+      continue;
+    }
+    if (character === "\n") {
+      output += "\\n";
+      continue;
+    }
+    if (character === "\r") {
+      output += "\\r";
+      continue;
+    }
+    if (character === "\t") {
+      output += "\\t";
+      continue;
+    }
+    const codePoint = character.codePointAt(0);
+    if (codePoint <= 0x1f
+      || (codePoint >= 0x7f && codePoint <= 0x9f)
+      || (codePoint >= 0xd800 && codePoint <= 0xdfff)
+      || codePoint === 0x061c
+      || (codePoint >= 0x200b && codePoint <= 0x200f)
+      || codePoint === 0x2028 || codePoint === 0x2029
+      || (codePoint >= 0x202a && codePoint <= 0x202e)
+      || (codePoint >= 0x2060 && codePoint <= 0x206f)
+      || codePoint === 0xfeff) {
+      output += `\\u${codePoint.toString(16).padStart(4, "0")}`;
+      continue;
+    }
+    output += character;
+  }
+  return `${output}${truncated ? "..." : ""}`;
+}
+
+function humanInteger(value, locale, { positive = false } = {}) {
+  if (!Number.isSafeInteger(value) || (positive ? value <= 0 : value < 0)) {
+    return cliMessage(locale, "common.unknown");
+  }
+  return String(value);
+}
+
+function humanBoolean(value, locale) {
+  if (value === true) return cliMessage(locale, "common.yes");
+  if (value === false) return cliMessage(locale, "common.no");
+  return cliMessage(locale, "common.unknown");
+}
+
+function humanWorkerPhase(value, locale) {
+  if (["running", "stopped", "starting", "draining", "failed", "crashed", "backoff"].includes(value)) {
+    return cliMessage(locale, `status.state.${value}`);
+  }
+  return cliMessage(locale, "common.unknown");
+}
+
+function humanPublicBaseUrl(value, locale) {
+  if (typeof value !== "string") return cliMessage(locale, "common.unknown");
+  try {
+    const parsed = new URL(value);
+    return terminalSafeText(`${parsed.origin}${parsed.pathname}`, {
+      maxCodePoints: 320,
+      fallback: cliMessage(locale, "common.unknown")
+    });
+  } catch {
+    return cliMessage(locale, "common.unknown");
+  }
+}
+
+function humanIsoTimestamp(value, locale) {
+  if (typeof value !== "string") return cliMessage(locale, "common.unknown");
+  try {
+    if (new Date(value).toISOString() !== value) return cliMessage(locale, "common.unknown");
+  } catch {
+    return cliMessage(locale, "common.unknown");
+  }
+  return value;
+}
+
+function humanProviderTest(provider, locale) {
+  if (provider?.lastTestStatus === "untested") return cliMessage(locale, "provider.test.untested");
+  if (provider?.lastTestStatus === "passed") return cliMessage(locale, "provider.test.passed");
+  if (provider?.lastTestStatus === "failed") {
+    return typeof provider.lastTestCode === "string"
+      && /^[A-Z][A-Z0-9_]{0,127}$/.test(provider.lastTestCode)
+      ? cliMessage(locale, "provider.test.failedCode", { code: provider.lastTestCode })
+      : cliMessage(locale, "provider.test.failed");
+  }
+  return cliMessage(locale, "common.unknown");
+}
+
+function humanProviderModel(provider, locale) {
+  if (provider?.modelMode === "passthrough") {
+    return cliMessage(locale, "provider.model.passthrough");
+  }
+  if (provider?.modelMode === "override") {
+    return cliMessage(locale, "provider.model.override", {
+      model: terminalSafeText(provider.modelOverride, {
+        maxCodePoints: 160,
+        fallback: cliMessage(locale, "common.unknown")
+      })
+    });
+  }
+  return cliMessage(locale, "common.unknown");
+}
+
+function humanCredentialState(value, locale) {
+  if (value === true) return cliMessage(locale, "provider.credential.configured");
+  if (value === false) return cliMessage(locale, "provider.credential.notConfigured");
+  return cliMessage(locale, "common.unknown");
+}
+
+function writeHumanProviderList(providers, activeProviderId, locale, stdout) {
+  const safeProviders = Array.isArray(providers) ? providers : [];
+  const lines = [cliMessage(locale, "provider.list.header", { count: safeProviders.length })];
+  if (safeProviders.length === 0) {
+    lines.push(cliMessage(locale, "provider.list.empty"));
+    stdout(`${lines.join("\n")}\n`);
+    return;
+  }
+
+  for (const provider of safeProviders) {
+    const id = terminalSafeText(provider?.id, {
+      maxCodePoints: 128,
+      fallback: cliMessage(locale, "common.unknown")
+    });
+    const name = terminalSafeText(provider?.name, {
+      maxCodePoints: 120,
+      fallback: cliMessage(locale, "common.unknown")
+    });
+    const isActive = typeof provider?.id === "string" && provider.id === activeProviderId;
+    lines.push(cliMessage(locale, isActive ? "provider.list.active" : "provider.list.inactive", { name }));
+    lines.push(cliMessage(locale, "provider.list.id", { value: id }));
+    lines.push(cliMessage(locale, "provider.list.baseUrl", {
+      value: humanPublicBaseUrl(provider?.baseUrl, locale)
+    }));
+    lines.push(cliMessage(locale, "provider.list.test", {
+      value: humanProviderTest(provider, locale)
+    }));
+    lines.push(cliMessage(locale, "provider.list.model", {
+      value: humanProviderModel(provider, locale)
+    }));
+    lines.push(cliMessage(locale, "provider.list.credential", {
+      value: humanCredentialState(provider?.credentialConfigured, locale)
+    }));
+  }
+  stdout(`${lines.join("\n")}\n`);
+}
+
+function writeHumanProviderModels(result, selector, locale, stdout) {
+  const catalog = result?.modelCatalog && typeof result.modelCatalog === "object"
+    ? result.modelCatalog
+    : result;
+  const provider = result?.provider && typeof result.provider === "object"
+    ? result.provider
+    : {};
+  const models = Array.isArray(catalog?.models)
+    ? catalog.models.filter((model) => typeof model === "string").slice(0, 2_000)
+    : [];
+  const unknown = cliMessage(locale, "common.unknown");
+  const providerId = terminalSafeText(
+    provider.id ?? catalog?.providerId ?? (selector?.type === "id" ? selector.value : null),
+    { maxCodePoints: 128, fallback: unknown }
+  );
+  const providerName = terminalSafeText(
+    provider.name ?? (selector?.type === "name" ? selector.value : null),
+    { maxCodePoints: 120, fallback: unknown }
+  );
+  const lines = [cliMessage(locale, "provider.models.header", {
+    name: providerName,
+    id: providerId,
+    count: models.length
+  })];
+  if (models.length === 0) {
+    lines.push(cliMessage(locale, "provider.models.empty"));
+  } else {
+    for (const model of models.slice(0, 20)) {
+      lines.push(cliMessage(locale, "provider.models.item", {
+        model: terminalSafeText(model, { maxCodePoints: 160, fallback: unknown })
+      }));
+    }
+    if (models.length > 20) {
+      lines.push(cliMessage(locale, "provider.models.more", { count: models.length - 20 }));
+    }
+  }
+  stdout(`${lines.join("\n")}\n`);
+}
+
+function writeHumanStatus(payload, locale, stdout) {
+  if (payload.running !== true) {
+    stdout(`${cliMessage(locale, "status.notRunning")}\n`);
+    return;
+  }
+  const unknown = cliMessage(locale, "common.unknown");
+  const supervisor = payload.supervisor && typeof payload.supervisor === "object"
+    ? payload.supervisor
+    : {};
+  const worker = payload.worker && typeof payload.worker === "object" ? payload.worker : {};
+  const workerState = worker.state && typeof worker.state === "object" ? worker.state : {};
+  const activeProvider = payload.activeProvider && typeof payload.activeProvider === "object"
+    ? payload.activeProvider
+    : null;
+  const codex = payload.codex && typeof payload.codex === "object" ? payload.codex : {};
+  const lines = [
+    cliMessage(locale, "status.header"),
+    cliMessage(locale, "status.supervisor", {
+      state: cliMessage(locale, "status.state.running")
+    }),
+    cliMessage(locale, "status.pid", {
+      value: humanInteger(supervisor.pid, locale, { positive: true })
+    }),
+    cliMessage(locale, "status.startedAt", {
+      value: humanIsoTimestamp(supervisor.startedAt, locale)
+    }),
+    cliMessage(locale, "status.worker", { state: humanWorkerPhase(worker.phase, locale) }),
+    cliMessage(locale, "status.pid", {
+      value: humanInteger(worker.pid, locale, { positive: true })
+    }),
+    cliMessage(locale, "status.generation", {
+      value: humanInteger(worker.generation, locale)
+    }),
+    cliMessage(locale, "status.listening", {
+      value: humanBoolean(workerState.listening, locale)
+    }),
+    cliMessage(locale, "status.inFlight", {
+      value: humanInteger(workerState.inFlight, locale)
+    })
+  ];
+
+  const activeId = typeof activeProvider?.id === "string"
+    ? activeProvider.id
+    : payload.activeProviderId;
+  if (typeof activeId === "string" && activeId.length > 0) {
+    lines.push(cliMessage(locale, "status.activeProvider", {
+      name: terminalSafeText(activeProvider?.name, { maxCodePoints: 120, fallback: unknown }),
+      id: terminalSafeText(activeId, { maxCodePoints: 128, fallback: unknown })
+    }));
+  } else {
+    lines.push(cliMessage(locale, "status.activeProviderNone"));
+  }
+  let codexState = unknown;
+  if (codex.configured === true) codexState = cliMessage(locale, "status.state.configured");
+  if (codex.configured === false) codexState = cliMessage(locale, "status.state.notConfigured");
+  lines.push(cliMessage(locale, "status.codex", { state: codexState }));
+  lines.push(cliMessage(locale, "status.historyRepairPending", {
+    value: humanBoolean(codex.historyRepairPending, locale)
+  }));
+  lines.push(cliMessage(locale, "status.modelProvider", {
+    value: codex.modelProvider === "OpenAI" ? "OpenAI" : unknown
+  }));
+  lines.push(cliMessage(locale, "status.proxyUrl", {
+    value: codex.proxyUrl === "http://127.0.0.1:15100" ? codex.proxyUrl : unknown
+  }));
+  stdout(`${lines.join("\n")}\n`);
+}
+
 export function openManagementUrl(url, {
   platform = process.platform,
   spawnImpl = spawn
@@ -1472,7 +2118,7 @@ export function openManagementUrl(url, {
 
 function parseProviderOptions(argv, locale) {
   const action = argv[1];
-  if (!["list", "add", "test", "activate", "delete"].includes(action)) {
+  if (!PROVIDER_ACTIONS.has(action)) {
     throw cliInputError("validation.providerAction");
   }
   const { options } = parseCommandLine(["provider", ...argv.slice(2)], locale);
@@ -1483,17 +2129,26 @@ function parseProviderOptions(argv, locale) {
       "name",
       "base-url",
       "api-key",
+      "model",
       "auth-header",
       "auth-scheme",
       "model-mode",
       "model-override"
     ]),
-    test: new Set(["json", "id", "model"]),
-    activate: new Set(["json", "id"]),
-    delete: new Set(["json", "id"])
+    models: new Set(["json", "id", "name"]),
+    test: new Set(["json", "id", "name", "model"]),
+    activate: new Set(["json", "id", "name"]),
+    delete: new Set(["json", "id", "name"])
   }[action];
   if (Object.keys(options).some((field) => !allowed.has(field))) {
     throw cliInputError("validation.providerOption");
+  }
+  if (["models", "test", "activate", "delete"].includes(action)) {
+    providerSelector(options, locale);
+  }
+  if (action === "test") requiredOption(options, "model", locale);
+  if (action === "add" && Object.hasOwn(options, "model")) {
+    requiredOption(options, "model", locale);
   }
   return { action, options };
 }
@@ -1506,17 +2161,89 @@ function requiredOption(options, name, locale) {
   return value.trim();
 }
 
+function providerSelector(options, locale) {
+  const hasId = Object.hasOwn(options, "id");
+  const hasName = Object.hasOwn(options, "name");
+  if (hasId === hasName) throw cliInputError("validation.providerSelector");
+  return hasId
+    ? { type: "id", value: requiredOption(options, "id", locale) }
+    : { type: "name", value: requiredOption(options, "name", locale) };
+}
+
+function providerNotFoundError() {
+  return new CrpError(
+    "PROVIDER_NOT_FOUND",
+    "The provider does not exist.",
+    "Run provider list and try again.",
+    { status: 404 }
+  );
+}
+
+async function resolveProviderSelector(client, selector) {
+  if (selector.type === "id") return selector.value;
+  const response = await client.request("GET", "/providers");
+  const expected = selector.value.toLowerCase();
+  const matches = Array.isArray(response?.providers)
+    ? response.providers.filter((provider) => (
+      typeof provider?.name === "string" && provider.name.toLowerCase() === expected
+    ))
+    : [];
+  if (matches.length !== 1
+    || typeof matches[0]?.id !== "string" || matches[0].id.length === 0) {
+    throw providerNotFoundError();
+  }
+  const providerId = matches[0].id;
+  const current = await client.request(
+    "GET",
+    `/providers/${encodeURIComponent(providerId)}`
+  );
+  if (current?.provider?.id !== providerId
+    || typeof current.provider.name !== "string"
+    || current.provider.name.toLowerCase() !== expected) {
+    throw providerNotFoundError();
+  }
+  return providerId;
+}
+
+function providerAddTestFailed(cause) {
+  const degraded = cause instanceof CrpError
+    && cause.details?.committed === true
+    && cause.details?.degraded === true;
+  const safeCauseAction = typeof cause?.action === "string"
+    && cause.action.length > 0 && cause.action.length <= 512
+    && !/[\u0000-\u001f\u007f]/.test(cause.action)
+    ? cause.action
+    : null;
+  const error = degraded
+    ? new CrpError(
+      "PROVIDER_ADD_TEST_COMMITTED_DEGRADED",
+      "The provider was added and its test result was saved, but persistence degraded.",
+      safeCauseAction ?? "Repair CRP persistence before retrying the provider test.",
+      {
+        status: 500,
+        cause,
+        details: { committed: true, degraded: true }
+      }
+    )
+    : new CrpError(
+      "PROVIDER_ADD_TEST_FAILED",
+      "The provider was added, but its automatic compatibility test could not be completed.",
+      "Run provider list, then retry provider test for the saved provider.",
+      { status: 500, cause, details: { committed: true } }
+    );
+  if (typeof cause?.requestId === "string"
+    && /^[A-Za-z0-9_-]{1,128}$/.test(cause.requestId)) {
+    error.requestId = cause.requestId;
+  }
+  return error;
+}
+
 async function dispatchProviderCommand(argv, dependencies) {
   const { action, options } = parseProviderOptions(argv, dependencies.locale);
-  let method;
-  let path;
-  let body;
-  if (action === "list") {
-    method = "GET";
-    path = "/providers";
-  } else if (action === "add") {
-    method = "POST";
-    path = "/providers";
+  let addRequest = null;
+  let addTestModel = null;
+  let selector = null;
+  if (action === "add") {
     const provider = {
       name: requiredOption(options, "name", dependencies.locale),
       baseUrl: requiredOption(options, "base-url", dependencies.locale)
@@ -1529,44 +2256,101 @@ async function dispatchProviderCommand(argv, dependencies) {
     ]) {
       if (typeof options[option] === "string") provider[field] = options[option];
     }
-    body = {
+    addRequest = {
       provider,
       credential: requiredOption(options, "api-key", dependencies.locale)
     };
-  } else {
-    const id = encodeURIComponent(requiredOption(options, "id", dependencies.locale));
-    if (action === "test") {
-      method = "POST";
-      path = `/providers/${id}/test`;
-      body = { model: requiredOption(options, "model", dependencies.locale) };
-    } else if (action === "activate") {
-      method = "POST";
-      path = `/providers/${id}/activate`;
-    } else {
-      method = "DELETE";
-      path = `/providers/${id}`;
+    if (Object.hasOwn(options, "model")) {
+      addTestModel = requiredOption(options, "model", dependencies.locale);
     }
+  } else if (action !== "list") {
+    selector = providerSelector(options, dependencies.locale);
   }
+
   const context = await dependencies.ensureSupervisorImpl({
     paths: dependencies.paths,
     adminPort: dependencies.adminPort
   });
-  const result = await context.client.request(method, path, body);
-  writePayload(options, {
+  let result;
+  if (action === "list") {
+    result = await context.client.request("GET", "/providers");
+  } else if (action === "add") {
+    result = await context.client.request("POST", "/providers", addRequest);
+    if (addTestModel !== null) {
+      const providerId = result?.provider?.id;
+      if (typeof providerId !== "string" || providerId.length === 0) {
+        throw providerAddTestFailed(new Error("provider identity missing after create"));
+      }
+      let tested;
+      try {
+        tested = await context.client.request(
+          "POST",
+          `/providers/${encodeURIComponent(providerId)}/test`,
+          { model: addTestModel, activateIfNone: true }
+        );
+      } catch (error) {
+        throw providerAddTestFailed(error);
+      }
+      result = {
+        ...result,
+        test: {
+          ok: tested?.result?.ok === true,
+          code: typeof tested?.result?.code === "string" ? tested.result.code : null
+        },
+        ...(tested?.result?.initialActivation
+          ? { initialActivation: tested.result.initialActivation }
+          : {})
+      };
+    }
+  } else {
+    const providerId = await resolveProviderSelector(context.client, selector);
+    const encodedId = encodeURIComponent(providerId);
+    if (action === "test") {
+      result = await context.client.request("POST", `/providers/${encodedId}/test`, {
+        model: requiredOption(options, "model", dependencies.locale),
+        activateIfNone: true
+      });
+    } else if (action === "activate") {
+      result = await context.client.request("POST", `/providers/${encodedId}/activate`);
+    } else if (action === "models") {
+      result = await context.client.request("POST", `/providers/${encodedId}/models`);
+    } else {
+      result = await context.client.request("DELETE", `/providers/${encodedId}`);
+    }
+  }
+  const payload = {
     ok: true,
     action,
     ...result
-  }, dependencies.stdout, cliMessage(dependencies.locale, `provider.${action}.completed`));
+  };
+  if (action === "list" && options.json !== true) {
+    writeHumanProviderList(
+      result?.providers,
+      context.status?.activeProviderId ?? null,
+      dependencies.locale,
+      dependencies.stdout
+    );
+  } else if (action === "models" && options.json !== true) {
+    writeHumanProviderModels(result, selector, dependencies.locale, dependencies.stdout);
+  } else if (action === "add" && options.json !== true) {
+    writeHumanProviderAdd(result, dependencies.locale, dependencies.stdout);
+  } else if (action === "test" && options.json !== true) {
+    writeHumanProviderTestResult(result, dependencies.locale, dependencies.stdout);
+  } else {
+    writePayload(
+      options,
+      payload,
+      dependencies.stdout,
+      cliMessage(dependencies.locale, `provider.${action}.completed`)
+    );
+  }
 }
 
 function parseSupervisorOptions(argv, locale) {
   const { command, options } = parseCommandLine(argv, locale);
   const allowed = {
-    init: new Set(["json", "no-open"]),
     ui: new Set(["json", "no-open"]),
     start: new Set(["json"]),
-    install: new Set(["json"]),
-    setup: new Set(["json"]),
     status: new Set(["json"]),
     stop: new Set(["json"]),
     restart: new Set(["json"]),
@@ -1592,11 +2376,8 @@ function parseCaptureOptions(argv, locale) {
 
 async function dispatchSupervisorCommand(argv, dependencies) {
   const supervisorCommands = new Set([
-    "init",
     "ui",
     "start",
-    "install",
-    "setup",
     "status",
     "stop",
     "restart",
@@ -1625,7 +2406,7 @@ async function dispatchSupervisorCommand(argv, dependencies) {
   } = dependencies;
   const discoveryOptions = { paths, adminPort };
 
-  if (command === "ui" || command === "init") {
+  if (command === "ui") {
     const context = await ensureSupervisorImpl(discoveryOptions);
     const token = readControlTokenImpl({ path: paths.controlTokenPath });
     const url = `${context.origin}/#token=${token}`;
@@ -1646,9 +2427,11 @@ async function dispatchSupervisorCommand(argv, dependencies) {
     const payload = context === null
       ? { ok: true, running: false, reason: "supervisor_not_running" }
       : { ok: true, running: true, ...context.status };
-    writePayload(options, payload, stdout, payload.running
-      ? cliMessage(dependencies.locale, "status.running")
-      : cliMessage(dependencies.locale, "status.notRunning"));
+    if (options.json) {
+      writePayload(options, payload, stdout, "");
+    } else {
+      writeHumanStatus(payload, dependencies.locale, stdout);
+    }
     return true;
   }
 
@@ -1712,30 +2495,43 @@ async function dispatchSupervisorCommand(argv, dependencies) {
   try {
     context = await ensureSupervisorImpl(discoveryOptions);
   } catch (error) {
-    if (command === "start" || command === "install" || command === "setup") {
+    if (command === "start") {
       throw withCliStage(error, "supervisor_start");
     }
     throw error;
   }
-  if (command === "restart") {
-    const result = await context.client.request("POST", "/proxy/restart");
-    writePayload(options, {
-      ok: true,
-      command: "restart",
-      supervisorPid: context.state.supervisorPid,
-      worker: result?.worker ?? null
-    }, stdout, cliMessage(dependencies.locale, "restart.completed"));
-    return true;
-  }
-
   let codexBootstrap = null;
-  if (context.status?.codex?.configured !== true) {
+  if (context.status?.codex?.configured !== true
+    || context.status?.codex?.historyRepairPending === true) {
     try {
-      const bootstrap = await context.client.request("POST", "/codex/bootstrap");
+      const bootstrap = await context.client.request(
+        "POST",
+        "/codex/bootstrap",
+        undefined,
+        { requestTimeoutMs: CODEX_BOOTSTRAP_REQUEST_TIMEOUT_MS }
+      );
       codexBootstrap = bootstrap?.result ?? null;
     } catch (error) {
       throw withCliStage(error, "codex_bootstrap");
     }
+  }
+  if (command === "restart") {
+    const result = await context.client.request("POST", "/proxy/restart");
+    const payload = {
+      ok: true,
+      command: "restart",
+      supervisorPid: context.state.supervisorPid,
+      worker: result?.worker ?? null,
+      ...(codexBootstrap === null ? {} : { codexBootstrap })
+    };
+    const humanMessage = codexBootstrap?.historyRepair?.encryptedContentDetected === true
+      ? `${cliMessage(dependencies.locale, "restart.completed")}\n${cliMessage(
+        dependencies.locale,
+        "start.historyRepairEncryptedWarning"
+      )}`
+      : cliMessage(dependencies.locale, "restart.completed");
+    writePayload(options, payload, stdout, humanMessage);
+    return true;
   }
   let result;
   try {
@@ -1752,8 +2548,13 @@ async function dispatchSupervisorCommand(argv, dependencies) {
     worker: result?.worker ?? null,
     codexBootstrap
   };
-  if (command === "install" || command === "setup") payload.deprecated = true;
-  writePayload(options, payload, stdout, cliMessage(dependencies.locale, "start.ready"));
+  const humanMessage = codexBootstrap?.historyRepair?.encryptedContentDetected === true
+    ? `${cliMessage(dependencies.locale, "start.ready")}\n${cliMessage(
+      dependencies.locale,
+      "start.historyRepairEncryptedWarning"
+    )}`
+    : cliMessage(dependencies.locale, "start.ready");
+  writePayload(options, payload, stdout, humanMessage);
   return true;
 }
 
@@ -1769,7 +2570,7 @@ async function main(argv = process.argv.slice(2), {
   const { command, options } = parseCommandLine(argv, locale);
   if (command === "check") return checkCommand(options, locale, stdout);
   if (command === "guide") return guideCommand(options, locale, stdout);
-  if (command === "start" || command === "install" || command === "setup") return await startCommandAction(options);
+  if (command === "start") return await startCommandAction(options);
   if (command === "status") return await statusCommand(options);
   if (command === "stop") return await stopCommand(options);
   if (command === "install-cli") return await installCliCommand(options, locale, stdout);
@@ -1796,13 +2597,18 @@ export async function runCli(argv, {
   const jsonIntent = argv.includes("--json");
   let commandName = safeCommandName(argv);
   try {
-    const resolved = resolveCliLocale(argv, environment);
+    const resolved = resolveCliLocale(argv);
     argv = resolved.argv;
     locale = resolved.locale;
     commandName = safeCommandName(argv);
-    if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
-      printHelp((line) => stdout(`${line}\n`), locale);
+    const helpRequest = resolveHelpRequest(argv);
+    if (helpRequest !== null) {
+      const helpLocale = resolved.explicit ? locale : "en";
+      printResolvedHelp(helpRequest, (line) => stdout(`${line}\n`), helpLocale);
       return 0;
+    }
+    if (REMOVED_CLI_COMMANDS.has(argv[0])) {
+      throw removedCommandError(argv[0], REMOVED_CLI_COMMANDS.get(argv[0]));
     }
     const handled = await dispatchSupervisorCommand(argv, {
       paths,

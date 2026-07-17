@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  createProviderSourceFingerprint,
+  MAX_MODEL_ID_LENGTH,
+  MAX_PROVIDER_MODELS
+} from "../providers/provider-model-cache.mjs";
 import { toPublicProvider } from "../providers/provider-schema.mjs";
 import { CrpError } from "../shared/errors.mjs";
+
+const MAX_MODELS_RESPONSE_BYTES = 1_048_576;
+const MODEL_ID_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 
 function serviceError(code, { status = 500, cause, details = {} } = {}) {
   const contracts = {
@@ -48,6 +56,62 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
     PROVIDER_TEST_INPUT_INVALID: [
       "The provider test model is invalid.",
       "Enter a non-empty model name and try again."
+    ],
+    PROVIDER_TEST_COMMITTED_DEGRADED: [
+      "The provider test result was saved, but persistence cleanup degraded.",
+      "Stop CRP, inspect Activity and provider-registry persistence, then repair the residual state."
+    ],
+    PROVIDER_INITIAL_ACTIVATION_UNSAFE: [
+      "The first provider cannot be selected while the proxy Worker is not stopped.",
+      "Stop the proxy Worker, then test the provider again."
+    ],
+    PROVIDER_MODELS_REDIRECT: [
+      "The provider model endpoint redirected the request.",
+      "Use a direct provider base URL and try again."
+    ],
+    PROVIDER_MODELS_AUTH: [
+      "The provider rejected model discovery credentials.",
+      "Repair the provider credential and try again."
+    ],
+    PROVIDER_MODELS_NOT_FOUND: [
+      "The provider does not expose a model endpoint at this base URL.",
+      "Check the provider base URL or continue with a manually entered model."
+    ],
+    PROVIDER_MODELS_HTTP: [
+      "The provider model endpoint returned an error.",
+      "Wait or repair the provider configuration, then try again."
+    ],
+    PROVIDER_MODELS_INVALID_JSON: [
+      "The provider model endpoint returned invalid JSON.",
+      "Check provider compatibility and try again."
+    ],
+    PROVIDER_MODELS_INVALID_RESPONSE: [
+      "The provider model endpoint returned an invalid model list.",
+      "Use a compatible model endpoint or enter a model manually."
+    ],
+    PROVIDER_MODELS_RESPONSE_TOO_LARGE: [
+      "The provider model response is too large.",
+      "Use a provider endpoint with a bounded model catalog."
+    ],
+    PROVIDER_MODELS_TIMEOUT: [
+      "The provider model request timed out.",
+      "Check provider connectivity and try again."
+    ],
+    PROVIDER_MODELS_DNS: [
+      "The provider model host could not be resolved.",
+      "Check the provider base URL and network, then try again."
+    ],
+    PROVIDER_MODELS_TLS: [
+      "The provider model endpoint failed TLS verification.",
+      "Repair the provider certificate or base URL and try again."
+    ],
+    PROVIDER_MODELS_NETWORK: [
+      "The provider model endpoint could not be reached.",
+      "Check network connectivity and try again."
+    ],
+    PROVIDER_MODELS_COMMITTED_DEGRADED: [
+      "The provider model cache was saved, but persistence cleanup degraded.",
+      "Stop CRP, inspect Activity and model-cache persistence, then repair the residual state."
     ],
     PROVIDER_NOT_READY: [
       "The provider has not passed its compatibility test.",
@@ -100,10 +164,17 @@ function isCommittedError(error) {
 }
 
 function committedServiceError(action, cause) {
-  return serviceError(`PROVIDER_${action.toUpperCase()}_COMMITTED_DEGRADED`, {
+  const error = serviceError(`PROVIDER_${action.toUpperCase()}_COMMITTED_DEGRADED`, {
     cause,
     details: { committed: true, degraded: true }
   });
+  if (cause instanceof CrpError
+    && typeof cause.action === "string"
+    && cause.action.length > 0 && cause.action.length <= 512
+    && !/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u.test(cause.action)) {
+    error.action = cause.action;
+  }
+  return error;
 }
 
 export class ProviderService {
@@ -115,17 +186,19 @@ export class ProviderService {
     credentialStore,
     activityStore,
     workerManager,
+    modelCache,
     createCredentialRef = randomUUID,
     now = () => new Date().toISOString(),
     ...options
   }) {
-    if (!registry || !credentialStore || !activityStore || !workerManager) {
+    if (!registry || !credentialStore || !activityStore || !workerManager || !modelCache) {
       throw new TypeError("ProviderService dependencies are required.");
     }
     this.registry = registry;
     this.credentialStore = credentialStore;
     this.activityStore = activityStore;
     this.workerManager = workerManager;
+    this.modelCache = modelCache;
     this.createCredentialRef = createCredentialRef;
     this.now = now;
     this.options = options;
@@ -133,6 +206,7 @@ export class ProviderService {
     this.createTimeoutSignal = options.createTimeoutSignal
       ?? ((timeoutMs) => AbortSignal.timeout(timeoutMs));
     this.testTimeoutMs = options.testTimeoutMs ?? 15_000;
+    this.modelsResponseMaxBytes = options.modelsResponseMaxBytes ?? MAX_MODELS_RESPONSE_BYTES;
     this.verifyWorkerHealth = options.verifyWorkerHealth ?? (async (generation, state) => (
       state?.phase === "running" && state?.generation === generation
     ));
@@ -231,6 +305,13 @@ export class ProviderService {
         profile = replacementSecret === undefined
           ? this.registry.update(id, patch)
           : await this.#updateWithReplacementSecret(current, patch, replacementSecret);
+        if (replacementSecret !== undefined) {
+          try {
+            this.modelCache.delete(current.id);
+          } catch (error) {
+            throw committedServiceError("update", error);
+          }
+        }
       } catch (error) {
         if (isCommittedError(error)) {
           const committed = committedServiceError("update", error);
@@ -278,6 +359,11 @@ export class ProviderService {
         }
         if (!credentialDeleted) throw serviceError("PROVIDER_DELETE_FAILED");
         deleted = this.registry.delete(id);
+        try {
+          this.modelCache.delete(id);
+        } catch (error) {
+          throw committedServiceError("delete", error);
+        }
       } catch (error) {
         if (isCommittedError(error)) {
           const committed = committedServiceError("delete", error);
@@ -319,26 +405,99 @@ export class ProviderService {
     });
   }
 
-  testProvider(id, model) {
+  getProviderModels(id) {
+    const profile = this.registry.get(id);
+    return this.modelCache.get(id, createProviderSourceFingerprint(profile));
+  }
+
+  refreshProviderModels(id) {
+    return this.#runExclusive(async () => {
+      const profile = this.registry.get(id);
+      const secret = await this.credentialStore.get(profile.credentialRef);
+      let status = null;
+      let cacheCommitted = false;
+      try {
+        const response = await this.fetchImpl(buildProviderEndpointUrl(profile.baseUrl, "models"), {
+          method: "GET",
+          redirect: "manual",
+          headers: providerRequestHeaders(profile, secret),
+          signal: this.createTimeoutSignal(this.testTimeoutMs)
+        });
+        status = Number.isInteger(response?.status) ? response.status : null;
+        if (!response?.ok) {
+          throw serviceError(classifyModelsHttpStatus(status), {
+            status: 502,
+            details: status === null ? {} : { httpStatus: status }
+          });
+        }
+        const payload = await readBoundedJson(response, this.modelsResponseMaxBytes);
+        const models = normalizeModelCatalog(payload, secret);
+        let catalog;
+        try {
+          catalog = this.modelCache.put({
+            providerId: id,
+            sourceFingerprint: createProviderSourceFingerprint(profile),
+            fetchedAt: this.now(),
+            models
+          });
+          cacheCommitted = true;
+        } catch (error) {
+          if (!isCommittedError(error)) throw error;
+          cacheCommitted = true;
+          throw committedServiceError("models", error);
+        }
+        try {
+          await this.#record("models", id, "success", null, {
+            modelCount: models.length,
+            ...(status === null ? {} : { httpStatus: status })
+          });
+        } catch (error) {
+          throw committedServiceError("models", error);
+        }
+        return catalog;
+      } catch (error) {
+        if (cacheCommitted) {
+          throw error instanceof CrpError
+            && error.code === "PROVIDER_MODELS_COMMITTED_DEGRADED"
+            ? error
+            : committedServiceError("models", error);
+        }
+        const failure = normalizeModelsError(error);
+        await this.#safeRecordFailure(
+          "models",
+          id,
+          failure,
+          status === null ? {} : { httpStatus: status }
+        );
+        throw failure;
+      }
+    });
+  }
+
+  testProvider(id, model, { activateIfNone = false } = {}) {
     return this.#runExclusive(async () => {
       if (typeof model !== "string" || model.trim().length === 0) {
         throw serviceError("PROVIDER_TEST_INPUT_INVALID", { status: 400 });
       }
       const profile = this.registry.get(id);
+      if (typeof activateIfNone !== "boolean") {
+        throw serviceError("PROVIDER_TEST_INPUT_INVALID", { status: 400 });
+      }
+      const activeProviderId = this.registry.getDocument().activeProviderId;
+      if (activateIfNone && activeProviderId === null
+        && this.workerManager.getPublicState()?.phase !== "stopped") {
+        throw serviceError("PROVIDER_INITIAL_ACTIVATION_UNSAFE", { status: 409 });
+      }
       const secret = await this.credentialStore.get(profile.credentialRef);
       let result;
       let status = null;
       try {
-        const base = profile.baseUrl.endsWith("/") ? profile.baseUrl : `${profile.baseUrl}/`;
-        const response = await this.fetchImpl(new URL("responses", base).toString(), {
+        const response = await this.fetchImpl(buildProviderEndpointUrl(profile.baseUrl, "responses"), {
           method: "POST",
           redirect: "manual",
           headers: {
             "content-type": "application/json",
-            ...profile.extraHeaders,
-            [profile.authHeader]: profile.authScheme
-              ? `${profile.authScheme} ${secret}`
-              : secret
+            ...providerRequestHeaders(profile, secret)
           },
           body: JSON.stringify({
             model: model.trim(),
@@ -367,17 +526,30 @@ export class ProviderService {
         result = { ok: false, code: classifyFetchError(error) };
       }
 
-      this.registry.markTest(id, result.ok
-        ? { status: "passed" }
-        : { status: "failed", code: result.code });
-      await this.#record(
-        "test",
-        id,
-        result.ok ? "success" : "failed",
-        result.code,
-        status === null ? {} : { httpStatus: status }
-      );
-      return result;
+      try {
+        this.registry.markTest(id, result.ok
+          ? { status: "passed" }
+          : { status: "failed", code: result.code });
+      } catch (error) {
+        if (!isCommittedError(error)) throw error;
+        throw committedServiceError("test", error);
+      }
+      try {
+        await this.#record(
+          "test",
+          id,
+          result.ok ? "success" : "failed",
+          result.code,
+          status === null ? {} : { httpStatus: status }
+        );
+      } catch (error) {
+        throw committedServiceError("test", error);
+      }
+      let initialActivation = null;
+      if (result.ok && activateIfNone) {
+        initialActivation = await this.#selectInitialProvider(id);
+      }
+      return { ...result, initialActivation };
     });
   }
 
@@ -551,6 +723,67 @@ export class ProviderService {
     };
   }
 
+  async #selectInitialProvider(id) {
+    let selected;
+    try {
+      selected = this.registry.setActiveIfNull(id);
+    } catch (error) {
+      if (isCommittedError(error)
+        && this.registry.getDocument().activeProviderId === id) {
+        const committed = committedServiceError("activation", error);
+        await this.#recordCommitted("activate", id, committed, {
+          automatic: true,
+          workerStarted: false
+        });
+        throw committed;
+      }
+      const failure = serviceError("PROVIDER_ACTIVATION_FAILED", { cause: error });
+      await this.#safeRecordFailure("activate", id, failure, {
+        automatic: true,
+        workerStarted: false
+      });
+      throw failure;
+    }
+    if (!selected) return null;
+
+    try {
+      await this.#record("activate", id, "success", null, {
+        automatic: true,
+        workerStarted: false
+      });
+    } catch (error) {
+      let rolledBack = false;
+      let rollbackError = null;
+      try {
+        rolledBack = this.registry.clearActiveIf(id);
+      } catch (caught) {
+        rollbackError = caught;
+      }
+      if (!rolledBack || rollbackError) {
+        const degraded = serviceError("PROVIDER_ACTIVATION_ROLLBACK_DEGRADED", {
+          cause: rollbackError ?? error,
+          details: { committed: false, degraded: true }
+        });
+        await this.#safeRecordFailure("activate", id, degraded, {
+          automatic: true,
+          workerStarted: false
+        });
+        throw degraded;
+      }
+      const failure = serviceError("PROVIDER_ACTIVATION_FAILED", { cause: error });
+      await this.#safeRecordFailure("activate", id, failure, {
+        automatic: true,
+        workerStarted: false
+      });
+      throw failure;
+    }
+    return {
+      automatic: true,
+      activeProviderId: id,
+      workerStarted: false
+    };
+  }
+
   async #updateWithReplacementSecret(current, patch, replacementSecret) {
     const oldSecret = await this.credentialStore.get(current.credentialRef);
     let replacementWritten = false;
@@ -677,6 +910,7 @@ export class ProviderService {
       throw serviceError("PROVIDER_ACTIVATION_FAILED");
     }
     return {
+      providerId: profile.id,
       generation,
       settings: {
         configPath: runtimeConfigPath,
@@ -751,7 +985,11 @@ export class ProviderService {
   }
 
   async #recordCommitted(action, providerId, error, details = {}) {
-    await this.#record(action, providerId, "degraded", error.code, details);
+    try {
+      await this.#record(action, providerId, "degraded", error.code, details);
+    } catch {
+      // The committed primary error remains authoritative when Activity is unavailable.
+    }
   }
 
   #runLifecycleOperation(operation) {
@@ -770,6 +1008,120 @@ export class ProviderService {
     this.#operationTail = run.catch(() => {});
     return run;
   }
+}
+
+function buildProviderEndpointUrl(baseUrl, endpoint) {
+  const target = new URL(baseUrl);
+  const basePath = target.pathname.replace(/\/+$/, "");
+  target.pathname = `${basePath}/${endpoint}`;
+  target.hash = "";
+  return target.toString();
+}
+
+function providerRequestHeaders(profile, secret) {
+  return {
+    ...profile.extraHeaders,
+    [profile.authHeader]: profile.authScheme
+      ? `${profile.authScheme} ${secret}`
+      : secret
+  };
+}
+
+async function readBoundedJson(response, maximumBytes) {
+  let bytes;
+  const declaredLength = Number(response?.headers?.get?.("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    throw serviceError("PROVIDER_MODELS_RESPONSE_TOO_LARGE", { status: 502 });
+  }
+
+  if (response?.body?.getReader) {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let length = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > maximumBytes) {
+          await reader.cancel().catch(() => {});
+          throw serviceError("PROVIDER_MODELS_RESPONSE_TOO_LARGE", { status: 502 });
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock?.();
+    }
+    bytes = Buffer.concat(chunks, length).toString("utf8");
+  } else if (typeof response?.text === "function") {
+    bytes = await response.text();
+    if (Buffer.byteLength(bytes, "utf8") > maximumBytes) {
+      throw serviceError("PROVIDER_MODELS_RESPONSE_TOO_LARGE", { status: 502 });
+    }
+  } else if (typeof response?.json === "function") {
+    const payload = await response.json();
+    const serialized = JSON.stringify(payload);
+    if (typeof serialized !== "string") {
+      throw serviceError("PROVIDER_MODELS_INVALID_JSON", { status: 502 });
+    }
+    if (Buffer.byteLength(serialized, "utf8") > maximumBytes) {
+      throw serviceError("PROVIDER_MODELS_RESPONSE_TOO_LARGE", { status: 502 });
+    }
+    return payload;
+  } else {
+    throw serviceError("PROVIDER_MODELS_INVALID_JSON", { status: 502 });
+  }
+
+  try {
+    return JSON.parse(bytes);
+  } catch (error) {
+    throw serviceError("PROVIDER_MODELS_INVALID_JSON", { status: 502, cause: error });
+  }
+}
+
+function normalizeModelCatalog(payload, secret) {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)
+    || !Array.isArray(payload.data)
+    || (payload.object !== undefined && payload.object !== "list")
+    || payload.data.length > MAX_PROVIDER_MODELS) {
+    throw serviceError("PROVIDER_MODELS_INVALID_RESPONSE", { status: 502 });
+  }
+  const seen = new Set();
+  const models = [];
+  for (const entry of payload.data) {
+    const id = entry !== null && typeof entry === "object" && !Array.isArray(entry)
+      ? entry.id
+      : null;
+    if (typeof id !== "string" || id.length === 0 || id.trim() !== id
+      || id.length > MAX_MODEL_ID_LENGTH * 2
+      || [...id].length > MAX_MODEL_ID_LENGTH
+      || MODEL_ID_CONTROL_PATTERN.test(id)
+      || (typeof secret === "string" && secret.length > 0 && id.includes(secret))) {
+      throw serviceError("PROVIDER_MODELS_INVALID_RESPONSE", { status: 502 });
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      models.push(id);
+    }
+  }
+  return models;
+}
+
+function classifyModelsHttpStatus(status) {
+  if (status >= 300 && status <= 399) return "PROVIDER_MODELS_REDIRECT";
+  if (status === 401 || status === 403) return "PROVIDER_MODELS_AUTH";
+  if (status === 404) return "PROVIDER_MODELS_NOT_FOUND";
+  return "PROVIDER_MODELS_HTTP";
+}
+
+function normalizeModelsError(error) {
+  if (error instanceof CrpError && /^PROVIDER_(?:MODELS|MODEL_CACHE)_/.test(error.code)) {
+    return error;
+  }
+  return serviceError(classifyFetchError(error, "PROVIDER_MODELS"), {
+    status: 502,
+    cause: error
+  });
 }
 
 function isCompatibleResponsesPayload(payload) {
@@ -801,22 +1153,22 @@ function collectErrorCodes(error) {
   return codes;
 }
 
-function classifyFetchError(error) {
+function classifyFetchError(error, prefix = "PROVIDER_TEST") {
   const codes = collectErrorCodes(error);
   if (error?.name === "AbortError" || error?.name === "TimeoutError"
     || codes.includes("ETIMEDOUT") || codes.includes("UND_ERR_CONNECT_TIMEOUT")) {
-    return "PROVIDER_TEST_TIMEOUT";
+    return `${prefix}_TIMEOUT`;
   }
   if (codes.includes("ENOTFOUND") || codes.includes("EAI_AGAIN")) {
-    return "PROVIDER_TEST_DNS";
+    return `${prefix}_DNS`;
   }
   if (codes.some((code) => code.startsWith("CERT_")
     || code.startsWith("ERR_TLS_")
     || code === "DEPTH_ZERO_SELF_SIGNED_CERT"
     || code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE")) {
-    return "PROVIDER_TEST_TLS";
+    return `${prefix}_TLS`;
   }
-  return "PROVIDER_TEST_NETWORK";
+  return `${prefix}_NETWORK`;
 }
 
 function stableErrorCode(error, fallback) {

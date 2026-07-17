@@ -28,7 +28,9 @@ Without a global install:
 npx @cluic/codex-remote-proxy ui
 ```
 
-`crp ui` starts or discovers the local supervisor and opens the management UI. The interface supports English and Simplified Chinese; choose the language from the header. Only an explicitly selected locale is stored in browser storage.
+`crp ui` starts or discovers the local supervisor and opens the management UI. The interface starts in English on every browser and supports Simplified Chinese through the language selector. Only an explicitly selected locale is stored in browser storage, so a Chinese selection is retained on later launches.
+
+The current development UI is implemented in `node/ui-src/` with React, TypeScript, and Vite. Those tools are build-time only: the package and Admin server still ship exactly `ui/index.html`, `ui/app.js`, and `ui/styles.css`, with no frontend runtime server, remote font, CDN, telemetry, source map, or dynamic chunk.
 
 ## What You Can Manage
 
@@ -37,13 +39,16 @@ The local UI supports the complete daily workflow:
 - create named provider profiles;
 - enter a credential through a write-only field;
 - test OpenAI Responses API compatibility;
-- activate and switch between tested providers;
+- switch eligible providers directly from provider cards;
 - replace a credential on an inactive provider or delete an inactive provider;
 - start, stop, restart, and inspect the proxy worker;
-- review sanitized activity and read-only settings;
+- inspect anonymous 24-hour or 7-day request, result, observed-Token, model, Provider, and bounded-latency Metrics on Overview;
+- review sanitized control-plane Activity and read-only System facts;
 - generate an in-memory diagnostic summary containing only creation state, generation time, and sanitized event count.
 
-Provider activation affects new requests. Requests already in flight keep the provider snapshot with which they started.
+`Forwarding Records` is visible as a disabled `Coming soon` navigation item. This MVP has no forwarding-record route, request/response viewer, Capture control, or mock traffic data. Overview Metrics is anonymous aggregate state and remains independent from optional Capture.
+
+Provider activation affects new requests. Requests already in flight keep the provider snapshot with which they started. The explicit activation route is also the production switch operation: it applies a new snapshot to a running Worker and starts a stopped Worker. The first-provider Setup path is deliberately different: a successful compatibility test uses compare-and-set selection while the Worker remains stopped.
 
 ## Stable Codex Configuration
 
@@ -60,6 +65,10 @@ http://127.0.0.1:15100
 Provider switching happens inside CRP. Do not create a different Codex `model_provider` for each upstream and do not change the fixed proxy address during routine switching.
 
 On a clean home, explicit `crp start` creates the missing `.codex` directory and `config.toml` privately and atomically, without creating a backup for a file that did not exist. On supported POSIX systems the new directory is `0700` and the new file is `0600`. Repeating the bootstrap is a byte-identical no-op. An existing config still receives an adjacent private backup only when its content must change, and its unrelated settings, line endings, and mode are preserved.
+
+Before changing an existing Codex-level provider binding, exit Codex completely. Bootstrap reads the root `model_provider` and its supported `base_url` binding from one locked config snapshot. Invalid UTF-8 or a malformed/ambiguous selected-provider binding fails before backup, journal, or config writes; this focused scanner is not a whole-document TOML validator. A different or missing effective URL triggers history discovery. Only a nonempty write set receives private rollout snapshots, exclusive SQLite logical backups, and a forward-recovery journal under `.codex/.crp-history-repair`; an already aligned set uses a config-only commit. CRP then publishes the fixed config and changes only provider metadata in active/archived rollout `session_meta` records and supported `threads.model_provider` columns. A pending repair or config lock makes Codex not ready and blocks activation, Worker start/restart, and automatic crash recovery; the next bootstrap resumes it. Encrypted history content is never rewritten, and the CLI emits a static warning because some encrypted messages may remain unavailable.
+
+Routine CRP provider add/test/activate/hot-switch operations never invoke this repair. Per the URL-only trigger, a provider-name change with the same effective URL does not rewrite history metadata; operators migrating such a custom layout must review it separately. Managed config/history backups can contain private local state and must be protected like the original Codex directory.
 
 ## Credential Safety
 
@@ -79,7 +88,7 @@ The Admin server binds only to `127.0.0.1:15101`, rejects unexpected `Host` and 
 
 `crp ui` puts the private local control token in the URL fragment. The fragment is not part of HTTP requests; the UI exchanges it for an in-memory CSRF token and an HttpOnly, `SameSite=Strict` session cookie, then removes the fragment and clears its local token reference. Tokens, credentials, provider drafts, responses, and errors are not persisted in browser storage.
 
-Reloading a tab with a still-valid session but no launch fragment opens a GET-only workspace. Read operations remain available, but mutation controls stay disabled until the page is reopened with `crp ui`. A failed exchange or later session/CSRF failure is terminal for that tab.
+Reloading a tab with a still-valid session but no launch fragment first opens a GET-only workspace. The user may explicitly restore management while that authenticated cookie session remains valid; CRP requires an exact same-origin request plus a non-simple recovery header, rotates the session ID and CSRF token, and does not extend the original expiry. Reopen with `crp ui` after expiry. A failed launch exchange or later business-session/CSRF failure is terminal for that tab.
 
 ## CLI
 
@@ -87,24 +96,44 @@ The UI is recommended whenever a credential must be entered. These supervisor co
 
 ```text
 crp ui [--no-open] [--json]
-crp init [--no-open] [--json]
 crp start [--json]
 crp status [--json]
 crp stop [--json]
 crp restart [--json]
 crp shutdown [--json]
-crp provider list|add|test|activate|delete [--json]
+crp provider list [--json]
+crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]
+crp provider models (--id <ID> | --name <NAME>) [--json]
+crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]
+crp provider activate (--id <ID> | --name <NAME>) [--json]
+crp provider delete (--id <ID> | --name <NAME>) [--json]
 ```
 
-Every human CLI path supports English and Simplified Chinese. One global `--locale en|zh-CN` may appear anywhere in the command line. Resolution is explicit `--locale`, then `CRP_LOCALE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, and finally English; the choice is process-local and never persisted. Locale changes human output only. With `--json`, a failure writes nothing to stdout and exactly one language-independent error document to stderr.
+The two recommended entry points are `crp ui` for guided setup and daily management, and `crp start` for headless CLI startup. `ui` starts or discovers the Supervisor and opens the management page; `start` starts or discovers the Supervisor, bootstraps the fixed Codex configuration, and starts the proxy Worker.
 
-`crp start` and its deprecated `install`/`setup` aliases report failures at one stable stage: `supervisor_start`, `codex_bootstrap`, or `proxy_start`. A failed bootstrap prevents proxy startup; a successful bootstrap is not rolled back if proxy startup later fails.
+Every human CLI path supports English and Simplified Chinese. English is the default regardless of `CRP_LOCALE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, or the terminal language. One global `--locale en|zh-CN` may appear anywhere in the command line; use `--locale zh-CN` to request Chinese for that invocation. The choice is process-local and never persisted. Locale changes human output only. With `--json`, a failure writes nothing to stdout and exactly one language-independent error document to stderr.
 
-`crp init` is a compatibility alias for `crp ui`; it accepts only `--no-open` and `--json`, never prompts for a provider, and never writes the legacy flat configuration. Legacy `--api-key`, `--upstream-base-url`, capture/host/port options, unknown options, and positional arguments are rejected before supervisor discovery or disk mutation.
+## License
 
-`crp provider add` supports advanced authentication and model options, but it requires a write-only `--api-key` argument. Command-line secrets may be visible in shell history or process inspection, so this path is intended only for controlled automation. Use `crp guide --json` for the exact machine-readable command shapes.
+This project is licensed under the [MIT License](./LICENSE).
 
-`crp install` and `crp setup` remain deprecated aliases for supervisor-backed `crp start`. They, and `crp start`, accept only `--json`. Other implemented compatibility/inspection commands are `check`, `capture on|off|status`, `guide`, and `install-cli`; none adds provider update, Activity, Settings, or diagnostics CLI operations.
+Without `--json`, `provider list` renders a count plus each provider's active marker, name, ID, base URL without query/hash, test state, model mode/override, and credential-configured state. `status` renders Supervisor PID/start time, Worker phase/PID/generation/listening/in-flight state, active provider, Codex state, fixed `OpenAI` identity, and the `15100` proxy URL instead of a generic sentence. Dynamic terminal text is length-bounded and escapes control, escape, and bidirectional-control characters; credential references, extra headers, and complete keys are never rendered.
+
+Root help presents aligned command descriptions plus consistent usage, options, and examples. Exact `-h`/`--help` is available for every supported first-level command, the `provider` group, and each provider action; help is resolved locally without starting or discovering the Supervisor. Help flags are parsed only at their exact argv positions, so trailing or misplaced input remains a validation error instead of being silently ignored.
+
+`crp stop` stops only the proxy Worker on `127.0.0.1:15100`; the Supervisor and management API on `127.0.0.1:15101` remain available. Use `crp shutdown` to stop the Worker and exit the Supervisor completely. A running Supervisor after `stop` is therefore expected, and detailed `status` output distinguishes the two processes.
+
+Human success copy preserves those distinctions: `shutdown` confirms both Supervisor and Worker shutdown. `crp start` reports failures at one stable stage: `supervisor_start`, `codex_bootstrap`, or `proxy_start`; `restart` also performs mandatory bootstrap first when Codex is not ready. Explicit activation/start/restart and unexpected-exit recovery share the same FIFO Codex readiness gate. A failed or pending bootstrap prevents lifecycle mutation. A successful config publication is not rolled back after later uncertainty: journaled history work remains pending, while config-only uncertainty is reported separately without claiming a pending repair.
+
+Detached Supervisor startup uses a one-shot, strictly allowlisted IPC error. An approved migration-input failure is returned before the readiness timeout; malformed, unknown, or unapproved child messages become the generic `SUPERVISOR_START_FAILED` contract.
+
+The former compatibility aliases `crp init`, `crp install`, and `crp setup` have been removed. They fail locally with `CLI_COMMAND_REMOVED`, perform no Supervisor discovery or mutation, and point to `crp ui` or `crp start` as the replacement. `check`, `capture on|off|status`, `guide`, and the deprecated local-shim command `install-cli` remain available; the CLI still has no provider-update, Activity, Settings, or diagnostics operation.
+
+`crp provider add` requires a write-only `--api-key` argument and supports advanced authentication and routing options. Optional `--model` is test input only; routing override remains `--model-mode override --model-override <MODEL>`. When `--model` is present, CRP saves the provider first and then runs the Responses compatibility test. The create and test steps are deliberately not one transaction: a failed compatibility result or an operational test error does not delete the saved provider, so the user can inspect and retry it. Command-line secrets may be visible in shell history or process inspection, so this path is intended only for controlled automation.
+
+`provider test`, `activate`, `delete`, and `models` require exactly one selector: `--id` or `--name`. Names resolve by exact case-insensitive match against the unique public provider list. `provider models` performs an authenticated, no-redirect refresh from `<base-url>/models`; the Admin API also exposes a cached read separately. Discovery is bounded and rejects any model ID containing the complete credential before it can reach cache or output. It is independent from Responses compatibility testing, so a missing or incompatible model endpoint does not change provider test or activation state and a failed refresh does not erase the last good catalog.
+
+CLI-triggered compatibility tests, including `provider add --model`, request initial selection only when no provider is active. The first successful candidate wins an atomic compare-and-set while the Worker is stopped. Selection writes `activeProviderId` but never starts or reconfigures the Worker; run `crp start` explicitly. Admin callers that omit `activateIfNone` retain non-selecting test behavior. The conditional Web Setup explicitly opts in and runs `save provider -> test and compare-and-set select -> prepare Codex/history repair -> start Worker`; it does not call explicit activation during first setup. Ordinary Provider-page tests remain non-selecting until the user chooses a switch action.
 
 ## Upgrading From 0.2.2
 
@@ -117,16 +146,41 @@ The next minor release migrates the pre-supervisor flat configuration to provide
 
 Migration reads the legacy `config.json` and runtime `node/proxy-config.json` when present. It creates collision-safe, byte-exact private backups, stores the credential through the required native backend, creates an inactive and untested schema-2 provider, validates the committed registry, and only then scrubs secret fields from the legacy files. Backups are retained.
 
+If the legacy sources contain different credentials, migration returns `MIGRATION_INPUT_INVALID` before creating backups, accessing credential storage, writing the registry, or changing either source. CRP never chooses one credential automatically; resolve the conflict only through an operator-reviewed real-home migration.
+
 If a transaction fails before commit, CRP attempts to restore the original bytes and remove only registry and credential state that the transaction can prove it owns. It never deletes a foreign replacement. A `MIGRATION_COMMITTED_DEGRADED`, `MIGRATION_COMMITTED_LOCK_DEGRADED`, or `MIGRATION_ROLLBACK_DEGRADED` result means the final state is uncertain or needs repair: stop CRP, do not repeatedly retry, preserve the backups, and review the sanitized Activity error code before changing files. Automatic restoration from a backup is intentionally not attempted in a degraded state.
 
 Rollback to `0.2.2` is not a schema downgrade. Stop CRP first and restore the complete private pre-upgrade backup as one unit; do not copy a secret back into only one legacy file or mix schema-2 registry state with flat configuration. Real-home migration and rollback remain L3 operations and require platform-specific review.
 
 ## Development
 
+There are two intentionally different ways to exercise the development CLI:
+
+```bash
+# Production-path smoke: reads and may update the real ~/.codex and
+# ~/.codex-remote-proxy when a mutating command is used.
+cd node
+npm run dev:cli -- check --json
+
+# Ordinary deterministic tests remain isolated and must not touch the real HOME.
+npm test
+```
+
+Calling `runCli(..., { paths: getPaths(tempHome) })`, including through a local
+`crpdev` shell wrapper, deliberately operates the Supervisor, Provider registry,
+and Codex bootstrap against that temporary home. It is suitable for safe UI and
+CLI feature testing, but it is not evidence that the real `~/.codex` was
+modified. Use the direct `npm run dev:cli -- <command>` entry only when a
+real-home operation has been explicitly authorized. Stop Codex before any
+existing-config transition or history repair.
+
 ```bash
 cd node
 npm ci
 npm run lint
+npm run typecheck:ui
+npm run build:ui
+npm run verify:ui-build
 npm test
 node scripts/run-test-group.mjs core-chain
 npm run test:e2e -- --project=chromium --workers=1
@@ -138,7 +192,7 @@ Tests use temporary homes, synthetic credentials, injected adapters, and loopbac
 
 The serial `core-chain` gate exercises the real CLI, Admin server, registry/provider service, WorkerManager, forked proxy worker, fixed ports, provider switching with an in-flight request, restart, shutdown, and secret scans. It deliberately substitutes an in-memory credential adapter and loopback upstreams, so it does not prove native credential access or a real external provider.
 
-The current core tree passes 295/295 tests (`262` unit-core, `7` capture, `25` integration, and `1` core-chain), with lint across 29 source files, zero runtime audit findings, and the exact reviewed 30-file package. A separate local macOS D2 run passed the production native Keychain, detached Supervisor, and real external Responses path, including provider test, activate/start/restart/health/stop/shutdown, HTTP `200 OK`, stable Supervisor PID, and a replaced worker PID after restart. Clean-home detached bootstrap passed in a separate isolated run. These results complete the local core gate; cross-platform native credential, filesystem/ACL, visual, migration, and human L3 evidence still gate release.
+Final M2E/V8 local verification passes exact `npm test` 463/463 (`412` unit-core + `8` isolated capture + `42` ordinary integration + `1` serial core-chain), Metrics storage focus 6/6, lint across 33 source files, UI typecheck/build/exact three-file verification, package-content 3/3 against the exact 33-file allowlist, Chromium 33/33 including the English/Chinese 1440/1024/390 responsive matrix, full and runtime audits with zero vulnerabilities, and same-state visual comparison recorded in `design-qa.md`. No deterministic gate is allowed to claim real Codex history, credentials, or an external provider; the earlier local macOS D2 native-Keychain/real-upstream result remains historical evidence for its reviewed tree.
 
 Supervisor discovery uses a bounded 2-second liveness probe while normal Admin operations use a separate 30-second timeout, so a successful provider test is not misreported as `SUPERVISOR_UNAVAILABLE`. Proxy targets are joined structurally, so base URLs with or without a trailing slash produce one path separator.
 

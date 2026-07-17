@@ -498,9 +498,13 @@ test("in-flight request keeps A target, credential, headers, capture, and logs w
   source.apply({ generation: 1, settings: settingsA });
   const captureManager = createMemoryCaptureManager();
   const logs = [];
+  const metrics = [];
   const proxy = createServer(settingsA, {
     settingsSource: source,
     captureManager,
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    },
     logFn(level, message, fields) {
       logs.push({ level, message, fields });
     }
@@ -518,7 +522,7 @@ test("in-flight request keeps A target, credential, headers, capture, and logs w
       "x-a-request-id": "request-a",
       "x-provider-a-auth": "client-a-value"
     },
-    body: JSON.stringify({ request: "A" })
+    body: JSON.stringify({ request: "A", model: "model-a" })
   });
   await Promise.race([
     receivedA.promise,
@@ -535,7 +539,7 @@ test("in-flight request keeps A target, credential, headers, capture, and logs w
       "x-b-request-id": "request-b",
       "x-provider-b-auth": "client-b-value"
     },
-    body: JSON.stringify({ request: "B" })
+    body: JSON.stringify({ request: "B", model: "model-b" })
   });
   releaseA.release();
   const responseA = await responseAPromise;
@@ -556,6 +560,189 @@ test("in-flight request keeps A target, credential, headers, capture, and logs w
     logs.filter((entry) => entry.message === "Proxied request").map((entry) => entry.fields.request_id).sort(),
     ["request-a", "request-b"]
   );
+  assert.deepEqual(metrics.map(({ generation, result, model, inputTokens, outputTokens }) => ({
+    generation,
+    result,
+    model,
+    inputTokens,
+    outputTokens
+  })), [
+    {
+      generation: 2,
+      result: "success",
+      model: "model-b",
+      inputTokens: null,
+      outputTokens: null
+    },
+    {
+      generation: 1,
+      result: "success",
+      model: "model-a",
+      inputTokens: null,
+      outputTokens: null
+    }
+  ]);
+});
+
+test("metrics extract bounded JSON and SSE usage while screening credential-bearing model ids", async (t) => {
+  const secret = "metrics-active-credential-sentinel";
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (payload.stream === true) {
+        res.setHeader("content-type", "text/event-stream");
+        res.end(`data: ${JSON.stringify({
+          type: "response.completed",
+          response: { usage: { input_tokens: 21, output_tokens: 8 } }
+        })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "response-private-id",
+        usage: { input_tokens: 13, output_tokens: 5 }
+      }));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: secret,
+    captureEnabled: false
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 9, settings });
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createMemoryCaptureManager(),
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    },
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const jsonResponse = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "model-json", stream: false })
+  });
+  assert.equal(jsonResponse.status, 200);
+  await jsonResponse.text();
+  const streamResponse = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: `prefix-${secret}-suffix`, stream: true })
+  });
+  assert.equal(streamResponse.status, 200);
+  await streamResponse.text();
+
+  assert.equal(metrics.length, 2);
+  assert.deepEqual(metrics.map(({ generation, result, model, inputTokens, outputTokens }) => ({
+    generation,
+    result,
+    model,
+    inputTokens,
+    outputTokens
+  })), [
+    {
+      generation: 9,
+      result: "success",
+      model: "model-json",
+      inputTokens: 13,
+      outputTokens: 5
+    },
+    {
+      generation: 9,
+      result: "success",
+      model: null,
+      inputTokens: 21,
+      outputTokens: 8
+    }
+  ]);
+  const serialized = JSON.stringify(metrics);
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(serialized.includes("response-private-id"), false);
+  assert.equal(serialized.includes("url"), false);
+  assert.equal(serialized.includes("headers"), false);
+  assert.equal(serialized.includes("body"), false);
+});
+
+test("metrics response-start latency begins at the first response body byte", async (t) => {
+  const releaseBody = createGate();
+  const headersSent = createSignal();
+  t.after(() => releaseBody.release());
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (req.url === "/bodyless") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.flushHeaders();
+      headersSent.resolve();
+      releaseBody.promise.then(() => res.end(JSON.stringify({ ok: true })));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    captureEnabled: false
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 3, settings });
+  const metricSignals = [createSignal(), createSignal()];
+  const metrics = [];
+  let metricNowMs = 1_000;
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createMemoryCaptureManager(),
+    metricNow: () => metricNowMs,
+    recordMetric(observation) {
+      const index = metrics.length;
+      const clone = structuredClone(observation);
+      metrics.push(clone);
+      metricSignals[index]?.resolve(clone);
+    },
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const bodyResponsePromise = fetch(`http://127.0.0.1:${proxyPort}/delayed-body`, {
+    method: "POST",
+    body: "{}"
+  });
+  await headersSent.promise;
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  assert.equal(metrics.length, 0);
+  metricNowMs = 1_301;
+  releaseBody.release();
+  const bodyResponse = await bodyResponsePromise;
+  assert.equal(bodyResponse.status, 200);
+  assert.deepEqual(await bodyResponse.json(), { ok: true });
+  const bodyMetric = await metricSignals[0].promise;
+  assert.equal(bodyMetric.responseStartBin, 3);
+
+  metricNowMs = 2_000;
+  const bodylessResponse = await fetch(`http://127.0.0.1:${proxyPort}/bodyless`, {
+    method: "POST",
+    body: "{}"
+  });
+  assert.equal(bodylessResponse.status, 204);
+  await bodylessResponse.arrayBuffer();
+  const bodylessMetric = await metricSignals[1].promise;
+  assert.equal(bodylessMetric.responseStartBin, null);
 });
 
 test("an in-flight A request retains its longer timeout after B is applied", async (t) => {
@@ -586,9 +773,13 @@ test("an in-flight A request retains its longer timeout after B is applied", asy
   const settingsB = makeSettings({ baseUrl: `http://127.0.0.1:${portB}`, timeoutMs: 75 });
   const source = new RuntimeSettingsSource();
   source.apply({ generation: 1, settings: settingsA });
+  const metrics = [];
   const proxy = createServer(settingsB, {
     settingsSource: source,
     captureManager: createMemoryCaptureManager(),
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    },
     logFn() {}
   });
   const proxyPort = await listen(proxy);
@@ -619,6 +810,10 @@ test("an in-flight A request retains its longer timeout after B is applied", asy
   releaseA.release();
   const responseA = await responseAPromise;
   assert.deepEqual(responseA, { status: 200, body: { upstream: "A" } });
+  assert.deepEqual(metrics.map(({ generation, result }) => ({ generation, result })), [
+    { generation: 2, result: "timeout" },
+    { generation: 1, result: "success" }
+  ]);
 });
 
 test("dynamic health is allowlisted and an unconfigured source never falls back to static settings", async (t) => {

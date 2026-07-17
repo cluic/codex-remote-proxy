@@ -25,12 +25,26 @@ Every checkout that occurs before pull-request code runs must use `persist-crede
 
 ## Local Deterministic Gate
 
+Do not confuse an injected development wrapper with a production-path smoke.
+`runCli(..., { paths: getPaths(tempHome) })` intentionally keeps Supervisor,
+Provider, and Codex-bootstrap effects under that temporary home. The direct
+source entry below resolves the real `~/.codex` and `~/.codex-remote-proxy` and
+must remain read-only unless a real-home L3 operation was explicitly approved:
+
+```bash
+npm run dev:cli -- check --json
+```
+
 Run from `node/`:
 
 ```bash
 npm run lint
+npm run typecheck:ui
+npm run build:ui
+npm run verify:ui-build
 npm test
-node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs
+node --test test/codex-config.test.mjs test/codex-history-repair.test.mjs
+node --test test/crp.test.mjs test/worker-manager.test.mjs test/integration/admin-server.test.mjs test/integration/crp-lifecycle.test.mjs test/integration/worker-restart.test.mjs
 npm run test:e2e -- --project=chromium --workers=1
 npm audit --omit=dev
 node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs test/release-workflows.test.mjs
@@ -38,18 +52,55 @@ npm pack --dry-run --json --ignore-scripts
 npm run changeset -- status
 ```
 
-Latest code evidence at safety commit `210cb71` on 2026-07-14:
+Historical M2D/V7 working-tree evidence on Node 22.19 on 2026-07-16:
 
-- exact full suite: 258/258 total (`227` core + `7` isolated capture + `24` integration);
-- post-security focused tests: 67/67;
+- exact full suite: 451/451 total (`401` unit-core + `8` isolated capture + `41` ordinary integration + `1` serial core-chain);
+- history/config focus: 98/98;
+- strict status/lifecycle and Worker-gate focus: 105/105;
 - browser E2E: 41/41;
-- integration suite: 24/24;
-- syntax check: 29 source files;
+- syntax check: 31 source files;
 - runtime audit: 0 vulnerabilities;
-- package dry run: exact reviewed 30-file allowlist;
-- `actionlint`, workflow policy checks, and independent requirements/quality reviews: approved.
+- package-content: 3/3 against the exact reviewed 32-file allowlist;
+- diff and sensitive-value scans: pass; both fixed ports released;
+- final independent M2D/V7 L3 review: `PASS`, with no unresolved P0/P1/P2.
 
-Relevant commits are Task 11 implementation `d114061`, Task 11 docs `dd4de3f`, Task 12 package/platform gates `af918d5`, and credential-boundary hardening `210cb71`. This documentation commit records final local gates; these local results do not prove real Keychain, Credential Manager, or Secret Service behavior, Windows filesystem semantics, browser launch behavior, or platform screenshots.
+M2E/V8 final local evidence on 2026-07-16:
+
+- React + TypeScript + Vite source is build-time only; the reviewed package still contains exactly `ui/index.html`, `ui/app.js`, and `ui/styles.css`;
+- anonymous Metrics, Provider-card switching, conditional Setup CAS selection, responsive bilingual pages, and the disabled Forwarding Records placeholder are implemented locally;
+- the exact package allowlist is now 33 files, adding `src/supervisor/metrics-store.mjs` without publishing `ui-src/` or frontend build tooling;
+- exact `npm test` passes 463/463 (`412` unit-core + `8` isolated capture + `42` ordinary integration + `1` serial core-chain); Metrics focus passes 6/6 and lint checks 33 source files;
+- UI typecheck/build/exact-output verification and package-content 3/3 against the exact 33-file allowlist pass;
+- Chromium passes 33/33, including the complete English/Chinese 1440/1024/390 responsive matrix;
+- full and runtime dependency audits report zero vulnerabilities, and `design-qa.md` records the matched same-state visual comparison with no unresolved P0/P1/P2.
+- `git diff --check` and production/documentation sensitive-pattern scans pass; independent final review returns `PASS` after resolving all P2 documentation/evidence findings.
+
+V8.1 release-preparation rerun on 2026-07-17:
+
+- the user-authorized temporary Supervisor and Worker were shut down cleanly,
+  releasing fixed ports `15100` and `15101`;
+- exact `npm test` passes 466/466 (`414` unit-core + `8` isolated Capture +
+  `43` ordinary integration + `1` serial core-chain);
+- Chromium passes 39/39, and syntax, UI typecheck/build/exact-output,
+  package/release 21/21, installed-tarball CLI smoke, Changesets minor status,
+  sensitive-pattern, diff, and both dependency-audit gates pass; and
+- the direct source CLI projects the real `~/.codex` and
+  `~/.codex-remote-proxy`, while the earlier `crpdev` wrapper is confirmed to
+  be intentionally isolated through its injected temporary paths.
+
+Publication remains blocked on deliberate working-tree staging,
+copied-real-history rehearsal, remote platform evidence, and final L3 approval.
+
+Current release-preparation adjustments include a shipped MIT License and a
+deterministic English default for CLI output and first-time Web sessions. The
+Web UI retains only an explicit user language selection.
+
+The final local rerun passes CLI/i18n 30/30, Chromium 39/39, UI
+typecheck/build/exact-output, lint, runtime audit, package/release tests 21/21,
+the exact 34-file package dry run, and exact `npm test` 467/467 (`415`
+unit-core + `8` Capture + `43` ordinary integration + `1` serial core chain).
+
+Historical commits remain Task 11 implementation `d114061`, Task 11 docs `dd4de3f`, Task 12 package/platform gates `af918d5`, and credential-boundary hardening `210cb71`; the then-current M2D/V7 evidence was for its uncommitted reviewed working tree. These local results used temporary roots and synthetic history and do not prove copied-corpus real-home performance/recovery, remote Keychain/Credential Manager/Secret Service behavior, cross-platform filesystem semantics, browser launch behavior, or platform screenshots.
 
 ## Migration Review
 
@@ -60,6 +111,8 @@ Treat upgrade and rollback as L3 operations. Before using a real home directory:
 3. verify that the first supervisor start retains byte-exact legacy backups, creates schema-2 registry state, and scrubs legacy secret fields only after commit;
 4. test and activate the migrated inactive `Default` provider;
 5. inspect Activity for committed or rollback-degraded migration codes before any retry.
+
+Before exercising M2D/V7 history repair, fully stop Codex and use a private copy of a representative history corpus. Verify storage growth, the 300-second bootstrap budget, interruption after each durable phase, forward retry, fixed marker/lock recovery, and byte/logical backup restoration before authorizing any real-home run.
 
 Rollback to `0.2.2` requires the supervisor to be stopped and the complete pre-upgrade backup to be restored as one unit. Do not mix the schema-2 registry with restored flat files. Do not publish until migration and rollback evidence has passed real-platform expert review.
 
@@ -74,4 +127,4 @@ npm run version-packages
 npm run release
 ```
 
-As of 2026-07-14, remote macOS/Windows/Linux workflow run URLs, real macOS Keychain, Windows Credential Manager, and Linux Secret Service evidence, Windows screenshots, real-home migration/rollback, human L3 expert approval, pull request, push, merge, versioning, publication, and release are still pending.
+As of 2026-07-16, the historical local macOS D2 passed with the production Keychain adapter and a real upstream on its reviewed tree. Remote macOS/Windows/Linux workflow run URLs, remote/cross-platform native-service evidence, Windows screenshots, copied-corpus history repair, real-home migration/rollback, final release L3 approval, pull request, push, merge, versioning, publication, and release are still pending.

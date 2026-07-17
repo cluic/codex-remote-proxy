@@ -328,19 +328,20 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
       { id: providerBId, name: "Provider B" }
     ]
   );
-  assert.equal((await invoke([
+  const testedA = await invoke([
     "provider", "test", "--id", providerAId, "--model", "fixture-model", "--json"
-  ])).result.ok, true);
-  assert.equal((await invoke([
-    "provider", "test", "--id", providerBId, "--model", "fixture-model", "--json"
-  ])).result.ok, true);
-
-  const activatedA = await invoke([
-    "provider", "activate", "--id", providerAId, "--json"
   ]);
-  assert.equal(activatedA.activation.activeProviderId, providerAId);
-  assert.equal(activatedA.activation.worker.phase, "running");
-  assert.equal(activatedA.activation.worker.state.listenPort, PROXY_PORT);
+  assert.equal(testedA.result.ok, true);
+  assert.deepEqual(testedA.result.initialActivation, {
+    automatic: true,
+    activeProviderId: providerAId,
+    workerStarted: false
+  });
+  const testedB = await invoke([
+    "provider", "test", "--id", providerBId, "--model", "fixture-model", "--json"
+  ]);
+  assert.equal(testedB.result.ok, true);
+  assert.equal(testedB.result.initialActivation, null);
 
   const started = await invoke(["start", "--json"]);
   const firstWorkerPid = started.worker.pid;
@@ -348,7 +349,18 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
   assert.equal(Number.isSafeInteger(firstWorkerPid), true);
   assert.deepEqual(started.codexBootstrap, {
     changed: true,
-    backupCreated: false
+    backupCreated: false,
+    historyRepair: {
+      required: false,
+      completed: false,
+      resumed: false,
+      backupCreated: false,
+      rolloutFiles: 0,
+      rolloutRecords: 0,
+      sqliteFiles: 0,
+      sqliteRows: 0,
+      encryptedContentDetected: false
+    }
   });
   assert.equal(started.proxyUrl, `http://127.0.0.1:${PROXY_PORT}`);
   assert.equal(readFileSync(configPath, "utf8"), EXPECTED_CONFIG);

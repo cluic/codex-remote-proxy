@@ -46,9 +46,21 @@ const SAFE_ERROR_DETAIL_FIELDS = new Set([
   "reason",
   "committed",
   "degraded",
+  "pending",
   "generation",
   "httpStatus"
 ]);
+const METRIC_RESULTS = [
+  "success",
+  "upstreamRejected",
+  "upstreamError",
+  "timeout",
+  "networkError",
+  "clientAbort"
+];
+const METRIC_MAX_COUNT = 1_000_000_000_000;
+const METRIC_MAX_TOKEN_TOTAL = 9_000_000_000_000_000;
+const METRIC_MAX_LATENCY_MS = 300_000;
 
 function apiError(code, message, action, status) {
   return new CrpError(code, message, action, { status });
@@ -74,6 +86,34 @@ function bodyError(code) {
   };
   const [message, action, status] = contracts[code] ?? contracts.API_BODY_INVALID;
   return apiError(code, message, action, status);
+}
+
+function codexNotReady() {
+  return new CrpError(
+    "CODEX_NOT_READY",
+    "The Codex configuration is not ready.",
+    "Complete Codex bootstrap before activating a provider or starting or restarting the proxy.",
+    { status: 409 }
+  );
+}
+
+function createSerialGate() {
+  let tail = Promise.resolve();
+  return (operation) => {
+    const previous = tail;
+    let release;
+    tail = new Promise((resolvePromise) => {
+      release = resolvePromise;
+    });
+    return (async () => {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    })();
+  };
 }
 
 function isPlainObject(value) {
@@ -196,7 +236,34 @@ function projectProviderStatus(status) {
 function projectTestResult(result) {
   return {
     ok: result?.ok === true,
-    code: typeof result?.code === "string" ? result.code : null
+    code: typeof result?.code === "string" ? result.code : null,
+    initialActivation: projectInitialActivation(result?.initialActivation ?? null)
+  };
+}
+
+function projectInitialActivation(activation) {
+  if (activation === null || typeof activation !== "object") return null;
+  return {
+    automatic: activation.automatic === true,
+    activeProviderId: typeof activation.activeProviderId === "string"
+      ? activation.activeProviderId
+      : null,
+    workerStarted: activation.workerStarted === true
+  };
+}
+
+function projectModelCatalog(catalog) {
+  const state = ["missing", "fresh", "stale"].includes(catalog?.state)
+    ? catalog.state
+    : "missing";
+  return {
+    providerId: typeof catalog?.providerId === "string" ? catalog.providerId : null,
+    state,
+    fetchedAt: typeof catalog?.fetchedAt === "string" ? catalog.fetchedAt : null,
+    expiresAt: typeof catalog?.expiresAt === "string" ? catalog.expiresAt : null,
+    models: Array.isArray(catalog?.models)
+      ? catalog.models.filter((model) => typeof model === "string").slice(0, 2_000)
+      : []
   };
 }
 
@@ -236,10 +303,30 @@ function projectSettings(settings) {
   };
 }
 
+function projectHistoryCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000
+    ? value
+    : 0;
+}
+
 function projectBootstrap(result) {
+  const historyRepair = result?.historyRepair && typeof result.historyRepair === "object"
+    ? result.historyRepair
+    : {};
   return {
     changed: result?.changed === true,
-    backupCreated: typeof result?.backupPath === "string" && result.backupPath.length > 0
+    backupCreated: typeof result?.backupPath === "string" && result.backupPath.length > 0,
+    historyRepair: {
+      required: historyRepair.required === true,
+      completed: historyRepair.completed === true,
+      resumed: historyRepair.resumed === true,
+      backupCreated: historyRepair.backupCreated === true,
+      rolloutFiles: projectHistoryCount(historyRepair.rolloutFiles),
+      rolloutRecords: projectHistoryCount(historyRepair.rolloutRecords),
+      sqliteFiles: projectHistoryCount(historyRepair.sqliteFiles),
+      sqliteRows: projectHistoryCount(historyRepair.sqliteRows),
+      encryptedContentDetected: historyRepair.encryptedContentDetected === true
+    }
   };
 }
 
@@ -248,6 +335,108 @@ function projectDiagnostics(result) {
     created: result?.created === true,
     generatedAt: typeof result?.generatedAt === "string" ? result.generatedAt : null,
     eventCount: Number.isSafeInteger(result?.eventCount) ? result.eventCount : null
+  };
+}
+
+function projectMetricInteger(value, maximum = METRIC_MAX_COUNT) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : 0;
+}
+
+function projectMetricResults(results) {
+  return Object.fromEntries(METRIC_RESULTS.map((result) => (
+    [result, projectMetricInteger(results?.[result])]
+  )));
+}
+
+function projectMetricTokens(tokens) {
+  return {
+    input: projectMetricInteger(tokens?.input, METRIC_MAX_TOKEN_TOTAL),
+    output: projectMetricInteger(tokens?.output, METRIC_MAX_TOKEN_TOTAL),
+    observedRequests: projectMetricInteger(tokens?.observedRequests)
+  };
+}
+
+function projectMetricPercentile(value) {
+  return value === null
+    ? null
+    : (Number.isSafeInteger(value) && value >= 0 && value <= METRIC_MAX_LATENCY_MS ? value : null);
+}
+
+function projectMetricLatency(latency) {
+  return {
+    p50UpperBoundMs: projectMetricPercentile(latency?.p50UpperBoundMs),
+    p95UpperBoundMs: projectMetricPercentile(latency?.p95UpperBoundMs),
+    overflowRequests: projectMetricInteger(latency?.overflowRequests)
+  };
+}
+
+function projectMetricText(value, maximum) {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= maximum * 2
+    && [...value].length <= maximum
+    && value.trim() === value
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+    ? value
+    : null;
+}
+
+function projectMetricTimestamp(value) {
+  if (typeof value !== "string") return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value
+    ? value
+    : null;
+}
+
+function projectMetricsOverview(metrics, requestedWindow) {
+  const window = requestedWindow;
+  const maximumSeries = window === "7d" ? 168 : 24;
+  return {
+    window,
+    bucketMinutes: 60,
+    storageState: ["ready", "degraded", "unavailable"].includes(metrics?.storageState)
+      ? metrics.storageState
+      : "unavailable",
+    summary: {
+      requests: projectMetricInteger(metrics?.summary?.requests),
+      results: projectMetricResults(metrics?.summary?.results),
+      tokens: projectMetricTokens(metrics?.summary?.tokens),
+      latency: projectMetricLatency(metrics?.summary?.latency),
+      responseStart: projectMetricLatency(metrics?.summary?.responseStart)
+    },
+    series: Array.isArray(metrics?.series)
+      ? metrics.series.slice(0, maximumSeries).map((bucket) => ({
+        start: projectMetricTimestamp(bucket?.start),
+        requests: projectMetricInteger(bucket?.requests),
+        results: projectMetricResults(bucket?.results),
+        tokens: projectMetricTokens(bucket?.tokens)
+      })).filter((bucket) => bucket.start !== null)
+      : [],
+    providers: Array.isArray(metrics?.providers)
+      ? metrics.providers.slice(0, 16).map((provider) => ({
+        providerId: projectMetricText(provider?.providerId, 128),
+        requests: projectMetricInteger(provider?.requests),
+        successfulRequests: projectMetricInteger(provider?.successfulRequests),
+        tokens: projectMetricTokens(provider?.tokens),
+        latency: projectMetricLatency(provider?.latency)
+      })).filter((provider) => provider.providerId !== null)
+      : [],
+    providerOtherRequests: projectMetricInteger(metrics?.providerOtherRequests),
+    models: Array.isArray(metrics?.models)
+      ? metrics.models.slice(0, 16).map((model) => ({
+        model: projectMetricText(model?.model, 256),
+        requests: projectMetricInteger(model?.requests),
+        tokens: projectMetricTokens(model?.tokens)
+      })).filter((model) => model.model !== null)
+      : [],
+    modelOtherRequests: projectMetricInteger(metrics?.modelOtherRequests),
+    dataQuality: {
+      unknownModelRequests: projectMetricInteger(metrics?.dataQuality?.unknownModelRequests),
+      modelOverflowRequests: projectMetricInteger(metrics?.dataQuality?.modelOverflowRequests),
+      providerOverflowRequests: projectMetricInteger(metrics?.dataQuality?.providerOverflowRequests),
+      droppedObservations: projectMetricInteger(metrics?.dataQuality?.droppedObservations)
+    }
   };
 }
 
@@ -261,6 +450,7 @@ function projectSupervisorState(state) {
 function projectCodexState(state) {
   return {
     configured: state?.configured === true,
+    historyRepairPending: state?.historyRepairPending === true,
     modelProvider: typeof state?.modelProvider === "string" ? state.modelProvider : null,
     proxyUrl: typeof state?.proxyUrl === "string" ? state.proxyUrl : null
   };
@@ -303,7 +493,9 @@ function parseProviderRoute(pathname) {
   }
   if (id.length === 0 || id.length > 128 || /[\\/\u0000-\u001f\u007f]/.test(id)) return null;
   const action = rawParts[1] ?? null;
-  if (action !== null && action !== "test" && action !== "activate") return null;
+  if (action !== null && action !== "test" && action !== "activate" && action !== "models") {
+    return null;
+  }
   return { id, action };
 }
 
@@ -319,7 +511,9 @@ function providerNotFound() {
 function allowedMethods(pathname) {
   const exact = new Map([
     [`${API_PREFIX}/session`, ["POST"]],
+    [`${API_PREFIX}/session/resume`, ["POST"]],
     [`${API_PREFIX}/status`, ["GET"]],
+    [`${API_PREFIX}/metrics/overview`, ["GET"]],
     [`${API_PREFIX}/providers`, ["GET", "POST"]],
     [`${API_PREFIX}/proxy/start`, ["POST"]],
     [`${API_PREFIX}/proxy/stop`, ["POST"]],
@@ -332,7 +526,8 @@ function allowedMethods(pathname) {
   if (exact.has(pathname)) return exact.get(pathname);
   const providerRoute = parseProviderRoute(pathname);
   if (!providerRoute) return null;
-  return providerRoute.action === null ? ["GET", "PATCH", "DELETE"] : ["POST"];
+  if (providerRoute.action === null) return ["GET", "PATCH", "DELETE"];
+  return providerRoute.action === "models" ? ["GET", "POST"] : ["POST"];
 }
 
 function positiveQueryInteger(url, name, fallback, { min = 0, max }) {
@@ -362,6 +557,7 @@ function uiAsset(pathname) {
   const explicit = new Map([
     ["/", ["index.html", "text/html; charset=utf-8"]],
     ["/index.html", ["index.html", "text/html; charset=utf-8"]],
+    ["/favicon.ico", [null, "image/x-icon"]],
     ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
     ["/app.js", ["app.js", "text/javascript; charset=utf-8"]]
   ]);
@@ -377,6 +573,7 @@ export function createAdminServer({
   settingsService,
   codexService,
   diagnosticsService,
+  metricsService,
   getSupervisorState = () => ({ pid: process.pid, startedAt: null }),
   uiDir,
   host = "127.0.0.1",
@@ -389,6 +586,18 @@ export function createAdminServer({
     || !auth || !providerService) {
     throw new TypeError("Admin server options are invalid.");
   }
+
+  const runCodexExclusive = createSerialGate();
+  const runWhenCodexReady = (operation) => runCodexExclusive(async () => {
+    if (typeof codexService?.runWhenReady === "function") {
+      return await codexService.runWhenReady(operation);
+    }
+    const status = await codexService?.getStatus?.();
+    if (status?.configured !== true || status?.historyRepairPending === true) {
+      throw codexNotReady();
+    }
+    return await operation();
+  });
 
   const server = http.createServer((request, response) => {
     setSafeHeaders(response);
@@ -451,6 +660,43 @@ export function createAdminServer({
       }, { "set-cookie": session.setCookie });
       return;
     }
+    if (url.pathname === `${API_PREFIX}/session/resume`) {
+      if (request.method !== "POST") {
+        throw apiError(
+          "API_METHOD_NOT_ALLOWED",
+          "The API method is not allowed.",
+          "Use the documented method for this endpoint.",
+          405
+        );
+      }
+      if (request.url !== `${API_PREFIX}/session/resume`) throw bodyError("API_BODY_INVALID");
+      if (origin !== address.origin) {
+        throw apiError(
+          "API_ORIGIN_INVALID",
+          "The local request origin is invalid.",
+          "Open CRP through its configured loopback address.",
+          403
+        );
+      }
+      if (request.headers["x-crp-session-resume"] !== "1") {
+        throw apiError(
+          "AUTH_CSRF_INVALID",
+          "The request could not be verified.",
+          "Refresh the local CRP UI and try again.",
+          403
+        );
+      }
+      await requireEmptyBody(request, maxBodyBytes);
+      const session = auth.resumeBrowserSession({
+        cookie: request.headers.cookie,
+        authorization: request.headers.authorization
+      });
+      sendJson(response, 200, {
+        csrfToken: session.csrfToken,
+        expiresAt: session.expiresAt
+      }, { "set-cookie": session.setCookie });
+      return;
+    }
 
     const apiNamespace = url.pathname === "/api"
       || url.pathname.startsWith("/api/");
@@ -480,6 +726,10 @@ export function createAdminServer({
           "Install the bundled CRP UI files and try again.",
           404
         );
+      }
+      if (asset[0] === null) {
+        sendBytes(response, 204, Buffer.alloc(0), asset[1], { head: true });
+        return;
       }
       let bytes;
       try {
@@ -512,6 +762,19 @@ export function createAdminServer({
         ...projectProviderStatus(providerStatus),
         codex: projectCodexState(codexStatus)
       });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/metrics/overview` && request.method === "GET") {
+      for (const key of url.searchParams.keys()) {
+        if (key !== "window") throw bodyError("API_BODY_INVALID");
+      }
+      const values = url.searchParams.getAll("window");
+      if (values.length > 1 || (values.length === 1 && !["24h", "7d"].includes(values[0]))) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const window = values[0] ?? "24h";
+      const metrics = await metricsService?.getOverview?.({ window });
+      sendJson(response, 200, { metrics: projectMetricsOverview(metrics, window) });
       return;
     }
     if (url.pathname === `${API_PREFIX}/providers` && request.method === "GET") {
@@ -570,25 +833,41 @@ export function createAdminServer({
     }
     if (providerRoute?.action === "test" && request.method === "POST") {
       const body = exactObject(await readJsonBody(request, maxBodyBytes), {
-        allowed: ["model"],
+        allowed: ["model", "activateIfNone"],
         required: ["model"]
       });
-      if (typeof body.model !== "string" || body.model.trim().length === 0) {
+      if (typeof body.model !== "string" || body.model.trim().length === 0
+        || (body.activateIfNone !== undefined && typeof body.activateIfNone !== "boolean")) {
         throw bodyError("API_BODY_INVALID");
       }
-      const result = await providerService.testProvider(providerRoute.id, body.model);
+      const result = await providerService.testProvider(providerRoute.id, body.model, {
+        activateIfNone: body.activateIfNone === true
+      });
       sendJson(response, 200, { result: projectTestResult(result) });
+      return;
+    }
+    if (providerRoute?.action === "models" && request.method === "GET") {
+      const modelCatalog = await providerService.getProviderModels(providerRoute.id);
+      sendJson(response, 200, { modelCatalog: projectModelCatalog(modelCatalog) });
+      return;
+    }
+    if (providerRoute?.action === "models" && request.method === "POST") {
+      await requireEmptyBody(request, maxBodyBytes);
+      const modelCatalog = await providerService.refreshProviderModels(providerRoute.id);
+      sendJson(response, 200, { modelCatalog: projectModelCatalog(modelCatalog) });
       return;
     }
     if (providerRoute?.action === "activate" && request.method === "POST") {
       await requireEmptyBody(request, maxBodyBytes);
-      const activation = await providerService.activate(providerRoute.id);
+      const activation = await runWhenCodexReady(
+        () => providerService.activate(providerRoute.id)
+      );
       sendJson(response, 200, { activation: projectActivation(activation) });
       return;
     }
     if (url.pathname === `${API_PREFIX}/proxy/start` && request.method === "POST") {
       await requireEmptyBody(request, maxBodyBytes);
-      const worker = await providerService.startProxy();
+      const worker = await runWhenCodexReady(() => providerService.startProxy());
       sendJson(response, 200, { worker: projectWorker(worker) });
       return;
     }
@@ -600,7 +879,7 @@ export function createAdminServer({
     }
     if (url.pathname === `${API_PREFIX}/proxy/restart` && request.method === "POST") {
       await requireEmptyBody(request, maxBodyBytes);
-      const worker = await providerService.restartProxy();
+      const worker = await runWhenCodexReady(() => providerService.restartProxy());
       sendJson(response, 200, { worker: projectWorker(worker) });
       return;
     }
@@ -642,7 +921,7 @@ export function createAdminServer({
     }
     if (url.pathname === `${API_PREFIX}/codex/bootstrap` && request.method === "POST") {
       await requireEmptyBody(request, maxBodyBytes);
-      const result = await codexService.bootstrap();
+      const result = await runCodexExclusive(() => codexService.bootstrap());
       sendJson(response, 200, { result: projectBootstrap(result) });
       return;
     }

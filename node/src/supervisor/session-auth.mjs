@@ -235,14 +235,37 @@ export class SessionAuth {
     const token = bearerToken(authorization);
     if (!secureEqual(token, this.#controlToken)) throw authError("AUTH_REQUIRED");
     this.#purgeExpired();
+    return this.#issueBrowserSession(this.#now() + this.#sessionTtlMs);
+  }
+
+  resumeBrowserSession({ cookie, authorization } = {}) {
+    if (authorization !== undefined && authorization !== null) throw authError("AUTH_REQUIRED");
+    const sessionId = sessionCookie(cookie);
+    const session = sessionId === null ? null : this.#sessions.get(sessionId);
+    if (!session) throw authError("AUTH_REQUIRED");
+    if (this.#now() >= session.expiresAtMs) {
+      this.#sessions.delete(sessionId);
+      throw authError("AUTH_SESSION_EXPIRED", { clearCookie: true });
+    }
+    const resumed = this.#issueBrowserSession(session.expiresAtMs, sessionId);
+    this.#sessions.delete(sessionId);
+    this.#purgeExpired();
+    return resumed;
+  }
+
+  #issueBrowserSession(expiresAtMs, replacedSessionId = null) {
     const sessionId = canonicalToken(this.#randomBytes(TOKEN_BYTES));
+    if (sessionId === replacedSessionId || this.#sessions.has(sessionId)) {
+      throw new TypeError("random session token collision");
+    }
     const csrfToken = canonicalToken(this.#randomBytes(TOKEN_BYTES));
-    const expiresAtMs = this.#now() + this.#sessionTtlMs;
+    const remainingMs = expiresAtMs - this.#now();
+    if (remainingMs <= 0) throw authError("AUTH_SESSION_EXPIRED", { clearCookie: true });
     this.#sessions.set(sessionId, { csrfToken, expiresAtMs });
     return {
       csrfToken,
       expiresAt: new Date(expiresAtMs).toISOString(),
-      setCookie: `${SESSION_COOKIE_NAME}=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.ceil(this.#sessionTtlMs / 1_000)}`
+      setCookie: `${SESSION_COOKIE_NAME}=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.ceil(remainingMs / 1_000)}`
     };
   }
 

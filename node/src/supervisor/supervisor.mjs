@@ -3,8 +3,8 @@ import {
   chmodSync,
   closeSync,
   constants,
-  existsSync,
   fchmodSync,
+  fstatSync,
   fsyncSync,
   linkSync,
   lstatSync,
@@ -19,13 +19,21 @@ import { fileURLToPath } from "node:url";
 import { basename, dirname, resolve } from "node:path";
 
 import { bootstrapCodexConfig, patchCodexConfigText } from "../codex/codex-config.mjs";
+import {
+  hasPendingCodexHistoryRepair,
+  inspectPendingCodexHistoryRepair,
+  planCodexProviderTransition,
+  runCodexHistoryRepairTransition
+} from "../codex/codex-history-repair.mjs";
 import { createCredentialStore } from "../credentials/credential-store.mjs";
+import { ProviderModelCache } from "../providers/provider-model-cache.mjs";
 import { ProviderRegistry } from "../providers/provider-registry.mjs";
 import { CrpError } from "../shared/errors.mjs";
 import { getPaths } from "../shared/paths.mjs";
 import { ActivityStore } from "./activity-store.mjs";
 import { createAdminServer } from "./admin-server.mjs";
 import { migrateLegacyConfiguration } from "./migration.mjs";
+import { MetricsStore } from "./metrics-store.mjs";
 import { ProviderService } from "./provider-service.mjs";
 import { SessionAuth } from "./session-auth.mjs";
 import { WorkerManager } from "./worker-manager.mjs";
@@ -34,8 +42,9 @@ const DEFAULT_UI_DIR = fileURLToPath(new URL("../../ui", import.meta.url));
 const DEFAULT_FILE_OPERATIONS = {
   chmodSync,
   closeSync,
-  existsSync,
+  constants,
   fchmodSync,
+  fstatSync,
   fsyncSync,
   linkSync,
   lstatSync,
@@ -46,11 +55,20 @@ const DEFAULT_FILE_OPERATIONS = {
   rmSync,
   writeFileSync
 };
+const DEFAULT_CODEX_HISTORY_REPAIR = Object.freeze({
+  plan: planCodexProviderTransition,
+  hasPending: hasPendingCodexHistoryRepair,
+  inspectPending: inspectPendingCodexHistoryRepair,
+  run: runCodexHistoryRepairTransition
+});
 
 function completePaths(home, provided) {
   const base = provided ?? getPaths(home);
   return {
     ...base,
+    modelCachePath: base.modelCachePath
+      ?? resolve(base.globalHome, "provider-model-cache.json"),
+    metricsPath: base.metricsPath ?? resolve(base.globalHome, "metrics.json"),
     runtimeConfigPath: base.runtimeConfigPath
       ?? resolve(base.globalHome, "node", "proxy-config.json"),
     capturePath: base.capturePath ?? resolve(base.globalHome, "traffic.sqlite3")
@@ -110,6 +128,32 @@ const CODEX_BOOTSTRAP_ERROR_CONTRACTS = new Map([
     message: "Codex configuration could not be written safely.",
     action: "Repair local filesystem access and retry.",
     status: 500
+  }],
+  ["CODEX_CONFIG_COMMITTED_DEGRADED", {
+    message: "The Codex configuration was updated, but completion could not be confirmed.",
+    action: "Review the Codex configuration and retry before starting the proxy.",
+    status: 500,
+    details: { committed: true, degraded: true, pending: false }
+  }],
+  ["CODEX_HISTORY_REPAIR_INVALID", {
+    message: "The Codex history repair input is invalid.",
+    action: "Repair the Codex configuration or history state and try again.",
+    status: 400
+  }],
+  ["CODEX_HISTORY_REPAIR_CONFLICT", {
+    message: "Another Codex history repair transition is already pending.",
+    action: "Complete or recover the pending Codex history repair before retrying.",
+    status: 409
+  }],
+  ["CODEX_HISTORY_REPAIR_FAILED", {
+    message: "Codex history repair could not be completed.",
+    action: "Repair local Codex history storage and retry before starting the proxy.",
+    status: 500
+  }],
+  ["CODEX_HISTORY_REPAIR_COMMITTED_DEGRADED", {
+    message: "Codex configuration was updated, but history repair remains pending.",
+    action: "Retry crp start to resume Codex history repair before using the proxy.",
+    status: 500
   }]
 ]);
 
@@ -118,43 +162,191 @@ function projectCodexBootstrapError(error) {
     ? error.code
     : "CODEX_CONFIG_WRITE_FAILED";
   const contract = CODEX_BOOTSTRAP_ERROR_CONTRACTS.get(code);
+  const details = contract.details ?? (code === "CODEX_HISTORY_REPAIR_COMMITTED_DEGRADED"
+    ? { committed: true, degraded: true, pending: true }
+    : {});
   return new CrpError(code, contract.message, contract.action, {
     status: contract.status,
+    details,
     cause: error
   });
+}
+
+function codexNotReady() {
+  return new CrpError(
+    "CODEX_NOT_READY",
+    "The Codex configuration is not ready.",
+    "Complete Codex bootstrap before activating a provider or starting or restarting the proxy.",
+    { status: 409 }
+  );
+}
+
+function createSerialGate() {
+  let tail = Promise.resolve();
+  return (operation) => {
+    const previous = tail;
+    let release;
+    tail = new Promise((resolvePromise) => {
+      release = resolvePromise;
+    });
+    return (async () => {
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        release();
+      }
+    })();
+  };
+}
+
+function readCodexConfigText(path, fileOperations) {
+  let before;
+  try {
+    before = fileOperations.lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw new Error("Codex configuration status source is unsafe.");
+  }
+  const noFollow = typeof fileOperations.constants.O_NOFOLLOW === "number"
+    ? fileOperations.constants.O_NOFOLLOW
+    : 0;
+  let descriptor;
+  try {
+    descriptor = fileOperations.openSync(
+      path,
+      fileOperations.constants.O_RDONLY | noFollow
+    );
+    const opened = fileOperations.fstatSync(descriptor);
+    if (!opened.isFile() || !sameIdentity(before, opened)) {
+      throw new Error("Codex configuration status identity changed.");
+    }
+    const bytes = Buffer.from(fileOperations.readFileSync(descriptor));
+    const after = fileOperations.lstatSync(path);
+    if (!after.isFile() || after.isSymbolicLink() || !sameIdentity(opened, after)) {
+      throw new Error("Codex configuration status identity changed.");
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } finally {
+    if (descriptor !== undefined) fileOperations.closeSync(descriptor);
+  }
+}
+
+function pathExists(path, fileOperations) {
+  try {
+    fileOperations.lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function createCodexService({
   paths,
   proxyUrl,
   fileOperations,
-  bootstrapImpl
+  bootstrapImpl,
+  historyRepair
 }) {
+  const runExclusive = createSerialGate();
+  const inspectStatus = () => {
+    let configured = false;
+    let historyRepairPending = false;
+    const operations = fileOperations ?? DEFAULT_FILE_OPERATIONS;
+    try {
+      const codexRoot = dirname(paths.codexConfigPath);
+      let rootBefore;
+      try {
+        rootBefore = operations.lstatSync(codexRoot);
+      } catch (error) {
+        if (error?.code === "ENOENT") {
+          return {
+            configured: false,
+            modelProvider: "OpenAI",
+            proxyUrl,
+            historyRepairPending: false
+          };
+        }
+        throw error;
+      }
+      if (!rootBefore.isDirectory() || rootBefore.isSymbolicLink()) {
+        throw new Error("Codex configuration root is unsafe.");
+      }
+      const pendingOptions = { codexRoot };
+      if (fileOperations !== undefined) pendingOptions.fileOperations = fileOperations;
+      historyRepairPending = historyRepair.hasPending(pendingOptions);
+      const configLockPath = `${paths.codexConfigPath}.crp.lock`;
+      const configLockedBeforeRead = pathExists(configLockPath, operations);
+      const text = readCodexConfigText(paths.codexConfigPath, operations);
+      const rootAfter = operations.lstatSync(codexRoot);
+      if (!rootAfter.isDirectory() || rootAfter.isSymbolicLink()
+        || !sameIdentity(rootBefore, rootAfter)) {
+        throw new Error("Codex configuration root identity changed.");
+      }
+      const configLockedAfterRead = pathExists(configLockPath, operations);
+      const pendingAfterRead = historyRepair.hasPending(pendingOptions);
+      historyRepairPending ||= pendingAfterRead;
+      const configLockedAfterPending = pathExists(configLockPath, operations);
+      if (text !== null && !configLockedBeforeRead && !configLockedAfterRead
+        && !configLockedAfterPending) {
+        const patchedText = patchCodexConfigText(text, proxyUrl);
+        const transition = planCodexProviderTransition({
+          sourceExists: true,
+          sourceText: text,
+          targetText: patchedText,
+          targetProvider: "OpenAI",
+          targetBaseUrl: proxyUrl
+        });
+        configured = patchedText === text
+          && transition.required === false
+          && !historyRepairPending;
+      }
+    } catch {
+      configured = false;
+      historyRepairPending = true;
+    }
+    return {
+      configured,
+      modelProvider: "OpenAI",
+      proxyUrl,
+      historyRepairPending
+    };
+  };
+
   return {
     bootstrap() {
-      const options = {
-        configPath: paths.codexConfigPath,
-        proxyUrl
-      };
-      if (fileOperations !== undefined) options.fileOperations = fileOperations;
-      try {
-        return bootstrapImpl(options);
-      } catch (error) {
-        throw projectCodexBootstrapError(error);
-      }
+      return runExclusive(async () => {
+        const options = {
+          configPath: paths.codexConfigPath,
+          proxyUrl,
+          historyRepair
+        };
+        if (fileOperations !== undefined) options.fileOperations = fileOperations;
+        try {
+          return await bootstrapImpl(options);
+        } catch (error) {
+          throw projectCodexBootstrapError(error);
+        }
+      });
     },
     getStatus() {
-      let configured = false;
-      const operations = fileOperations ?? DEFAULT_FILE_OPERATIONS;
-      try {
-        if (operations.existsSync(paths.codexConfigPath)) {
-          const text = operations.readFileSync(paths.codexConfigPath, "utf8");
-          configured = patchCodexConfigText(text, proxyUrl) === text;
-        }
-      } catch {
-        configured = false;
+      return runExclusive(async () => inspectStatus());
+    },
+    runWhenReady(operation) {
+      if (typeof operation !== "function") {
+        return Promise.reject(new TypeError("Codex readiness operation is invalid."));
       }
-      return { configured, modelProvider: "OpenAI", proxyUrl };
+      return runExclusive(async () => {
+        const status = inspectStatus();
+        if (status.configured !== true || status.historyRepairPending === true) {
+          throw codexNotReady();
+        }
+        return await operation();
+      });
     }
   };
 }
@@ -262,11 +454,14 @@ export async function createSupervisor({
   stateFileOperations = DEFAULT_FILE_OPERATIONS,
   codexFileOperations,
   bootstrapCodex = bootstrapCodexConfig,
+  codexHistoryRepair = DEFAULT_CODEX_HISTORY_REPAIR,
   createStateId = randomUUID,
   activityStoreFactory = (options) => new ActivityStore(options),
   credentialStoreFactory = (options) => createCredentialStore(options),
   migrate = migrateLegacyConfiguration,
   registryFactory = (options) => new ProviderRegistry(options),
+  providerModelCacheFactory = (options) => new ProviderModelCache(options),
+  metricsStoreFactory = (options) => new MetricsStore(options),
   workerManagerFactory = (options) => new WorkerManager(options),
   providerServiceFactory = (options) => new ProviderService(options),
   authFactory = (options) => new SessionAuth(options),
@@ -282,8 +477,10 @@ export async function createSupervisor({
   });
   await migrate({ paths, credentialStore, activityStore, now });
   const registry = registryFactory({ path: paths.registryPath, now });
+  const modelCache = providerModelCacheFactory({ path: paths.modelCachePath, now });
   const settings = registry.getDocument().settings;
   let workerManager;
+  let metricsStore;
   let providerService;
   let auth;
   let codexService;
@@ -291,26 +488,32 @@ export async function createSupervisor({
   let diagnosticsService;
   let adminServer;
   try {
+    const proxyUrl = `http://${settings.proxyHost}:${settings.proxyPort}`;
+    codexService = createCodexService({
+      paths,
+      proxyUrl,
+      fileOperations: codexFileOperations,
+      bootstrapImpl: bootstrapCodex,
+      historyRepair: codexHistoryRepair
+    });
+    metricsStore = metricsStoreFactory({ path: paths.metricsPath, now });
     workerManager = workerManagerFactory({
       host: settings.proxyHost,
-      port: settings.proxyPort
+      port: settings.proxyPort,
+      runRecoveryWhenReady: (operation) => codexService.runWhenReady(operation),
+      recordMetric: (observation) => metricsStore.record(observation),
+      noteDroppedMetric: () => metricsStore.noteDropped()
     });
     providerService = providerServiceFactory({
       registry,
       credentialStore,
       activityStore,
       workerManager,
+      modelCache,
       now,
       paths
     });
     auth = authFactory({ controlTokenPath: paths.controlTokenPath });
-    const proxyUrl = `http://${settings.proxyHost}:${settings.proxyPort}`;
-    codexService = createCodexService({
-      paths,
-      proxyUrl,
-      fileOperations: codexFileOperations,
-      bootstrapImpl: bootstrapCodex
-    });
     settingsService = createSettingsService({ registry, credentialStore });
     diagnosticsService = createDiagnosticsService({ activityStore, now });
     adminServer = adminServerFactory({
@@ -320,6 +523,7 @@ export async function createSupervisor({
       settingsService,
       codexService,
       diagnosticsService,
+      metricsService: metricsStore,
       getSupervisorState: () => ({ pid, startedAt }),
       uiDir,
       host: settings.adminHost,
@@ -328,6 +532,7 @@ export async function createSupervisor({
   } catch (error) {
     try { await auth?.close?.(); } catch {}
     try { await workerManager?.close?.(); } catch {}
+    try { await metricsStore?.close?.(); } catch {}
     throw error;
   }
   let address = null;
@@ -349,6 +554,7 @@ export async function createSupervisor({
         () => adminServer.close(),
         () => auth.close(),
         () => workerManager.close(),
+        () => metricsStore.close(),
         () => removeOwnedState(paths.statePath, ownedState, stateFileOperations, createStateId)
       ]) {
         try {

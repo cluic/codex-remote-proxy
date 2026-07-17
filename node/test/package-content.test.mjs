@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const REVIEWED_PACKAGE_PATHS = new Set([
+  "LICENSE",
   "README.md",
   "bin/crp.mjs",
   "package.json",
@@ -13,9 +14,11 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "src/capture-config.mjs",
   "src/capture-store.mjs",
   "src/codex/codex-config.mjs",
+  "src/codex/codex-history-repair.mjs",
   "src/credentials/credential-store.mjs",
   "src/credentials/file-credential-store.mjs",
   "src/credentials/native-keyring.mjs",
+  "src/providers/provider-model-cache.mjs",
   "src/providers/provider-registry.mjs",
   "src/providers/provider-schema.mjs",
   "src/server.mjs",
@@ -24,6 +27,7 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "src/supervisor/activity-store.mjs",
   "src/supervisor/admin-server.mjs",
   "src/supervisor/migration.mjs",
+  "src/supervisor/metrics-store.mjs",
   "src/supervisor/provider-service.mjs",
   "src/supervisor/session-auth.mjs",
   "src/supervisor/supervisor-client.mjs",
@@ -56,6 +60,8 @@ const FORBIDDEN_RUNTIME_NAMES = new Set([
   "auth.json",
   "control-token",
   "credentials.json",
+  "metrics.json",
+  "provider-model-cache.json",
   "providers.json",
   "secrets.json",
   "state.json",
@@ -146,12 +152,13 @@ test("npm pack invocation uses an explicit command interpreter only on Windows",
 
 test("exact package path comparison detects every extra and missing path", () => {
   const reviewed = [...REVIEWED_PACKAGE_PATHS];
-  assert.equal(REVIEWED_PACKAGE_PATHS.size, 30);
+  assert.equal(REVIEWED_PACKAGE_PATHS.size, 34);
   assert.deepEqual(comparePackagePaths(reviewed), { missing: [], unexpected: [] });
 
   const runtimeExtras = [
     "secrets.json",
     "state.json",
+    "metrics.json",
     "traffic.sqlite3",
     "supervisor.log",
     "cluic-codex-remote-proxy-0.2.2.tgz"

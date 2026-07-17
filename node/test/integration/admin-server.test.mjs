@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as realFileOperations from "node:fs";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import http from "node:http";
 import os from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { createAdminServer } from "../../src/supervisor/admin-server.mjs";
 import { SessionAuth } from "../../src/supervisor/session-auth.mjs";
@@ -15,6 +16,17 @@ import { CrpError } from "../../src/shared/errors.mjs";
 
 const SECRET = "admin-api-complete-secret-sentinel";
 const CREDENTIAL_REF = "credential-ref-must-not-pass";
+const NO_HISTORY_REPAIR = Object.freeze({
+  required: false,
+  completed: false,
+  resumed: false,
+  backupCreated: false,
+  rolloutFiles: 0,
+  rolloutRecords: 0,
+  sqliteFiles: 0,
+  sqliteRows: 0,
+  encryptedContentDetected: false
+});
 
 function publicProvider(overrides = {}) {
   return {
@@ -94,9 +106,41 @@ function createServices() {
       const index = providers.findIndex((provider) => provider.id === id);
       return providers.splice(index, 1)[0];
     },
-    async testProvider(id, model) {
-      calls.push(["testProvider", id, model]);
-      return { ok: true, code: null, apiKey: SECRET };
+    async testProvider(id, model, options) {
+      calls.push(["testProvider", id, model, options]);
+      return {
+        ok: true,
+        code: null,
+        initialActivation: options?.activateIfNone === true ? {
+          automatic: true,
+          activeProviderId: id,
+          workerStarted: false,
+          apiKey: SECRET
+        } : null,
+        apiKey: SECRET
+      };
+    },
+    async getProviderModels(id) {
+      calls.push(["getProviderModels", id]);
+      return {
+        providerId: id,
+        state: "stale",
+        fetchedAt: "2026-07-12T00:00:00.000Z",
+        expiresAt: "2026-07-13T00:00:00.000Z",
+        models: ["cached-model"],
+        apiKey: SECRET
+      };
+    },
+    async refreshProviderModels(id) {
+      calls.push(["refreshProviderModels", id]);
+      return {
+        providerId: id,
+        state: "fresh",
+        fetchedAt: "2026-07-13T00:00:00.000Z",
+        expiresAt: "2026-07-14T00:00:00.000Z",
+        models: ["fresh-model"],
+        credentialRef: CREDENTIAL_REF
+      };
     },
     async activate(id) {
       calls.push(["activate", id]);
@@ -161,13 +205,54 @@ function createServices() {
       return { ...(await this.getSettings()), ...patch };
     }
   };
+  const codexState = {
+    configured: true,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: false
+  };
   const codexService = {
+    state: codexState,
     async bootstrap() {
       calls.push(["bootstrap"]);
-      return { changed: true, backupPath: `/private/${SECRET}` };
+      Object.assign(codexState, {
+        configured: true,
+        historyRepairPending: false
+      });
+      return {
+        changed: true,
+        backupPath: `/private/${SECRET}`,
+        historyRepair: {
+          required: true,
+          completed: true,
+          resumed: false,
+          backupCreated: true,
+          rolloutFiles: -1,
+          rolloutRecords: 1_000_001,
+          sqliteFiles: 1_000_000,
+          sqliteRows: 4,
+          encryptedContentDetected: true,
+          rolloutPaths: [`/private/${SECRET}/rollout.jsonl`],
+          sessionBody: `private session body ${SECRET}`,
+          apiKey: SECRET
+        }
+      };
     },
     async getStatus() {
-      return { configured: true, modelProvider: "OpenAI", proxyUrl: "http://127.0.0.1:15100" };
+      return structuredClone(codexState);
+    },
+    async runWhenReady(operation) {
+      calls.push(["runWhenReady"]);
+      const status = await this.getStatus();
+      if (status.configured !== true || status.historyRepairPending === true) {
+        throw new CrpError(
+          "CODEX_NOT_READY",
+          "The Codex configuration is not ready.",
+          "Complete Codex bootstrap before activating a provider or starting or restarting the proxy.",
+          { status: 409 }
+        );
+      }
+      return await operation();
     }
   };
   const diagnosticsService = {
@@ -176,13 +261,77 @@ function createServices() {
       return { created: true, apiKey: SECRET, credentialRef: CREDENTIAL_REF };
     }
   };
+  const metricsService = {
+    async getOverview({ window }) {
+      calls.push(["metrics", window]);
+      return {
+        window,
+        bucketMinutes: 60,
+        storageState: "ready",
+        summary: {
+          requests: 3,
+          results: {
+            success: 2,
+            upstreamRejected: 1,
+            upstreamError: 0,
+            timeout: 0,
+            networkError: 0,
+            clientAbort: 0,
+            rawError: SECRET
+          },
+          tokens: { input: 100, output: 25, observedRequests: 2, body: SECRET },
+          latency: { p50UpperBoundMs: 500, p95UpperBoundMs: 2_500, overflowRequests: 0 },
+          responseStart: { p50UpperBoundMs: 250, p95UpperBoundMs: 1_000, overflowRequests: 0 }
+        },
+        series: [{
+          start: "2026-07-13T00:00:00.000Z",
+          requests: 3,
+          results: {
+            success: 2,
+            upstreamRejected: 1,
+            upstreamError: 0,
+            timeout: 0,
+            networkError: 0,
+            clientAbort: 0
+          },
+          tokens: { input: 100, output: 25, observedRequests: 2 },
+          requestId: SECRET
+        }],
+        providers: [{
+          providerId: "provider-1",
+          requests: 3,
+          successfulRequests: 2,
+          tokens: { input: 100, output: 25, observedRequests: 2 },
+          latency: { p50UpperBoundMs: 500, p95UpperBoundMs: 2_500, overflowRequests: 0 },
+          url: SECRET
+        }],
+        providerOtherRequests: 0,
+        models: [{
+          model: "gpt-5-codex",
+          requests: 3,
+          tokens: { input: 100, output: 25, observedRequests: 2 },
+          headers: SECRET
+        }],
+        modelOtherRequests: 0,
+        dataQuality: {
+          unknownModelRequests: 0,
+          modelOverflowRequests: 0,
+          providerOverflowRequests: 0,
+          droppedObservations: 0,
+          error: SECRET
+        },
+        apiKey: SECRET
+      };
+    }
+  };
   return {
     calls,
     providerService,
     activityStore,
     settingsService,
     codexService,
-    diagnosticsService
+    diagnosticsService,
+    metricsService
   };
 }
 
@@ -219,7 +368,7 @@ async function createHarness(t, overrides = {}) {
       const outgoing = http.request({
         host: target.hostname,
         port: target.port,
-        path: `${target.pathname}${target.search}`,
+        path: options.rawPath ?? `${target.pathname}${target.search}`,
         method: options.method ?? "GET",
         headers: { ...(options.headers ?? {}) }
       }, (response) => {
@@ -360,11 +509,171 @@ test("requires CSRF for browser mutations while bearer mutations bypass CSRF", a
   }
 });
 
+test("resumes a valid cookie session only through the strict same-origin bootstrap", async (t) => {
+  const harness = await createHarness(t);
+  const session = await browserSession(harness);
+  const originalSessionSecrets = [
+    harness.controlToken,
+    session.cookie.split("=")[1],
+    session.csrfToken
+  ];
+  const assertAuthSecretsAbsent = (result, secrets = originalSessionSecrets) => {
+    const surface = `${result.text}\n${JSON.stringify([...result.response.headers])}`;
+    for (const secret of secrets) assert.equal(surface.includes(secret), false);
+  };
+  const resumeHeaders = {
+    cookie: session.cookie,
+    origin: harness.address.origin,
+    "x-crp-session-resume": "1"
+  };
+
+  const missingOrigin = await harness.request("/api/v1/session/resume", {
+    method: "POST",
+    headers: { cookie: session.cookie, "x-crp-session-resume": "1" }
+  });
+  assertAuthSecretsAbsent(missingOrigin);
+  assert.equal(missingOrigin.response.status, 403);
+  assert.equal(missingOrigin.json.error.code, "API_ORIGIN_INVALID");
+
+  const missingHeader = await harness.request("/api/v1/session/resume", {
+    method: "POST",
+    headers: { cookie: session.cookie, origin: harness.address.origin }
+  });
+  assertAuthSecretsAbsent(missingHeader);
+  assert.equal(missingHeader.response.status, 403);
+  assert.equal(missingHeader.json.error.code, "AUTH_CSRF_INVALID");
+
+  const wrongOrigin = await harness.request("/api/v1/session/resume", {
+    method: "POST",
+    headers: { ...resumeHeaders, origin: "https://attacker.example" }
+  });
+  assertAuthSecretsAbsent(wrongOrigin);
+  assert.equal(wrongOrigin.response.status, 403);
+  assert.equal(wrongOrigin.json.error.code, "API_ORIGIN_INVALID");
+
+  const wrongHeader = await harness.request("/api/v1/session/resume", {
+    method: "POST",
+    headers: { ...resumeHeaders, "x-crp-session-resume": "yes" }
+  });
+  assertAuthSecretsAbsent(wrongHeader);
+  assert.equal(wrongHeader.response.status, 403);
+  assert.equal(wrongHeader.json.error.code, "AUTH_CSRF_INVALID");
+
+  const queryRejected = await harness.request("/api/v1/session/resume?again=1", {
+    method: "POST",
+    headers: resumeHeaders
+  });
+  assertAuthSecretsAbsent(queryRejected);
+  assert.equal(queryRejected.response.status, 400);
+  assert.equal(queryRejected.json.error.code, "API_BODY_INVALID");
+
+  const emptyQueryRejected = await harness.request("/api/v1/session/resume?", {
+    method: "POST",
+    headers: resumeHeaders,
+    rawPath: "/api/v1/session/resume?"
+  });
+  assertAuthSecretsAbsent(emptyQueryRejected);
+  assert.equal(emptyQueryRejected.response.status, 400);
+  assert.equal(emptyQueryRejected.json.error.code, "API_BODY_INVALID");
+
+  const normalizedPathRejected = await harness.request("/api/v1/ignored/../session/resume", {
+    method: "POST",
+    headers: resumeHeaders,
+    rawPath: "/api/v1/ignored/../session/resume"
+  });
+  assertAuthSecretsAbsent(normalizedPathRejected);
+  assert.equal(normalizedPathRejected.response.status, 400);
+  assert.equal(normalizedPathRejected.json.error.code, "API_BODY_INVALID");
+
+  const bodyRejected = await harness.request("/api/v1/session/resume", {
+    method: "POST",
+    headers: { ...resumeHeaders, "content-type": "application/json" },
+    body: "{}"
+  });
+  assertAuthSecretsAbsent(bodyRejected);
+  assert.equal(bodyRejected.response.status, 400);
+  assert.equal(bodyRejected.json.error.code, "API_BODY_INVALID");
+
+  const bearerRejected = await harness.request("/api/v1/session/resume", {
+    method: "POST",
+    headers: { ...resumeHeaders, authorization: `Bearer ${harness.controlToken}` }
+  });
+  assertAuthSecretsAbsent(bearerRejected);
+  assert.equal(bearerRejected.response.status, 401);
+  assert.equal(bearerRejected.json.error.code, "AUTH_REQUIRED");
+
+  const wrongMethod = await harness.request("/api/v1/session/resume", {
+    method: "GET",
+    headers: resumeHeaders
+  });
+  assertAuthSecretsAbsent(wrongMethod);
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.json.error.code, "API_METHOD_NOT_ALLOWED");
+
+  const resumed = await harness.request("/api/v1/session/resume", {
+    method: "POST",
+    headers: resumeHeaders
+  });
+  assertAuthSecretsAbsent(resumed);
+  assert.equal(resumed.response.status, 200);
+  assert.deepEqual(Object.keys(resumed.json).sort(), ["csrfToken", "expiresAt"]);
+  assert.match(resumed.json.csrfToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.match(resumed.json.expiresAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  const resumedCookie = resumed.response.headers.get("set-cookie").split(";")[0];
+  const resumedSessionSecrets = [resumedCookie.split("=")[1], resumed.json.csrfToken];
+  assert.notEqual(resumedCookie, session.cookie);
+
+  const oldSession = await harness.request("/api/v1/status", {
+    headers: { cookie: session.cookie, origin: harness.address.origin }
+  });
+  assertAuthSecretsAbsent(oldSession);
+  assert.equal(oldSession.response.status, 401);
+  assert.equal(oldSession.json.error.code, "AUTH_REQUIRED");
+
+  const missingCsrf = await harness.request("/api/v1/proxy/stop", {
+    method: "POST",
+    headers: { cookie: resumedCookie, origin: harness.address.origin }
+  });
+  assertAuthSecretsAbsent(missingCsrf, [...originalSessionSecrets, ...resumedSessionSecrets]);
+  assert.equal(missingCsrf.response.status, 403);
+  assert.equal(missingCsrf.json.error.code, "AUTH_CSRF_INVALID");
+
+  const mutation = await harness.request("/api/v1/proxy/stop", {
+    method: "POST",
+    headers: {
+      cookie: resumedCookie,
+      origin: harness.address.origin,
+      "x-crp-csrf": resumed.json.csrfToken
+    }
+  });
+  assertAuthSecretsAbsent(mutation, [...originalSessionSecrets, ...resumedSessionSecrets]);
+  assert.equal(mutation.response.status, 200);
+  assert.equal(JSON.stringify(resumed.json).includes(harness.controlToken), false);
+  for (const result of [
+    missingOrigin,
+    missingHeader,
+    wrongOrigin,
+    wrongHeader,
+    queryRejected,
+    emptyQueryRejected,
+    normalizedPathRejected,
+    bodyRejected,
+    bearerRejected,
+    wrongMethod,
+    oldSession,
+    missingCsrf,
+    mutation
+  ]) {
+    assertNoSensitiveResponse(result);
+  }
+});
+
 test("routes every approved Admin API operation through injected services", async (t) => {
   const harness = await createHarness(t);
   const authHeaders = bearer(harness);
   const requests = [
     ["GET", "/api/v1/status", undefined, 200],
+    ["GET", "/api/v1/metrics/overview?window=7d", undefined, 200],
     ["GET", "/api/v1/providers", undefined, 200],
     ["POST", "/api/v1/providers", {
       provider: { name: "Backup", baseUrl: "https://backup.example/v1" },
@@ -375,7 +684,12 @@ test("routes every approved Admin API operation through injected services", asyn
       patch: { name: "Backup Updated" },
       replacementCredential: SECRET
     }, 200],
-    ["POST", "/api/v1/providers/provider-2/test", { model: "test-model" }, 200],
+    ["POST", "/api/v1/providers/provider-2/test", {
+      model: "test-model",
+      activateIfNone: true
+    }, 200],
+    ["GET", "/api/v1/providers/provider-2/models", undefined, 200],
+    ["POST", "/api/v1/providers/provider-2/models", undefined, 200],
     ["POST", "/api/v1/providers/provider-2/activate", undefined, 200],
     ["POST", "/api/v1/proxy/start", undefined, 200],
     ["POST", "/api/v1/proxy/stop", undefined, 200],
@@ -407,7 +721,372 @@ test("routes every approved Admin API operation through injected services", asyn
   assert.ok(harness.calls.some((call) => call[0] === "restartProxy"));
   assert.ok(harness.calls.some((call) => call[0] === "bootstrap"));
   assert.ok(harness.calls.some((call) => call[0] === "diagnostics"));
+  assert.ok(harness.calls.some((call) => call[0] === "metrics" && call[1] === "7d"));
   assert.equal(harness.calls.some((call) => call[0] === "updateSettings"), false);
+});
+
+test("metrics overview is authenticated read-only, bounded, and positively projected", async (t) => {
+  const harness = await createHarness(t);
+  const unauthenticated = await harness.request("/api/v1/metrics/overview");
+  assert.equal(unauthenticated.response.status, 401);
+
+  const session = await browserSession(harness);
+  const result = await harness.request("/api/v1/metrics/overview?window=24h", {
+    headers: { cookie: session.cookie, origin: harness.address.origin }
+  });
+  assert.equal(result.response.status, 200, result.text);
+  assertNoSensitiveResponse(result);
+  for (const forbidden of ["rawError", "requestId", "url", "headers", "body", "metric-secret-sentinel"]) {
+    assert.equal(result.text.includes(forbidden), false);
+  }
+  assert.deepEqual(result.json, {
+    metrics: {
+      window: "24h",
+      bucketMinutes: 60,
+      storageState: "ready",
+      summary: {
+        requests: 3,
+        results: {
+          success: 2,
+          upstreamRejected: 1,
+          upstreamError: 0,
+          timeout: 0,
+          networkError: 0,
+          clientAbort: 0
+        },
+        tokens: { input: 100, output: 25, observedRequests: 2 },
+        latency: { p50UpperBoundMs: 500, p95UpperBoundMs: 2_500, overflowRequests: 0 },
+        responseStart: { p50UpperBoundMs: 250, p95UpperBoundMs: 1_000, overflowRequests: 0 }
+      },
+      series: [{
+        start: "2026-07-13T00:00:00.000Z",
+        requests: 3,
+        results: {
+          success: 2,
+          upstreamRejected: 1,
+          upstreamError: 0,
+          timeout: 0,
+          networkError: 0,
+          clientAbort: 0
+        },
+        tokens: { input: 100, output: 25, observedRequests: 2 }
+      }],
+      providers: [{
+        providerId: "provider-1",
+        requests: 3,
+        successfulRequests: 2,
+        tokens: { input: 100, output: 25, observedRequests: 2 },
+        latency: { p50UpperBoundMs: 500, p95UpperBoundMs: 2_500, overflowRequests: 0 }
+      }],
+      providerOtherRequests: 0,
+      models: [{
+        model: "gpt-5-codex",
+        requests: 3,
+        tokens: { input: 100, output: 25, observedRequests: 2 }
+      }],
+      modelOtherRequests: 0,
+      dataQuality: {
+        unknownModelRequests: 0,
+        modelOverflowRequests: 0,
+        providerOverflowRequests: 0,
+        droppedObservations: 0
+      }
+    }
+  });
+
+  for (const path of [
+    "/api/v1/metrics/overview?window=30d",
+    "/api/v1/metrics/overview?window=24h&window=7d",
+    "/api/v1/metrics/overview?unknown=1"
+  ]) {
+    const invalid = await harness.request(path, { headers: bearer(harness) });
+    assert.equal(invalid.response.status, 400);
+    assert.equal(invalid.json.error.code, "API_BODY_INVALID");
+  }
+  const wrongMethod = await harness.request("/api/v1/metrics/overview", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "GET");
+});
+
+test("projects only the bounded history-repair summary and pending Codex state", async (t) => {
+  const harness = await createHarness(t);
+  const bootstrap = await harness.request("/api/v1/codex/bootstrap", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+  const status = await harness.request("/api/v1/status", {
+    headers: bearer(harness)
+  });
+
+  for (const result of [bootstrap, status]) assertNoSensitiveResponse(result);
+  const bootstrapText = `${bootstrap.text}\n${JSON.stringify(bootstrap.json)}`;
+  for (const forbidden of ["/private/", "rollout.jsonl", "private session body", "rolloutPaths", "sessionBody"]) {
+    assert.equal(bootstrapText.includes(forbidden), false);
+  }
+  assert.equal(bootstrap.response.status, 200, bootstrap.text);
+  assert.deepEqual(bootstrap.json, {
+    result: {
+      changed: true,
+      backupCreated: true,
+      historyRepair: {
+        required: true,
+        completed: true,
+        resumed: false,
+        backupCreated: true,
+        rolloutFiles: 0,
+        rolloutRecords: 0,
+        sqliteFiles: 1_000_000,
+        sqliteRows: 4,
+        encryptedContentDetected: true
+      }
+    }
+  });
+  assert.equal(status.response.status, 200, status.text);
+  assert.deepEqual(status.json.codex, {
+    configured: true,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: false
+  });
+});
+
+test("Admin rejects activation and Worker start or restart while Codex is pending or unconfigured", async (t) => {
+  const harness = await createHarness(t);
+  const before = harness.calls.length;
+
+  for (const state of [
+    { configured: true, historyRepairPending: true },
+    { configured: false, historyRepairPending: true },
+    { configured: false, historyRepairPending: false }
+  ]) {
+    Object.assign(harness.codexService.state, state);
+    for (const path of [
+      "/api/v1/providers/provider-1/activate",
+      "/api/v1/proxy/start",
+      "/api/v1/proxy/restart"
+    ]) {
+      const result = await harness.request(path, {
+        method: "POST",
+        headers: bearer(harness)
+      });
+      assertNoSensitiveResponse(result);
+      assert.equal(result.response.status, 409, result.text);
+      assert.deepEqual(result.json.error, {
+        code: "CODEX_NOT_READY",
+        message: "The Codex configuration is not ready.",
+        action: "Complete Codex bootstrap before activating a provider or starting or restarting the proxy.",
+        requestId: result.json.error.requestId,
+        details: {}
+      });
+    }
+  }
+  assert.deepEqual(
+    harness.calls.slice(before).filter(([operation]) => (
+      operation === "activate" || operation === "startProxy" || operation === "restartProxy"
+    )),
+    []
+  );
+});
+
+test("Admin serializes concurrent bootstrap, activation, and Worker start before readiness recheck", async (t) => {
+  const bootstrapStarted = createGate();
+  const releaseBootstrap = createGate();
+  const startStarted = createGate();
+  const releaseStart = createGate();
+  const events = [];
+  const state = {
+    configured: false,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: true
+  };
+  const codexService = {
+    async bootstrap() {
+      events.push("bootstrap-start");
+      bootstrapStarted.resolve();
+      await releaseBootstrap.promise;
+      Object.assign(state, { configured: true, historyRepairPending: false });
+      events.push("bootstrap-complete");
+      return { changed: true, backupPath: null, historyRepair: NO_HISTORY_REPAIR };
+    },
+    async getStatus() {
+      return structuredClone(state);
+    }
+  };
+  const providerService = {
+    async startProxy() {
+      events.push("start-start");
+      startStarted.resolve();
+      await releaseStart.promise;
+      events.push("start-complete");
+      return workerState();
+    },
+    async activate(id) {
+      events.push("activate");
+      return {
+        activeProviderId: id,
+        activeProvider: publicProvider(),
+        generation: 1,
+        worker: workerState()
+      };
+    }
+  };
+  const harness = await createHarness(t, { codexService, providerService });
+  const headers = bearer(harness);
+
+  const bootstrapping = harness.request("/api/v1/codex/bootstrap", {
+    method: "POST",
+    headers
+  });
+  await bootstrapStarted.promise;
+  const starting = harness.request("/api/v1/proxy/start", {
+    method: "POST",
+    headers
+  });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  const activating = harness.request("/api/v1/providers/provider-1/activate", {
+    method: "POST",
+    headers
+  });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.deepEqual(events, ["bootstrap-start"]);
+  releaseBootstrap.resolve();
+
+  await startStarted.promise;
+  assert.deepEqual(events, ["bootstrap-start", "bootstrap-complete", "start-start"]);
+  releaseStart.resolve();
+
+  const [bootstrapResult, startResult, activateResult] = await Promise.all([
+    bootstrapping,
+    starting,
+    activating
+  ]);
+  assert.equal(bootstrapResult.response.status, 200, bootstrapResult.text);
+  assert.equal(startResult.response.status, 200, startResult.text);
+  assert.equal(activateResult.response.status, 200, activateResult.text);
+  assert.deepEqual(events, [
+    "bootstrap-start",
+    "bootstrap-complete",
+    "start-start",
+    "start-complete",
+    "activate"
+  ]);
+});
+
+test("provider tests opt into initial selection explicitly and project only safe fields", async (t) => {
+  const harness = await createHarness(t);
+  const headers = { ...bearer(harness), "content-type": "application/json" };
+  const automatic = await harness.request("/api/v1/providers/provider-1/test", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: "test-model", activateIfNone: true })
+  });
+  assertNoSensitiveResponse(automatic);
+  assert.equal(automatic.response.status, 200, automatic.text);
+  assert.deepEqual(automatic.json, {
+    result: {
+      ok: true,
+      code: null,
+      initialActivation: {
+        automatic: true,
+        activeProviderId: "provider-1",
+        workerStarted: false
+      }
+    }
+  });
+
+  const defaulted = await harness.request("/api/v1/providers/provider-1/test", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: "test-model" })
+  });
+  assertNoSensitiveResponse(defaulted);
+  assert.equal(defaulted.response.status, 200, defaulted.text);
+  assert.deepEqual(defaulted.json, {
+    result: { ok: true, code: null, initialActivation: null }
+  });
+  assert.deepEqual(
+    harness.calls.filter(([operation]) => operation === "testProvider"),
+    [
+      ["testProvider", "provider-1", "test-model", { activateIfNone: true }],
+      ["testProvider", "provider-1", "test-model", { activateIfNone: false }]
+    ]
+  );
+
+  for (const body of [
+    { model: "test-model", activateIfNone: "true" },
+    { model: "test-model", activateIfNone: true, unexpected: true }
+  ]) {
+    const invalid = await harness.request("/api/v1/providers/provider-1/test", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+    assertNoSensitiveResponse(invalid);
+    assert.equal(invalid.response.status, 400, invalid.text);
+    assert.equal(invalid.json.error.code, "API_BODY_INVALID");
+  }
+});
+
+test("model catalog routes distinguish cached reads from refreshes with strict projections", async (t) => {
+  const harness = await createHarness(t);
+  const headers = bearer(harness);
+  const cached = await harness.request("/api/v1/providers/provider-1/models", { headers });
+  assertNoSensitiveResponse(cached);
+  assert.equal(cached.response.status, 200, cached.text);
+  assert.deepEqual(cached.json, {
+    modelCatalog: {
+      providerId: "provider-1",
+      state: "stale",
+      fetchedAt: "2026-07-12T00:00:00.000Z",
+      expiresAt: "2026-07-13T00:00:00.000Z",
+      models: ["cached-model"]
+    }
+  });
+
+  const refreshed = await harness.request("/api/v1/providers/provider-1/models", {
+    method: "POST",
+    headers
+  });
+  assertNoSensitiveResponse(refreshed);
+  assert.equal(refreshed.response.status, 200, refreshed.text);
+  assert.deepEqual(refreshed.json, {
+    modelCatalog: {
+      providerId: "provider-1",
+      state: "fresh",
+      fetchedAt: "2026-07-13T00:00:00.000Z",
+      expiresAt: "2026-07-14T00:00:00.000Z",
+      models: ["fresh-model"]
+    }
+  });
+  assert.deepEqual(
+    harness.calls.filter(([operation]) => operation.includes("ProviderModels")),
+    [
+      ["getProviderModels", "provider-1"],
+      ["refreshProviderModels", "provider-1"]
+    ]
+  );
+
+  const bodyRejected = await harness.request("/api/v1/providers/provider-1/models", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: "{}"
+  });
+  assertNoSensitiveResponse(bodyRejected);
+  assert.equal(bodyRejected.response.status, 400, bodyRejected.text);
+  assert.equal(bodyRejected.json.error.code, "API_BODY_INVALID");
+
+  const methodRejected = await harness.request("/api/v1/providers/provider-1/models", {
+    method: "DELETE",
+    headers
+  });
+  assertNoSensitiveResponse(methodRejected);
+  assert.equal(methodRejected.response.status, 405, methodRejected.text);
+  assert.equal(methodRejected.response.headers.get("allow"), "GET, POST");
+  assert.equal(methodRejected.json.error.code, "API_METHOD_NOT_ALLOWED");
 });
 
 test("enforces JSON content type, exact shape, and a bounded request body", async (t) => {
@@ -523,6 +1202,11 @@ test("serves only explicit static assets with safe headers and an index fallback
     assert.match(result.text, new RegExp(content));
   }
 
+  const favicon = await harness.request("/favicon.ico");
+  assert.equal(favicon.response.status, 204);
+  assert.equal(favicon.text, "");
+  assert.equal(favicon.response.headers.get("cache-control"), "no-store");
+
   const missingAsset = await harness.request("/missing.css");
   assert.equal(missingAsset.response.status, 404);
   const postUi = await harness.request("/", { method: "POST" });
@@ -564,6 +1248,23 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
     captureEnabled: false
   } }) };
   const provider = { getStatus: async () => ({ worker: workerState() }) };
+  const metrics = {
+    observations: [],
+    dropped: 0,
+    record(observation) {
+      this.observations.push(structuredClone(observation));
+      return true;
+    },
+    noteDropped() {
+      this.dropped += 1;
+    },
+    getOverview() {
+      return null;
+    },
+    close() {
+      order.push("metrics.close");
+    }
+  };
   const auth = {
     close() { order.push("auth.close"); }
   };
@@ -604,8 +1305,16 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
       assert.ok(order.includes("migration"));
       return registry;
     },
-    workerManagerFactory: () => {
+    metricsStoreFactory: ({ path, now }) => {
+      order.push("metrics");
+      assert.equal(path, paths.metricsPath);
+      assert.equal(now(), "2026-07-13T03:00:00.000Z");
+      return metrics;
+    },
+    workerManagerFactory: (input) => {
       order.push("worker");
+      assert.equal(input.recordMetric({ providerId: "provider-test" }), true);
+      input.noteDroppedMetric();
       return worker;
     },
     providerServiceFactory: (input) => {
@@ -624,11 +1333,12 @@ function supervisorDependencies(t, { listenGate = createGate() } = {}) {
       order.push("admin");
       assert.equal(input.auth, auth);
       assert.equal(input.providerService, provider);
+      assert.equal(input.metricsService, metrics);
       return admin;
     }
   };
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  return { home, paths, order, worker, admin, listenGate, registry, options };
+  return { home, paths, order, worker, admin, listenGate, registry, metrics, options };
 }
 
 test("supervisor migrates before registry construction and writes private state only after ready", async (t) => {
@@ -639,6 +1349,7 @@ test("supervisor migrates before registry construction and writes private state 
     "credential",
     "migration",
     "registry",
+    "metrics",
     "worker",
     "provider",
     "auth",
@@ -674,7 +1385,9 @@ test("supervisor migrates before registry construction and writes private state 
   const secondClose = supervisor.close();
   assert.equal(firstClose, secondClose);
   await firstClose;
-  assert.deepEqual(harness.order.slice(-3), ["admin.close", "auth.close", "worker.close"]);
+  assert.deepEqual(harness.order.slice(-4), [
+    "admin.close", "auth.close", "worker.close", "metrics.close"
+  ]);
   assert.equal(existsSync(harness.paths.statePath), false);
 });
 
@@ -684,7 +1397,9 @@ test("supervisor cleans up in reverse order when Admin readiness fails", async (
   const failure = new Error(`private listen failure ${SECRET}`);
   harness.listenGate.reject(failure);
   await assert.rejects(() => supervisor.listen(), (error) => error === failure);
-  assert.deepEqual(harness.order.slice(-3), ["admin.close", "auth.close", "worker.close"]);
+  assert.deepEqual(harness.order.slice(-4), [
+    "admin.close", "auth.close", "worker.close", "metrics.close"
+  ]);
   assert.equal(existsSync(harness.paths.statePath), false);
 });
 
@@ -696,19 +1411,25 @@ test("supervisor cleans constructed resources when composition fails before list
     throw failure;
   };
   await assert.rejects(() => createSupervisor(harness.options), (error) => error === failure);
-  assert.deepEqual(harness.order.slice(-2), ["auth.close", "worker.close"]);
+  assert.deepEqual(harness.order.slice(-3), ["auth.close", "worker.close", "metrics.close"]);
   assert.equal(existsSync(harness.paths.statePath), false);
 });
 
 test("supervisor keeps Codex and state filesystem adapters independent", async (t) => {
   const harness = supervisorDependencies(t);
   const codexFileOperations = { boundary: "codex-only" };
+  const historyRepair = {
+    plan() {},
+    hasPending() { return false; },
+    async run() {}
+  };
   let bootstrapInput = null;
   let codexService = null;
   harness.options.codexFileOperations = codexFileOperations;
-  harness.options.bootstrapCodex = (input) => {
+  harness.options.codexHistoryRepair = historyRepair;
+  harness.options.bootstrapCodex = async (input) => {
     bootstrapInput = input;
-    return { changed: false, backupPath: null };
+    return { changed: false, backupPath: null, historyRepair: NO_HISTORY_REPAIR };
   };
   harness.options.adminServerFactory = (input) => {
     harness.order.push("admin");
@@ -716,9 +1437,462 @@ test("supervisor keeps Codex and state filesystem adapters independent", async (
     return harness.admin;
   };
   const supervisor = await createSupervisor(harness.options);
-  assert.deepEqual(codexService.bootstrap(), { changed: false, backupPath: null });
+  assert.deepEqual(
+    await codexService.bootstrap(),
+    { changed: false, backupPath: null, historyRepair: NO_HISTORY_REPAIR }
+  );
   assert.equal(bootstrapInput.fileOperations, codexFileOperations);
   assert.equal(bootstrapInput.configPath, harness.paths.codexConfigPath);
+  assert.equal(bootstrapInput.historyRepair, historyRepair);
+  await supervisor.close();
+});
+
+test("Supervisor injects the complete production history-recovery adapter", async (t) => {
+  const harness = supervisorDependencies(t);
+  let bootstrapInput;
+  let codexService;
+  harness.options.bootstrapCodex = async (input) => {
+    bootstrapInput = input;
+    return { changed: false, backupPath: null, historyRepair: NO_HISTORY_REPAIR };
+  };
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  const supervisor = await createSupervisor(harness.options);
+
+  await codexService.bootstrap();
+  assert.deepEqual(
+    Object.keys(bootstrapInput.historyRepair).sort(),
+    ["hasPending", "inspectPending", "plan", "run"]
+  );
+  for (const operation of Object.values(bootstrapInput.historyRepair)) {
+    assert.equal(typeof operation, "function");
+  }
+  await supervisor.close();
+});
+
+test("Supervisor Codex status is configured only when matching config has no pending repair", async (t) => {
+  const harness = supervisorDependencies(t);
+  const codexRoot = join(harness.home, ".codex");
+  mkdirSync(codexRoot, { recursive: true });
+  writeFileSync(harness.paths.codexConfigPath, [
+    'model_provider = "OpenAI"',
+    "",
+    "[model_providers.OpenAI]",
+    'name = "OpenAI"',
+    'base_url = "http://127.0.0.1:15100"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    ""
+  ].join("\n"));
+  let pending = true;
+  const pendingInputs = [];
+  const historyRepair = {
+    plan() {},
+    hasPending(input) {
+      pendingInputs.push(input);
+      return pending;
+    },
+    async run() {}
+  };
+  let codexService;
+  harness.options.codexHistoryRepair = historyRepair;
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  const supervisor = await createSupervisor(harness.options);
+
+  assert.deepEqual(await codexService.getStatus(), {
+    configured: false,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: true
+  });
+  pending = false;
+  assert.deepEqual(await codexService.getStatus(), {
+    configured: true,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: false
+  });
+  writeFileSync(`${harness.paths.codexConfigPath}.crp.lock`, "managed-crash-lock\n");
+  assert.deepEqual(await codexService.getStatus(), {
+    configured: false,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: false
+  });
+  assert.deepEqual(pendingInputs, [
+    { codexRoot },
+    { codexRoot },
+    { codexRoot },
+    { codexRoot },
+    { codexRoot },
+    { codexRoot }
+  ]);
+  await supervisor.close();
+});
+
+test("Supervisor Codex status rechecks pending state after reading config", async (t) => {
+  const harness = supervisorDependencies(t);
+  const codexRoot = join(harness.home, ".codex");
+  mkdirSync(codexRoot, { recursive: true });
+  writeFileSync(harness.paths.codexConfigPath, [
+    'model_provider = "OpenAI"',
+    "[model_providers.OpenAI]",
+    'name = "OpenAI"',
+    'base_url = "http://127.0.0.1:15100"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    ""
+  ].join("\n"));
+  let checks = 0;
+  let codexService;
+  harness.options.codexHistoryRepair = {
+    plan() {},
+    hasPending() {
+      checks += 1;
+      return checks >= 2;
+    },
+    async run() {}
+  };
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  const supervisor = await createSupervisor(harness.options);
+
+  assert.deepEqual(await codexService.getStatus(), {
+    configured: false,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: true
+  });
+  assert.equal(checks, 2);
+  await supervisor.close();
+});
+
+test("Supervisor Codex status strictly rejects ambiguous, malformed, and symlink configs", async (t) => {
+  const harness = supervisorDependencies(t);
+  const secret = "strict-status-private-secret-sentinel";
+  const codexRoot = join(harness.home, ".codex");
+  const configPath = harness.paths.codexConfigPath;
+  const valid = [
+    'model_provider = "OpenAI"',
+    "",
+    "[model_providers.OpenAI]",
+    'name = "OpenAI"',
+    'base_url = "http://127.0.0.1:15100"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    ""
+  ].join("\n");
+  const historyRepair = {
+    plan() {},
+    hasPending() { return false; },
+    async run() {}
+  };
+  let codexService;
+  harness.options.codexHistoryRepair = historyRepair;
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  mkdirSync(codexRoot, { recursive: true });
+  writeFileSync(configPath, valid, "utf8");
+  const supervisor = await createSupervisor(harness.options);
+
+  assert.equal((await codexService.getStatus()).configured, true);
+  writeFileSync(configPath, [
+    'developer_instructions = """',
+    'model_provider = "decoy"',
+    "[model_providers.decoy]",
+    'base_url = "https://decoy.example/v1"',
+    '"""',
+    valid
+  ].join("\n"), "utf8");
+  assert.equal((await codexService.getStatus()).configured, true);
+  writeFileSync(configPath, [
+    'model_provider = "OpenAI"',
+    'model_providers.OpenAI.name = "OpenAI"',
+    'model_providers.OpenAI.base_url = "http://127.0.0.1:15100"',
+    'model_providers.OpenAI.wire_api = "responses"',
+    "model_providers.OpenAI.requires_openai_auth = true",
+    ""
+  ].join("\n"), "utf8");
+  assert.equal((await codexService.getStatus()).configured, true);
+  for (const invalid of [
+    valid.replace('model_provider = "OpenAI"', [
+      'model_provider = "OpenAI"',
+      'model_provider = "Other"'
+    ].join("\n")),
+    `${valid}\n[model_providers.OpenAI]\nbase_url = "http://127.0.0.1:15100"\n`,
+    valid.replace(
+      "[model_providers.OpenAI]",
+      `[model_providers.OpenAI ${secret}`
+    ),
+    valid.replace("[model_providers.OpenAI]", [
+      "this is invalid toml",
+      "[model_providers.OpenAI]"
+    ].join("\n"))
+  ]) {
+    writeFileSync(configPath, invalid, "utf8");
+    const status = await codexService.getStatus();
+    assert.equal(JSON.stringify(status).includes(secret), false);
+    assert.equal(status.configured, false);
+  }
+
+  writeFileSync(configPath, Buffer.concat([
+    Buffer.from(valid, "utf8"),
+    Buffer.from("# invalid utf8 ", "utf8"),
+    Buffer.from([0xff]),
+    Buffer.from("\n", "utf8")
+  ]));
+  assert.equal((await codexService.getStatus()).configured, false);
+
+  if (process.platform !== "win32") {
+    const targetPath = join(harness.home, "outside-config.toml");
+    writeFileSync(targetPath, valid, "utf8");
+    rmSync(configPath);
+    realFileOperations.symlinkSync(targetPath, configPath);
+    assert.equal((await codexService.getStatus()).configured, false);
+  }
+  await supervisor.close();
+});
+
+test("Supervisor Codex status uses no-follow descriptors and rejects a read identity race", async (t) => {
+  const harness = supervisorDependencies(t);
+  const codexRoot = join(harness.home, ".codex");
+  const configPath = harness.paths.codexConfigPath;
+  const displacedPath = join(codexRoot, "config.displaced.toml");
+  const valid = [
+    'model_provider = "OpenAI"',
+    "",
+    "[model_providers.OpenAI]",
+    'name = "OpenAI"',
+    'base_url = "http://127.0.0.1:15100"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    ""
+  ].join("\n");
+  let configDescriptor;
+  let replacementInjected = false;
+  let sawNoFollow = false;
+  const operations = {
+    ...realFileOperations,
+    openSync(path, flags, ...args) {
+      const descriptor = realFileOperations.openSync(path, flags, ...args);
+      if (path === configPath) {
+        configDescriptor = descriptor;
+        if (typeof realFileOperations.constants.O_NOFOLLOW === "number") {
+          sawNoFollow = (flags & realFileOperations.constants.O_NOFOLLOW) !== 0;
+        }
+      }
+      return descriptor;
+    },
+    readFileSync(target, ...args) {
+      const bytes = realFileOperations.readFileSync(target, ...args);
+      if (target === configDescriptor && !replacementInjected) {
+        replacementInjected = true;
+        realFileOperations.renameSync(configPath, displacedPath);
+        realFileOperations.writeFileSync(configPath, valid, "utf8");
+      }
+      return bytes;
+    }
+  };
+  const historyRepair = {
+    plan() {},
+    hasPending() { return false; },
+    async run() {}
+  };
+  let codexService;
+  harness.options.codexFileOperations = operations;
+  harness.options.codexHistoryRepair = historyRepair;
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  mkdirSync(codexRoot, { recursive: true });
+  writeFileSync(configPath, valid, "utf8");
+  const supervisor = await createSupervisor(harness.options);
+
+  const status = await codexService.getStatus();
+  assert.equal(replacementInjected, true);
+  if (typeof realFileOperations.constants.O_NOFOLLOW === "number") {
+    assert.equal(sawNoFollow, true);
+  }
+  assert.equal(status.configured, false);
+  await supervisor.close();
+});
+
+test("Supervisor Codex status reports no pending repair for a fresh missing Codex root", async (t) => {
+  const harness = supervisorDependencies(t);
+  let codexService;
+  harness.options.codexHistoryRepair = {
+    plan() {},
+    hasPending() {
+      assert.fail("A missing Codex root cannot contain pending repair state");
+    },
+    async run() {}
+  };
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  const supervisor = await createSupervisor(harness.options);
+
+  assert.deepEqual(await codexService.getStatus(), {
+    configured: false,
+    modelProvider: "OpenAI",
+    proxyUrl: "http://127.0.0.1:15100",
+    historyRepairPending: false
+  });
+  await supervisor.close();
+});
+
+test("Supervisor serializes bootstrap and Worker readiness through one Codex gate", async (t) => {
+  const harness = supervisorDependencies(t);
+  const codexRoot = join(harness.home, ".codex");
+  const valid = [
+    'model_provider = "OpenAI"',
+    "",
+    "[model_providers.OpenAI]",
+    'name = "OpenAI"',
+    'base_url = "http://127.0.0.1:15100"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    ""
+  ].join("\n");
+  const bootstrapStarted = createGate();
+  const releaseBootstrap = createGate();
+  const events = [];
+  let codexService;
+  harness.options.codexHistoryRepair = {
+    plan() {},
+    hasPending() { return false; },
+    async run() {}
+  };
+  harness.options.bootstrapCodex = async () => {
+    events.push("bootstrap-start");
+    bootstrapStarted.resolve();
+    await releaseBootstrap.promise;
+    mkdirSync(codexRoot, { recursive: true });
+    writeFileSync(harness.paths.codexConfigPath, valid, "utf8");
+    events.push("bootstrap-complete");
+    return { changed: true, backupPath: null, historyRepair: NO_HISTORY_REPAIR };
+  };
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  const supervisor = await createSupervisor(harness.options);
+
+  const bootstrapping = codexService.bootstrap();
+  await bootstrapStarted.promise;
+  const starting = codexService.runWhenReady(async () => {
+    events.push("worker-start");
+    return "started";
+  });
+  await Promise.resolve();
+  assert.deepEqual(events, ["bootstrap-start"]);
+  releaseBootstrap.resolve();
+
+  assert.equal(await starting, "started");
+  await bootstrapping;
+  assert.deepEqual(events, ["bootstrap-start", "bootstrap-complete", "worker-start"]);
+  await supervisor.close();
+});
+
+test("Supervisor injects strict Codex readiness around unexpected-exit recovery", async (t) => {
+  const harness = supervisorDependencies(t);
+  let runRecoveryWhenReady;
+  harness.options.workerManagerFactory = (options) => {
+    runRecoveryWhenReady = options.runRecoveryWhenReady;
+    return harness.worker;
+  };
+  const supervisor = await createSupervisor(harness.options);
+  let recoveryCalls = 0;
+
+  await assert.rejects(
+    () => runRecoveryWhenReady(async () => {
+      recoveryCalls += 1;
+    }),
+    (error) => error?.code === "CODEX_NOT_READY"
+  );
+  assert.equal(recoveryCalls, 0);
+
+  mkdirSync(dirname(harness.paths.codexConfigPath), { recursive: true });
+  writeFileSync(harness.paths.codexConfigPath, [
+    'model_provider = "OpenAI"',
+    "",
+    "[model_providers.OpenAI]",
+    'name = "OpenAI"',
+    'base_url = "http://127.0.0.1:15100"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    ""
+  ].join("\n"), "utf8");
+  assert.equal(await runRecoveryWhenReady(async () => {
+    recoveryCalls += 1;
+    return "recovered";
+  }), "recovered");
+  assert.equal(recoveryCalls, 1);
+
+  await supervisor.close();
+});
+
+test("Supervisor Codex gate recovers after bootstrap and readiness operation failures", async (t) => {
+  const harness = supervisorDependencies(t);
+  const codexRoot = join(harness.home, ".codex");
+  const valid = [
+    'model_provider = "OpenAI"',
+    "",
+    "[model_providers.OpenAI]",
+    'name = "OpenAI"',
+    'base_url = "http://127.0.0.1:15100"',
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    ""
+  ].join("\n");
+  const privateFailure = new Error("private bootstrap failure");
+  let codexService;
+  harness.options.codexHistoryRepair = {
+    plan() {},
+    hasPending() { return false; },
+    async run() {}
+  };
+  harness.options.bootstrapCodex = async () => {
+    throw privateFailure;
+  };
+  harness.options.adminServerFactory = (input) => {
+    harness.order.push("admin");
+    codexService = input.codexService;
+    return harness.admin;
+  };
+  const supervisor = await createSupervisor(harness.options);
+
+  await assert.rejects(
+    () => codexService.bootstrap(),
+    (error) => error?.code === "CODEX_CONFIG_WRITE_FAILED"
+  );
+  mkdirSync(codexRoot, { recursive: true });
+  writeFileSync(harness.paths.codexConfigPath, valid, "utf8");
+  await assert.rejects(
+    () => codexService.runWhenReady(async () => {
+      throw new Error("operation failed");
+    }),
+    /operation failed/
+  );
+  assert.equal(await codexService.runWhenReady(async () => "recovered"), "recovered");
   await supervisor.close();
 });
 
@@ -774,6 +1948,38 @@ test("real Supervisor and Admin project stable safe Codex bootstrap failures", a
       "Repair local filesystem access and retry."
     ],
     [
+      "CODEX_CONFIG_COMMITTED_DEGRADED",
+      500,
+      "The Codex configuration was updated, but completion could not be confirmed.",
+      "Review the Codex configuration and retry before starting the proxy.",
+      { committed: true, degraded: true, pending: false }
+    ],
+    [
+      "CODEX_HISTORY_REPAIR_INVALID",
+      400,
+      "The Codex history repair input is invalid.",
+      "Repair the Codex configuration or history state and try again."
+    ],
+    [
+      "CODEX_HISTORY_REPAIR_CONFLICT",
+      409,
+      "Another Codex history repair transition is already pending.",
+      "Complete or recover the pending Codex history repair before retrying."
+    ],
+    [
+      "CODEX_HISTORY_REPAIR_FAILED",
+      500,
+      "Codex history repair could not be completed.",
+      "Repair local Codex history storage and retry before starting the proxy."
+    ],
+    [
+      "CODEX_HISTORY_REPAIR_COMMITTED_DEGRADED",
+      500,
+      "Codex configuration was updated, but history repair remains pending.",
+      "Retry crp start to resume Codex history repair before using the proxy.",
+      { committed: true, degraded: true, pending: true }
+    ],
+    [
       null,
       500,
       "Codex configuration could not be written safely.",
@@ -781,7 +1987,7 @@ test("real Supervisor and Admin project stable safe Codex bootstrap failures", a
     ]
   ];
 
-  for (const [code, status, message, action] of cases) {
+  for (const [code, status, message, action, expectedDetails = {}] of cases) {
     const privateMarker = `private-bootstrap-${code ?? "unknown"}`;
     const privateCause = new Error(`private-cause-${privateMarker}`);
     bootstrapFailure = code === "CODEX_CONFIG_BUSY"
@@ -834,7 +2040,7 @@ test("real Supervisor and Admin project stable safe Codex bootstrap failures", a
         message,
         action,
         requestId,
-        details: {}
+        details: expectedDetails
       }
     });
   }
@@ -843,6 +2049,12 @@ test("real Supervisor and Admin project stable safe Codex bootstrap failures", a
 test("supervisor entry shares idempotent signal shutdown without exiting early", async () => {
   const processRef = new EventEmitter();
   processRef.exitCode = null;
+  processRef.connected = true;
+  let disconnectCalls = 0;
+  processRef.disconnect = () => {
+    disconnectCalls += 1;
+    processRef.connected = false;
+  };
   const closed = createGate();
   let closeCalls = 0;
   const supervisor = {
@@ -859,6 +2071,7 @@ test("supervisor entry shares idempotent signal shutdown without exiting early",
     createSupervisorImpl: async () => supervisor,
     supervisorOptions: { home: "/unused/injected-home" }
   });
+  assert.equal(disconnectCalls, 1);
   assert.equal(processRef.listenerCount("SIGTERM"), 1);
   assert.equal(processRef.listenerCount("SIGINT"), 1);
   processRef.emit("SIGTERM");
@@ -869,6 +2082,121 @@ test("supervisor entry shares idempotent signal shutdown without exiting early",
   await closed.promise;
   await new Promise((resolvePromise) => setImmediate(resolvePromise));
   assert.equal(processRef.exitCode, 0);
+  assert.equal(processRef.listenerCount("SIGTERM"), 0);
+  assert.equal(processRef.listenerCount("SIGINT"), 0);
+});
+
+test("supervisor entry reports one sanitized startup failure over IPC", async () => {
+  const secret = "startup-cause-must-not-cross-ipc";
+  const failure = new CrpError(
+    "MIGRATION_INPUT_INVALID",
+    secret,
+    secret,
+    {
+      status: 400,
+      details: { reason: secret, privateValue: secret },
+      cause: new Error(secret)
+    }
+  );
+  const processRef = new EventEmitter();
+  processRef.connected = true;
+  processRef.exitCode = null;
+  const sent = [];
+  const events = [];
+  const sendObserved = createGate();
+  let sendCallback = null;
+  let disconnectCalls = 0;
+  processRef.send = (message, _handle, _options, callback) => {
+    sent.push(structuredClone(message));
+    events.push("send");
+    sendCallback = callback;
+    sendObserved.resolve();
+    return true;
+  };
+  processRef.disconnect = () => {
+    disconnectCalls += 1;
+    events.push("disconnect");
+    processRef.connected = false;
+  };
+
+  const startup = runSupervisor({
+    processRef,
+    createSupervisorImpl: async () => { throw failure; }
+  });
+  await sendObserved.promise;
+  assert.equal(disconnectCalls, 0);
+  assert.equal(typeof sendCallback, "function");
+  events.push("callback");
+  sendCallback(null);
+  const caught = await startup.then(
+    () => null,
+    (error) => error
+  );
+
+  const serialized = JSON.stringify(sent);
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(caught === failure, true);
+  assert.deepEqual(sent, [{
+    version: 1,
+    type: "startup-failed",
+    error: {
+      code: "MIGRATION_INPUT_INVALID",
+      message: "The legacy provider configuration is invalid.",
+      action: "Restore a complete legacy provider URL and credential before migrating.",
+      status: 400,
+      details: {}
+    }
+  }]);
+  assert.equal(disconnectCalls, 1);
+  assert.deepEqual(events, ["send", "callback", "disconnect"]);
+  assert.equal(processRef.listenerCount("SIGTERM"), 0);
+  assert.equal(processRef.listenerCount("SIGINT"), 0);
+});
+
+test("supervisor entry maps an unknown startup error to a static IPC failure", async () => {
+  const secret = "unknown-startup-error-must-not-cross-ipc";
+  const processRef = new EventEmitter();
+  processRef.connected = true;
+  const sent = [];
+  let closeCalls = 0;
+  let disconnectCalls = 0;
+  processRef.send = (message, _handle, _options, callback) => {
+    sent.push(structuredClone(message));
+    callback?.(null);
+    return true;
+  };
+  processRef.disconnect = () => {
+    disconnectCalls += 1;
+    processRef.connected = false;
+  };
+
+  const caught = await runSupervisor({
+      processRef,
+      createSupervisorImpl: async () => ({
+        async listen() { throw new Error(secret); },
+        async close() { closeCalls += 1; }
+      })
+    }).then(
+      () => null,
+      (error) => error
+    );
+
+  const serialized = JSON.stringify(sent);
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(caught?.message === secret, true);
+  assert.deepEqual(sent, [{
+    version: 1,
+    type: "startup-failed",
+    error: {
+      code: "SUPERVISOR_START_FAILED",
+      message: "The local supervisor could not be started.",
+      action: "Review the supervisor log and try again.",
+      status: 500,
+      details: {}
+    }
+  }]);
+  assert.equal(closeCalls, 1);
+  assert.equal(disconnectCalls, 1);
   assert.equal(processRef.listenerCount("SIGTERM"), 0);
   assert.equal(processRef.listenerCount("SIGINT"), 0);
 });

@@ -1,145 +1,16 @@
 <!doctype html>
 <html lang="en" aria-busy="true">
   <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>Overview | CRP Local Control</title>
-    <link rel="stylesheet" href="/styles.css">
-    <script src="/app.js" type="module"></script>
+    <meta name="theme-color" content="#f3f5f4">
+    <title>CRP Local Console</title>
+    <script type="module" crossorigin src="/app.js"></script>
+    <link rel="stylesheet" crossorigin href="/styles.css">
   </head>
   <body>
-    <section id="session-root" class="standalone-session" hidden>
-      <main class="session-terminal" aria-labelledby="session-terminal-title">
-        <span class="brand-mark" aria-hidden="true"><span></span></span>
-        <p class="eyebrow" data-i18n="session.eyebrow">CRP / SESSION</p>
-        <h1 id="session-terminal-title" data-i18n="session.expired.title">Session expired</h1>
-        <p data-i18n="session.terminalHelp">This browser session can no longer make or read local changes.</p>
-        <p data-i18n="session.reopen">Run crp ui again to make changes.</p>
-        <code>crp ui</code>
-      </main>
-    </section>
-
-    <div id="onboarding-root" class="setup-root" hidden>
-      <a class="skip-link" href="#onboarding-content" data-i18n="a11y.skip">Skip to content</a>
-      <header class="setup-topbar">
-        <div class="brand" aria-label="CRP">
-          <span class="brand-mark" aria-hidden="true"><span></span></span>
-          <span class="brand-copy">
-            <strong>CRP</strong>
-            <small data-i18n="brand.subtitle">Local control</small>
-          </span>
-        </div>
-        <label class="language-control">
-          <span class="visually-hidden" data-i18n="locale.label">Language</span>
-          <select id="onboarding-locale-select" data-locale-select data-i18n-aria="locale.label" aria-label="Language">
-            <option value="en">English</option>
-            <option value="zh-CN">简体中文</option>
-          </select>
-        </label>
-      </header>
-      <section class="session-banner" id="onboarding-session-banner" hidden>
-        <strong id="onboarding-session-title"></strong>
-        <span id="onboarding-session-action"></span>
-      </section>
-      <main id="onboarding-content" tabindex="-1"></main>
-    </div>
-
-    <div id="app-root" hidden>
-      <a class="skip-link" href="#main-content" data-i18n="a11y.skip">Skip to content</a>
-
-      <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand" aria-label="CRP">
-          <span class="brand-mark" aria-hidden="true"><span></span></span>
-          <span class="brand-copy">
-            <strong>CRP</strong>
-            <small data-i18n="brand.subtitle">Local control</small>
-          </span>
-        </div>
-
-        <nav class="workspace-nav" data-i18n-aria="nav.label" aria-label="Workspace">
-          <p class="nav-eyebrow" data-i18n="nav.eyebrow">Workspace</p>
-          <a href="#overview" data-route="overview" aria-current="page">
-            <span class="nav-icon" aria-hidden="true">O</span>
-            <span data-i18n="nav.overview">Overview</span>
-          </a>
-          <a href="#providers" data-route="providers">
-            <span class="nav-icon" aria-hidden="true">P</span>
-            <span data-i18n="nav.providers">Providers</span>
-          </a>
-          <a href="#activity" data-route="activity">
-            <span class="nav-icon nav-icon-circle" aria-hidden="true">A</span>
-            <span data-i18n="nav.activity">Activity</span>
-          </a>
-          <a href="#settings" data-route="settings">
-            <span class="nav-icon" aria-hidden="true">S</span>
-            <span data-i18n="nav.settings">Settings</span>
-          </a>
-        </nav>
-
-        <div class="session-state">
-          <span class="status-dot" aria-hidden="true"></span>
-          <span>
-            <strong data-i18n="session.local">Local session</strong>
-            <small id="admin-address">127.0.0.1</small>
-          </span>
-        </div>
-      </aside>
-
-      <div class="content-shell">
-        <header class="topbar">
-          <p class="breadcrumb">
-            <span data-i18n="brand.long">Codex Remote Proxy</span>
-            <span aria-hidden="true">/</span>
-            <strong id="breadcrumb-current">Overview</strong>
-          </p>
-          <div class="topbar-actions">
-            <label class="language-control">
-              <span class="visually-hidden" data-i18n="locale.label">Language</span>
-              <select id="locale-select" data-locale-select data-i18n-aria="locale.label" aria-label="Language">
-                <option value="en">English</option>
-                <option value="zh-CN">简体中文</option>
-              </select>
-            </label>
-            <button class="icon-button" id="refresh-button" type="button"
-              data-i18n-aria="actions.refresh" aria-label="Refresh status"
-              data-i18n-title="actions.refresh" title="Refresh status">
-              <span aria-hidden="true">&#8635;</span>
-            </button>
-            <button class="primary-button" id="add-provider-button" type="button">
-              <span aria-hidden="true">+</span>
-              <span data-i18n="actions.addProvider">Add provider</span>
-            </button>
-          </div>
-        </header>
-
-        <section class="session-banner" id="session-banner" hidden>
-          <strong id="session-banner-title"></strong>
-          <span id="session-banner-action"></span>
-        </section>
-
-        <main id="main-content" tabindex="-1"></main>
-      </div>
-    </div>
-    </div>
-
-    <div id="live-region" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
-
-    <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title">
-      <div class="dialog-heading">
-        <span class="dialog-symbol" aria-hidden="true">!</span>
-        <div>
-          <h2 id="confirm-title"></h2>
-          <p id="confirm-message"></p>
-        </div>
-      </div>
-      <div class="dialog-actions">
-        <button class="secondary-button" id="confirm-cancel" type="button"></button>
-        <button class="danger-button" id="confirm-accept" type="button"></button>
-      </div>
-    </dialog>
-
+    <div id="root"></div>
     <noscript>CRP requires JavaScript. CRP 需要启用 JavaScript。</noscript>
   </body>
 </html>
