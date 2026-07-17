@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  copyFileSync,
   constants as FS_CONSTANTS,
   fchmodSync,
   fstatSync,
@@ -56,6 +57,7 @@ const EXACT_JOURNAL_FIELDS = new Set([
 const DEFAULT_FILE_OPERATIONS = {
   chmodSync,
   closeSync,
+  copyFileSync,
   constants: FS_CONSTANTS,
   fchmodSync,
   fstatSync,
@@ -152,6 +154,10 @@ function conflict(cause) {
 
 function failed(cause) {
   return repairError("CODEX_HISTORY_REPAIR_FAILED", cause);
+}
+
+function isHardLinkUnavailable(error) {
+  return error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "ENOTSUP";
 }
 
 function committedDegraded(cause) {
@@ -1661,22 +1667,34 @@ async function backupOpenDatabase(
       throw conflict();
     }
     if (lstatMaybe(destination, fileOperations) !== null) throw conflict();
+    let publishedWithHardLink = false;
     try {
       fileOperations.linkSync(tempPath, destination);
+      publishedWithHardLink = true;
     } catch (error) {
       if (error?.code === "EEXIST") throw conflict(error);
-      throw error;
+      if (!isHardLinkUnavailable(error)) throw error;
+      try {
+        fileOperations.copyFileSync(
+          tempPath,
+          destination,
+          fileOperations.constants.COPYFILE_EXCL
+        );
+      } catch (copyError) {
+        if (copyError?.code === "EEXIST") throw conflict(copyError);
+        throw copyError;
+      }
     }
     syncDirectory(dirname(destination), fileOperations);
-    const committed = fileOperations.lstatSync(destination);
-    if (!committed.isFile() || committed.isSymbolicLink()
-      || !sameIdentity(tempIdentity, identityOf(committed))) {
+    const committed = readSafeFile(destination, fileOperations);
+    if ((publishedWithHardLink && !sameIdentity(tempIdentity, committed.identity))
+      || sha256(committed.bytes) !== tempHash) {
       throw failed();
     }
     if (!removeOwnedPath(tempPath, tempIdentity, fileOperations, createId)) throw failed();
     tempOwned = false;
     const finalDestination = readSafeFile(destination, fileOperations);
-    if (!sameIdentity(tempIdentity, finalDestination.identity)
+    if ((publishedWithHardLink && !sameIdentity(tempIdentity, finalDestination.identity))
       || sha256(finalDestination.bytes) !== tempHash) {
       throw conflict();
     }

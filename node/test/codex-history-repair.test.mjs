@@ -1356,6 +1356,44 @@ test("publishes SQLite backups exclusively without overwriting a raced destinati
   );
 });
 
+test("falls back to an exclusive SQLite backup copy when hard links are unavailable", async (t) => {
+  const harness = makeHarness("sqlite-backup-copy-fallback");
+  t.after(() => harness.cleanup());
+  const sourceBytes = sourceConfig();
+  writePrivate(harness.configPath, sourceBytes);
+  const databasePath = join(harness.codexRoot, "state_5.sqlite");
+  createThreadsDatabase(databasePath, [
+    { id: "sqlite-copy", provider: "legacy.provider", cwd: "/copy", hasUserEvent: 1 }
+  ]);
+  let hardLinkRejected = false;
+
+  const result = await executeTransition(harness, sourceBytes, {
+    id: "op-sqlite-backup-copy-fallback",
+    fileOperations: {
+      ...realFileOperations,
+      linkSync(source, destination, ...args) {
+        if (destination.endsWith(".bak")
+          && basename(destination).startsWith("state_5.sqlite.")) {
+          hardLinkRejected = true;
+          const error = new Error("hard links unavailable");
+          error.code = "EPERM";
+          throw error;
+        }
+        return realFileOperations.linkSync(source, destination, ...args);
+      }
+    },
+    publishConfig(bytes) {
+      writeFileSync(harness.configPath, bytes);
+      return { changed: true };
+    }
+  });
+
+  assert.equal(hardLinkRejected, true);
+  assert.equal(result.historyRepair.completed, true);
+  assert.equal(result.historyRepair.sqliteFiles, 1);
+  assert.equal(hasPendingCodexHistoryRepair({ codexRoot: harness.codexRoot }), false);
+});
+
 test("rejects a SQLite backup destination replaced during temp-link cleanup", async (t) => {
   const harness = makeHarness("sqlite-backup-final-race");
   t.after(() => harness.cleanup());

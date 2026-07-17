@@ -888,7 +888,9 @@ test("bootstrapCodexConfig backs up and atomically writes only changed content",
     assert.equal(dirname(first.backupPath), tempDir);
     assert.equal(readFileSync(first.backupPath, "utf8"), original);
     assert.equal(readFileSync(configPath, "utf8"), patchCodexConfigText(original, PROXY_URL));
-    assert.equal(statSync(configPath).mode & 0o777, 0o640);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(configPath).mode & 0o777, 0o640);
+    }
     assert.equal(readdirSync(tempDir).filter((name) => name.endsWith(".bak")).length, 1);
 
     const firstWriteMtime = statSync(configPath, { bigint: true }).mtimeNs;
@@ -1145,6 +1147,7 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
     let sourceDescriptor;
     let backupDescriptor;
     let replaced = false;
+    let replacementObserved = false;
     const replacedIdentity = (identity) => {
       const changed = Object.create(identity);
       Object.defineProperty(changed, "ino", {
@@ -1191,9 +1194,11 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
             },
             lstatSync(path, ...args) {
               const identity = realFileOperations.lstatSync(path, ...args);
-              return path === configPath && replaced
-                ? replacedIdentity(identity)
-                : identity;
+              if (path === configPath && replaced && !replacementObserved) {
+                replacementObserved = true;
+                return replacedIdentity(identity);
+              }
+              return identity;
             }
           }
         }),
@@ -1202,7 +1207,9 @@ for (const replacementPhase of ["after-read", "after-backup"]) {
 
       assert.equal(replaced, true);
       assert.deepEqual(readFileSync(configPath), originalBytes);
-      assert.equal(statSync(configPath).mode & 0o777, 0o640);
+      if (process.platform !== "win32") {
+        assert.equal(statSync(configPath).mode & 0o777, 0o640);
+      }
       assert.equal(existsSync(`${configPath}.crp.lock`), false);
       assert.equal(
         readdirSync(codexDir).filter((name) => name.endsWith(".bak")).length,
@@ -1643,7 +1650,7 @@ for (const crashPhase of ["after-journal", "after-config"]) {
           throw new Error("simulated crash before config publication");
         }
         if (crashPhase === "after-config"
-          && path.startsWith(`${dirname(rolloutPath)}/.rollout-${crashPhase}.jsonl.`)
+          && path.startsWith(join(dirname(rolloutPath), `.rollout-${crashPhase}.jsonl.`))
           && path.endsWith(".tmp") && !injectedCrash) {
           injectedCrash = true;
           throw new Error("simulated crash after config publication");
@@ -1891,7 +1898,7 @@ test("bootstrap recovers a dead prepared config-only lock after config publicati
     fileOperations: {
       ...realFileOperations,
       openSync(path, ...args) {
-        if (path.startsWith(`${codexRoot}/.config.toml.crp.lock.`)
+        if (path.startsWith(join(codexRoot, ".config.toml.crp.lock."))
           && path.endsWith(".tmp")) {
           lockTempOpens += 1;
           if (lockTempOpens === 2) {

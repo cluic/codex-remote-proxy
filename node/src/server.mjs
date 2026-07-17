@@ -785,6 +785,10 @@ function isWindowsStylePath(filePath) {
   return /^[A-Za-z]:[\\/]/.test(filePath);
 }
 
+function isPosixStylePath(filePath) {
+  return filePath.startsWith("/") && !/^\/[A-Za-z]:\//.test(filePath);
+}
+
 function modulePathFromMetaUrl(metaUrl) {
   const url = new URL(metaUrl);
   if (url.protocol !== "file:") {
@@ -793,6 +797,9 @@ function modulePathFromMetaUrl(metaUrl) {
   const pathname = decodeURIComponent(url.pathname);
   if (/^\/[A-Za-z]:\//.test(pathname)) {
     return path.win32.normalize(pathname.slice(1));
+  }
+  if (pathname.startsWith("/")) {
+    return path.posix.normalize(pathname);
   }
   return fileURLToPath(metaUrl);
 }
@@ -803,6 +810,9 @@ function normalizeExecutionPath(filePath) {
   }
   if (isWindowsStylePath(filePath)) {
     return path.win32.normalize(filePath).toLowerCase();
+  }
+  if (isPosixStylePath(filePath)) {
+    return path.posix.normalize(filePath);
   }
   return resolve(filePath);
 }
