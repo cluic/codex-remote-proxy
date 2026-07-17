@@ -248,7 +248,8 @@ async function executeTransition(harness, sourceBytes, {
     if (process.platform === "win32" && error?.code === "CODEX_HISTORY_REPAIR_FAILED") {
       console.error("windows-history-repair-cause", JSON.stringify({
         name: error.cause?.name ?? null,
-        code: error.cause?.code ?? null
+        code: error.cause?.code ?? null,
+        syscall: error.cause?.syscall ?? null
       }));
     }
     throw error;
