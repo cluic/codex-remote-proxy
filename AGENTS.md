@@ -69,6 +69,7 @@
 - Debug previews and Capture bodies, metadata, paths, and errors must redact every configured protected value without changing forwarded bytes.
 - Protected-value scanning must cover reversible percent, JSON-escape, Base64, base64url, and mixed-case hex representations without emitting decoded metadata.
 - Diagnostics must be issued as separate commands instead of chaining them with shell separators.
+- Integration tests must await terminal Metrics/Capture settlement before closing the server that owns those resources.
 
 ## Required Checks
 

@@ -351,10 +351,12 @@ test("large Capture bodies preserve totals while omitting prefixes that cannot b
   const source = new RuntimeSettingsSource();
   source.apply({ generation: 19, settings });
   const metrics = [];
+  const metricRecorded = createSignal();
   const app = createApp(settings, {
     settingsSource: source,
     recordMetric(observation) {
       metrics.push(structuredClone(observation));
+      metricRecorded.resolve();
     }
   });
   const proxyPort = await listen(app.server);
@@ -370,6 +372,7 @@ test("large Capture bodies preserve totals while omitting prefixes that cannot b
   });
   assert.equal(response.status, 200);
   assert.equal((await response.arrayBuffer()).byteLength, responseBody.length);
+  await withDeadline(metricRecorded.promise, "large Capture request did not finish settlement");
   await closeServer(app.server);
 
   const db = new DatabaseSync(dbPath);
