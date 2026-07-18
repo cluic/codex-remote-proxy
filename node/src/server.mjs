@@ -19,6 +19,25 @@ import {
 const CONFIG_ENV_VAR = "CODEX_PROXY_CONFIG";
 const DEFAULT_CONFIG_PATH = resolve(import.meta.dirname, "..", "proxy-config.json");
 const HEALTH_PATH = "/_proxy/health";
+const METRIC_MODEL_MAX_BYTES = 64 * 1024;
+const METRIC_USAGE_MAX_BYTES = 1024 * 1024;
+const METRIC_MAX_MODEL_CODE_POINTS = 256;
+const METRIC_MAX_OBSERVATION_TOKENS = 100_000_000;
+const METRIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+const METRIC_LATENCY_BOUNDS_MS = [
+  50,
+  100,
+  250,
+  500,
+  1_000,
+  2_500,
+  5_000,
+  10_000,
+  30_000,
+  60_000,
+  120_000,
+  300_000
+];
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -31,8 +50,6 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade"
 ]);
-
-let DEBUG_ENABLED = false;
 
 export function resolveConfigPath() {
   return process.env[CONFIG_ENV_VAR] ? resolve(process.env[CONFIG_ENV_VAR]) : DEFAULT_CONFIG_PATH;
@@ -98,7 +115,7 @@ function maskSecret(value) {
     return "(empty)";
   }
   if (value.length <= 8) {
-    return value;
+    return "[REDACTED]";
   }
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
@@ -109,8 +126,8 @@ export function log(level, message, fields = {}) {
   console.log(`${new Date().toISOString()} ${level.toUpperCase()} ${message}${suffix}`);
 }
 
-function debugLog(label, data) {
-  if (!DEBUG_ENABLED) return;
+function debugLog(label, data, enabled) {
+  if (!enabled) return;
   const timestamp = new Date().toISOString();
   const json = typeof data === "string" ? data : JSON.stringify(data, null, 2);
   for (const line of json.split("\n")) {
@@ -129,9 +146,18 @@ function safeBodyPreview(buffer, maxLen = 4096) {
 }
 
 export function buildTargetUrl(baseUrl, requestUrl) {
+  const target = new URL(baseUrl);
   const incoming = new URL(requestUrl, "http://127.0.0.1");
-  const path = incoming.pathname === "/" ? "" : incoming.pathname;
-  return new URL(`${baseUrl}${path}${incoming.search}`);
+  const baseSearch = target.search;
+  if (incoming.pathname !== "/") {
+    const basePath = target.pathname.replace(/\/+$/, "");
+    target.pathname = `${basePath}${incoming.pathname}`;
+  }
+  target.search = baseSearch && incoming.search
+    ? `${baseSearch}&${incoming.search.slice(1)}`
+    : baseSearch || incoming.search;
+  target.hash = "";
+  return target;
 }
 
 function formatAuthorization(upstream) {
@@ -140,6 +166,14 @@ function formatAuthorization(upstream) {
 }
 
 const CONTENT_HEADERS = new Set(["content-encoding", "content-length"]);
+const DEBUG_SENSITIVE_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key"
+]);
+const DEBUG_SENSITIVE_HEADER_PARTS = ["token", "secret", "api-key"];
 
 function decompressBody(buffer, encoding) {
   const enc = encoding.toLowerCase().trim();
@@ -164,10 +198,26 @@ function autoDecompress(buffer) {
   try { return zlib.brotliDecompressSync(buffer); } catch { return null; }
 }
 
-function sanitizeHeadersForDebug(headersObject) {
+function sanitizeHeadersForDebug(headersObject, authHeader = "authorization") {
   const result = {};
+  const activeAuthHeader = authHeader.toLowerCase();
   for (const [key, value] of Object.entries(headersObject)) {
-    result[key] = key.toLowerCase() === "authorization" ? maskSecret(String(value)) : value;
+    const loweredKey = key.toLowerCase();
+    const sensitive = loweredKey === activeAuthHeader
+      || DEBUG_SENSITIVE_HEADER_NAMES.has(loweredKey)
+      || DEBUG_SENSITIVE_HEADER_PARTS.some((part) => loweredKey.includes(part));
+    result[key] = sensitive ? maskSecret(String(value)) : value;
+  }
+  return result;
+}
+
+function sanitizeHeadersForCapture(headersInput, authHeader) {
+  const result = headersToObject(headersInput);
+  const activeAuthHeader = authHeader.toLowerCase();
+  for (const key of Object.keys(result)) {
+    if (key.toLowerCase() === activeAuthHeader) {
+      result[key] = "[REDACTED]";
+    }
   }
   return result;
 }
@@ -239,7 +289,98 @@ function isEventStream(contentType = "") {
   return contentType.split(";", 1)[0].trim().toLowerCase() === "text/event-stream";
 }
 
-function buildHealthPayload(settings, captureManager) {
+function metricLatencyBin(value) {
+  const duration = Number.isFinite(value) && value >= 0 ? value : Number.POSITIVE_INFINITY;
+  const index = METRIC_LATENCY_BOUNDS_MS.findIndex((boundary) => duration <= boundary);
+  return index === -1 ? METRIC_LATENCY_BOUNDS_MS.length : index;
+}
+
+function parseBoundedJson(buffer, maximumBytes) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > maximumBytes) return null;
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    const value = JSON.parse(text);
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeMetricModel(value, settings) {
+  if (typeof value !== "string" || value.length === 0
+    || value.length > METRIC_MAX_MODEL_CODE_POINTS * 2
+    || [...value].length > METRIC_MAX_MODEL_CODE_POINTS
+    || value.trim() !== value
+    || METRIC_TEXT_CONTROL_PATTERN.test(value)) {
+    return null;
+  }
+  const protectedValues = [
+    settings.upstream.apiKey,
+    ...Object.values(settings.upstream.extraHeaders)
+  ].filter((candidate) => typeof candidate === "string" && candidate.length > 0);
+  return protectedValues.some((secret) => value.includes(secret)) ? null : value;
+}
+
+function extractMetricModel(body, settings) {
+  const parsed = parseBoundedJson(body, METRIC_MODEL_MAX_BYTES);
+  return parsed ? safeMetricModel(parsed.model, settings) : null;
+}
+
+function normalizeMetricUsage(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const inputTokens = value.input_tokens;
+  const outputTokens = value.output_tokens;
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < 0
+    || inputTokens > METRIC_MAX_OBSERVATION_TOKENS
+    || !Number.isSafeInteger(outputTokens) || outputTokens < 0
+    || outputTokens > METRIC_MAX_OBSERVATION_TOKENS) {
+    return null;
+  }
+  return { inputTokens, outputTokens };
+}
+
+function extractMetricUsage(body, stream) {
+  if (!Buffer.isBuffer(body) || body.length === 0 || body.length > METRIC_USAGE_MAX_BYTES) return null;
+  if (!stream) {
+    const parsed = parseBoundedJson(body, METRIC_USAGE_MAX_BYTES);
+    return normalizeMetricUsage(parsed?.usage);
+  }
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch {
+    return null;
+  }
+  let observed = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const data = line.slice(5).trimStart();
+    if (data.length === 0 || data === "[DONE]") continue;
+    try {
+      const event = JSON.parse(data);
+      const usage = normalizeMetricUsage(event?.response?.usage);
+      if (usage) observed = usage;
+    } catch {
+      // Ignore non-JSON or partial SSE data without retaining it.
+    }
+  }
+  return observed;
+}
+
+function metricResultForStatus(statusCode) {
+  if (statusCode >= 200 && statusCode <= 299) return "success";
+  if (statusCode >= 400 && statusCode <= 499) return "upstreamRejected";
+  return "upstreamError";
+}
+
+function buildHealthPayload(settings, captureManager, settingsSource) {
+  if (settingsSource) {
+    return {
+      ok: true,
+      ...settingsSource.publicState(),
+      ...captureManager.getPublicState()
+    };
+  }
   return {
     ok: true,
     configPath: settings.configPath,
@@ -265,6 +406,8 @@ function buildRequestContext({ req, settings, targetUrl, requestId, requestHeade
     }
   }
 
+  const captureHeaders = sanitizeHeadersForCapture(requestHeaders, settings.upstream.authHeader);
+
   return {
     requestId,
     sessionId: typeof req.headers["session-id"] === "string"
@@ -276,7 +419,7 @@ function buildRequestContext({ req, settings, targetUrl, requestId, requestHeade
     method: req.method || "GET",
     incomingUrl: new URL(req.url, `http://${settings.server.host}:${settings.server.port}`).href,
     targetUrl: targetUrl.href,
-    requestHeaders: headersToObject(requestHeaders),
+    requestHeaders: captureHeaders,
     requestBody,
     startedAt: new Date(startedAt).toISOString(),
     captureHandle
@@ -309,7 +452,13 @@ function saveCaptureRecord(captureContext, fields) {
   });
 }
 
-export function createServer(settings, { captureManager = createCaptureManager({ configPath: settings.configPath, capture: settings.capture, log }).start(), logFn = log } = {}) {
+export function createServer(settings, {
+  captureManager = createCaptureManager({ configPath: settings.configPath, capture: settings.capture, log }).start(),
+  logFn = log,
+  settingsSource,
+  recordMetric = () => {},
+  metricNow = Date.now
+} = {}) {
   return http.createServer((req, res) => {
     if (!req.url) {
       writeJson(res, 400, { error: { message: "Missing request URL", type: "proxy_bad_request" } });
@@ -317,14 +466,30 @@ export function createServer(settings, { captureManager = createCaptureManager({
     }
 
     if (req.url === HEALTH_PATH) {
-      writeJson(res, 200, buildHealthPayload(settings, captureManager));
+      writeJson(res, 200, buildHealthPayload(settings, captureManager, settingsSource));
       return;
     }
 
-    const requestId = req.headers[settings.proxy.requestIdHeader] || req.headers["x-request-id"] || "-";
-    const targetUrl = buildTargetUrl(settings.upstream.baseUrl, req.url);
+    let active;
+    try {
+      active = settingsSource ? settingsSource.current() : { generation: 0, settings };
+    } catch (error) {
+      const unavailable = error?.code === "RUNTIME_SETTINGS_UNAVAILABLE";
+      writeJson(res, unavailable ? 503 : 500, {
+        error: {
+          code: unavailable ? "RUNTIME_SETTINGS_UNAVAILABLE" : "RUNTIME_SETTINGS_ERROR",
+          message: unavailable ? "Proxy settings are not configured." : "Proxy settings could not be loaded."
+        }
+      });
+      return;
+    }
+    const requestSettings = active.settings;
+    const requestDebugEnabled = requestSettings.server.logLevel.toLowerCase() === "debug";
+    const requestId = req.headers[requestSettings.proxy.requestIdHeader] || req.headers["x-request-id"] || "-";
+    const targetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
     const transport = targetUrl.protocol === "https:" ? https : http;
     const startedAt = Date.now();
+    const metricStartedAt = metricNow();
 
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
@@ -349,13 +514,13 @@ export function createServer(settings, { captureManager = createCaptureManager({
             originalSize: body.length,
             decompressedSize: decompressed.length,
             magicBytes: `0x${body[0].toString(16).padStart(2, "0")} 0x${body[1].toString(16).padStart(2, "0")}`
-          });
+          }, requestDebugEnabled);
           body = decompressed;
           bodyTransformed = true;
         }
       }
 
-      const headers = buildUpstreamHeaders(req, settings, targetUrl, {
+      const headers = buildUpstreamHeaders(req, requestSettings, targetUrl, {
         stripContentHeaders: bodyTransformed
       });
       if (bodyTransformed && body.length) {
@@ -365,7 +530,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
       const captureHandle = captureManager.beginRecord() ?? createNoopCaptureHandle();
       const captureContext = buildRequestContext({
         req,
-        settings,
+        settings: requestSettings,
         targetUrl,
         requestId,
         requestHeaders: headers,
@@ -374,7 +539,10 @@ export function createServer(settings, { captureManager = createCaptureManager({
         captureHandle
       });
       let captureSaved = false;
+      let metricSaved = false;
       let responseCompleted = false;
+      let responseStartBin = null;
+      const metricModel = extractMetricModel(body, requestSettings);
 
       function finalizeCapture(fields) {
         if (captureSaved) {
@@ -384,14 +552,44 @@ export function createServer(settings, { captureManager = createCaptureManager({
         saveCaptureRecord(captureContext, fields);
       }
 
+      function finalizeMetric(result, { responseBody = null, stream = false } = {}) {
+        if (metricSaved) return;
+        metricSaved = true;
+        if (!Number.isSafeInteger(active.generation) || active.generation <= 0) return;
+        const usage = result === "success" && responseBody !== null
+          ? extractMetricUsage(responseBody, stream)
+          : null;
+        const observation = {
+          generation: active.generation,
+          result,
+          model: metricModel,
+          inputTokens: usage?.inputTokens ?? null,
+          outputTokens: usage?.outputTokens ?? null,
+          durationBin: metricLatencyBin(metricNow() - metricStartedAt),
+          responseStartBin
+        };
+        try {
+          const pending = recordMetric(observation);
+          if (pending && typeof pending.then === "function") void pending.catch(() => {});
+        } catch {
+          // Operational metrics must never affect proxy forwarding.
+        }
+      }
+
       debugLog("REQUEST", {
         method: req.method,
         path: req.url,
         targetUrl: targetUrl.href,
-        incomingHeaders: sanitizeHeadersForDebug(Object.fromEntries(Object.entries(req.headers))),
-        upstreamHeaders: Object.fromEntries(headers.map(([k, v]) => [k, k.toLowerCase() === "authorization" ? maskSecret(v) : v])),
+        incomingHeaders: sanitizeHeadersForDebug(
+          Object.fromEntries(Object.entries(req.headers)),
+          requestSettings.upstream.authHeader
+        ),
+        upstreamHeaders: sanitizeHeadersForDebug(
+          Object.fromEntries(headers),
+          requestSettings.upstream.authHeader
+        ),
         body: safeBodyPreview(body)
-      });
+      }, requestDebugEnabled);
 
       const upstreamRequest = transport.request(
         {
@@ -401,18 +599,27 @@ export function createServer(settings, { captureManager = createCaptureManager({
           port: targetUrl.port || undefined,
           path: `${targetUrl.pathname}${targetUrl.search}`,
           headers,
-          rejectUnauthorized: settings.upstream.verifySsl
+          rejectUnauthorized: requestSettings.upstream.verifySsl
         },
         (upstreamResponse) => {
           const stream = isEventStream(upstreamResponse.headers["content-type"]);
           debugLog("RESPONSE HEADERS", {
             status: upstreamResponse.statusCode,
-            headers: upstreamResponse.headers
-          });
+            headers: sanitizeHeadersForDebug(
+              upstreamResponse.headers,
+              requestSettings.upstream.authHeader
+            )
+          }, requestDebugEnabled);
 
-          const responseHeaders = headersToObject(upstreamResponse.rawHeaders);
+          const responseHeaders = sanitizeHeadersForCapture(
+            upstreamResponse.headers,
+            requestSettings.upstream.authHeader
+          );
           const respChunks = [];
           upstreamResponse.on("data", (chunk) => {
+            if (responseStartBin === null && chunk.length > 0) {
+              responseStartBin = metricLatencyBin(metricNow() - metricStartedAt);
+            }
             respChunks.push(chunk);
           });
 
@@ -426,7 +633,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
               debugLog("RESPONSE BODY", {
                 status: upstreamResponse.statusCode,
                 body: safeBodyPreview(responseBody)
-              });
+              }, requestDebugEnabled);
             }
             finalizeCapture({
               responseStatus: upstreamResponse.statusCode || 502,
@@ -434,6 +641,10 @@ export function createServer(settings, { captureManager = createCaptureManager({
               responseBody,
               isStream: stream,
               upstreamRequestId: typeof upstreamResponse.headers["x-request-id"] === "string" ? upstreamResponse.headers["x-request-id"] : null
+            });
+            finalizeMetric(metricResultForStatus(upstreamResponse.statusCode || 502), {
+              responseBody,
+              stream
             });
             logFn("info", "Proxied request", {
               request_id: requestId,
@@ -444,10 +655,12 @@ export function createServer(settings, { captureManager = createCaptureManager({
               duration_ms: Date.now() - startedAt
             });
           });
+          upstreamResponse.once("aborted", () => finalizeMetric("networkError"));
+          upstreamResponse.once("error", () => finalizeMetric("networkError"));
         }
       );
 
-      upstreamRequest.setTimeout(settings.upstream.timeoutMs, () => {
+      upstreamRequest.setTimeout(requestSettings.upstream.timeoutMs, () => {
         upstreamRequest.destroy(new Error("upstream timeout"));
       });
 
@@ -471,7 +684,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
           error: error.message,
           code: error.code || "(none)",
           stack: error.stack
-        });
+        }, requestDebugEnabled);
         if (!res.headersSent) {
           writeJson(res, statusCode, payload);
         } else {
@@ -485,6 +698,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
           errorMessage: error.message,
           upstreamRequestId: null
         });
+        finalizeMetric(statusCode === 504 ? "timeout" : "networkError");
         logFn("warn", "Proxy request failed", {
           request_id: requestId,
           method: req.method || "GET",
@@ -508,6 +722,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
           errorType: "proxy_client_abort",
           errorMessage: "Client closed connection"
         });
+        finalizeMetric("clientAbort");
       });
 
       upstreamRequest.end(body);
@@ -515,8 +730,7 @@ export function createServer(settings, { captureManager = createCaptureManager({
   });
 }
 
-export function createApp(settings = loadConfig()) {
-  DEBUG_ENABLED = settings.server.logLevel.toLowerCase() === "debug";
+export function createApp(settings = loadConfig(), { settingsSource, recordMetric } = {}) {
   const captureManager = createCaptureManager({
     configPath: settings.configPath,
     capture: settings.capture,
@@ -533,7 +747,12 @@ export function createApp(settings = loadConfig()) {
     capture_db_path: settings.capture.dbPath
   });
 
-  const server = createServer(settings, { captureManager, logFn: log });
+  const server = createServer(settings, {
+    captureManager,
+    logFn: log,
+    settingsSource,
+    recordMetric
+  });
   server.on("close", () => {
     captureManager.close();
   });
@@ -566,6 +785,10 @@ function isWindowsStylePath(filePath) {
   return /^[A-Za-z]:[\\/]/.test(filePath);
 }
 
+function isPosixStylePath(filePath) {
+  return filePath.startsWith("/") && !/^\/[A-Za-z]:\//.test(filePath);
+}
+
 function modulePathFromMetaUrl(metaUrl) {
   const url = new URL(metaUrl);
   if (url.protocol !== "file:") {
@@ -574,6 +797,9 @@ function modulePathFromMetaUrl(metaUrl) {
   const pathname = decodeURIComponent(url.pathname);
   if (/^\/[A-Za-z]:\//.test(pathname)) {
     return path.win32.normalize(pathname.slice(1));
+  }
+  if (pathname.startsWith("/")) {
+    return path.posix.normalize(pathname);
   }
   return fileURLToPath(metaUrl);
 }
@@ -584,6 +810,9 @@ function normalizeExecutionPath(filePath) {
   }
   if (isWindowsStylePath(filePath)) {
     return path.win32.normalize(filePath).toLowerCase();
+  }
+  if (isPosixStylePath(filePath)) {
+    return path.posix.normalize(filePath);
   }
   return resolve(filePath);
 }

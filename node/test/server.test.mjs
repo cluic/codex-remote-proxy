@@ -1,13 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import https from "node:https";
+import { Readable } from "node:stream";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 
-import { createApp, isDirectExecution } from "../src/server.mjs";
+import { buildTargetUrl, createApp, createServer, isDirectExecution } from "../src/server.mjs";
+import { RuntimeSettingsSource } from "../src/worker/runtime-settings.mjs";
 
 function makeTempDir(prefix) {
   return join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -23,6 +26,104 @@ function listen(server, host = "127.0.0.1") {
   });
 }
 
+async function closeServer(server) {
+  if (!server.listening) {
+    return;
+  }
+  const closed = once(server, "close");
+  server.close();
+  await closed;
+}
+
+function createGate() {
+  let release;
+  const promise = new Promise((resolvePromise) => {
+    release = resolvePromise;
+  });
+  return { promise, release };
+}
+
+function createSignal() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function makeSettings({
+  baseUrl,
+  apiKey = "test-api-key",
+  authHeader = "authorization",
+  authScheme = "Bearer",
+  extraHeaders = {},
+  timeoutMs = 300000,
+  verifySsl = true,
+  requestIdHeader = "x-client-request-id",
+  logLevel = "info",
+  captureEnabled = true
+}) {
+  return {
+    configPath: "/tmp/crp-task5-proxy-config.json",
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+      logLevel
+    },
+    upstream: {
+      baseUrl,
+      apiKey,
+      timeoutMs,
+      verifySsl,
+      authHeader,
+      authScheme,
+      extraHeaders
+    },
+    proxy: {
+      overrideAuthorization: true,
+      requestIdHeader
+    },
+    capture: {
+      enabled: captureEnabled,
+      dbPath: "/tmp/crp-task5-traffic.sqlite3"
+    }
+  };
+}
+
+function createMemoryCaptureManager(publicState = {}) {
+  const records = [];
+  return {
+    records,
+    beginRecord() {
+      let saved = false;
+      return {
+        save(record) {
+          if (!saved) {
+            saved = true;
+            records.push(record);
+          }
+        }
+      };
+    },
+    getPublicState() {
+      return {
+        captureConfigured: true,
+        captureActive: true,
+        ...publicState
+      };
+    },
+    close() {}
+  };
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  return {
+    status: response.status,
+    body: await response.json()
+  };
+}
+
 function requestJson(url, body) {
   return fetch(url, {
     method: "POST",
@@ -36,6 +137,50 @@ function requestJson(url, body) {
   });
 }
 
+test("buildTargetUrl joins base and request paths with one separator", () => {
+  const cases = [
+    {
+      baseUrl: "https://api.example.test/",
+      requestUrl: "/responses?model=gpt%2F5",
+      expected: "https://api.example.test/responses?model=gpt%2F5"
+    },
+    {
+      baseUrl: "https://api.example.test/v1",
+      requestUrl: "/responses",
+      expected: "https://api.example.test/v1/responses"
+    },
+    {
+      baseUrl: "https://api.example.test/v1/",
+      requestUrl: "/responses",
+      expected: "https://api.example.test/v1/responses"
+    },
+    {
+      baseUrl: "https://api.example.test/v1/",
+      requestUrl: "/",
+      expected: "https://api.example.test/v1/"
+    },
+    {
+      baseUrl: "https://api.example.test/v1/",
+      requestUrl: "/responses/%2Fencoded?cursor=a%2Fb&space=a%20b",
+      expected: "https://api.example.test/v1/responses/%2Fencoded?cursor=a%2Fb&space=a%20b"
+    }
+  ];
+
+  for (const { baseUrl, requestUrl, expected } of cases) {
+    assert.equal(buildTargetUrl(baseUrl, requestUrl).href, expected);
+  }
+});
+
+test("buildTargetUrl preserves base query parameters without forwarding fragments", () => {
+  assert.equal(
+    buildTargetUrl(
+      "https://api.example.test/v1?tenant=one%20two#section",
+      "/responses?model=gpt%2F5"
+    ).href,
+    "https://api.example.test/v1/responses?tenant=one%20two&model=gpt%2F5"
+  );
+});
+
 test("server writes proxied request and response to sqlite", async () => {
   const dir = makeTempDir("crp-server");
   mkdirSync(dir, { recursive: true });
@@ -48,6 +193,7 @@ test("server writes proxied request and response to sqlite", async () => {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
       res.setHeader("x-request-id", "upstream-test-1");
+      res.setHeader("x-provider-auth", "response-upstream-secret");
       res.end(JSON.stringify({ ok: true, echoed: JSON.parse(payload) }));
     });
   });
@@ -66,7 +212,7 @@ test("server writes proxied request and response to sqlite", async () => {
       apiKey: "upstream-secret",
       timeoutMs: 300000,
       verifySsl: true,
-      authHeader: "authorization",
+      authHeader: "x-provider-auth",
       authScheme: "Bearer",
       extraHeaders: {}
     },
@@ -92,7 +238,7 @@ test("server writes proxied request and response to sqlite", async () => {
       apiKey: "upstream-secret",
       timeoutMs: 300000,
       verifySsl: true,
-      authHeader: "authorization",
+      authHeader: "x-provider-auth",
       authScheme: "Bearer",
       extraHeaders: {}
     },
@@ -129,6 +275,9 @@ test("server writes proxied request and response to sqlite", async () => {
   assert.equal(rows[0].thread_id, "thread-it-1");
   assert.equal(rows[0].upstream_request_id, "upstream-test-1");
   assert.match(rows[0].request_headers_json, /REDACTED/);
+  assert.doesNotMatch(rows[0].request_headers_json, /upstream-secret/);
+  assert.match(rows[0].response_headers_json, /REDACTED/);
+  assert.doesNotMatch(rows[0].response_headers_json, /response-upstream-secret/);
   assert.match(rows[0].response_body, /"ok":true/);
 
   rmSync(dir, { recursive: true, force: true });
@@ -151,4 +300,641 @@ test("isDirectExecution handles both POSIX and Windows paths", () => {
     isDirectExecution("file:///C:/Users/Xingh/project/node/src/server.mjs", "C:\\Users\\Xingh\\project\\node\\src\\other.mjs"),
     false
   );
+});
+
+test("dynamic requests capture current settings exactly once before body listeners", () => {
+  const settings = makeSettings({ baseUrl: "http://127.0.0.1:9" });
+  const runtime = new RuntimeSettingsSource();
+  runtime.apply({ generation: 1, settings });
+  const events = [];
+  const settingsSource = {
+    current() {
+      events.push("current");
+      return runtime.current();
+    },
+    publicState() {
+      return runtime.publicState();
+    }
+  };
+  const server = createServer(settings, {
+    settingsSource,
+    captureManager: createMemoryCaptureManager(),
+    logFn() {}
+  });
+  const req = new EventEmitter();
+  const originalOn = req.on.bind(req);
+  req.on = (eventName, listener) => {
+    if (eventName === "data" || eventName === "end") {
+      events.push(`on:${eventName}`);
+    }
+    return originalOn(eventName, listener);
+  };
+  Object.assign(req, {
+    url: "/responses",
+    method: "POST",
+    headers: {},
+    rawHeaders: []
+  });
+  const res = {
+    statusCode: 200,
+    setHeader() {},
+    end() {},
+    on() {},
+    appendHeader() {}
+  };
+
+  server.emit("request", req, res);
+
+  assert.deepEqual(events, ["current", "on:data", "on:end"]);
+});
+
+test("TLS and timeout options stay pinned when settings change before the request body", async (t) => {
+  const settingsA = makeSettings({
+    baseUrl: "https://a.example.test:4443",
+    timeoutMs: 1111,
+    verifySsl: false
+  });
+  const settingsB = makeSettings({
+    baseUrl: "https://b.example.test:5443",
+    timeoutMs: 2222,
+    verifySsl: true
+  });
+  const runtime = new RuntimeSettingsSource();
+  runtime.apply({ generation: 1, settings: settingsA });
+  const captured = createSignal();
+  const settingsSource = {
+    current() {
+      const active = runtime.current();
+      captured.resolve();
+      return active;
+    },
+    publicState() {
+      return runtime.publicState();
+    }
+  };
+  const observed = {};
+  const originalHttpsRequest = https.request;
+  t.after(() => {
+    https.request = originalHttpsRequest;
+  });
+  https.request = (options, onResponse) => {
+    Object.assign(observed, options);
+    const request = new EventEmitter();
+    request.setTimeout = (timeoutMs) => {
+      observed.timeoutMs = timeoutMs;
+    };
+    request.destroy = (error) => request.emit("error", error);
+    request.end = () => {
+      const response = Readable.from([Buffer.from(JSON.stringify({ ok: true }))]);
+      response.statusCode = 200;
+      response.headers = { "content-type": "application/json" };
+      response.rawHeaders = ["content-type", "application/json"];
+      queueMicrotask(() => onResponse(response));
+    };
+    return request;
+  };
+
+  const proxy = createServer(settingsB, {
+    settingsSource,
+    captureManager: createMemoryCaptureManager(),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const responsePromise = new Promise((resolvePromise, rejectPromise) => {
+    const clientRequest = http.request({
+      host: "127.0.0.1",
+      port: proxyPort,
+      path: "/responses",
+      method: "POST"
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolvePromise({
+        status: response.statusCode,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      }));
+    });
+    clientRequest.on("error", rejectPromise);
+    clientRequest.flushHeaders();
+    captured.promise.then(() => {
+      runtime.apply({ generation: 2, settings: settingsB });
+      clientRequest.end("{}");
+    }, rejectPromise);
+  });
+
+  const response = await responsePromise;
+  assert.deepEqual(response, { status: 200, body: { ok: true } });
+  assert.equal(observed.hostname, "a.example.test");
+  assert.equal(observed.port, "4443");
+  assert.equal(observed.rejectUnauthorized, false);
+  assert.equal(observed.timeoutMs, 1111);
+});
+
+test("in-flight request keeps A target, credential, headers, capture, and logs while new request uses B", async (t) => {
+  const releaseA = createGate();
+  t.after(() => releaseA.release());
+  const receivedA = createSignal();
+  const observedA = [];
+  const observedB = [];
+
+  const upstreamA = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      observedA.push({ headers: req.headers, body: Buffer.concat(chunks).toString("utf8") });
+      if (observedA.length === 1) {
+        receivedA.resolve();
+        releaseA.promise.then(() => {
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ upstream: "A" }));
+        });
+      } else {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ upstream: "A-unexpected-repeat" }));
+      }
+    });
+  });
+  const portA = await listen(upstreamA);
+  t.after(async () => {
+    releaseA.release();
+    await closeServer(upstreamA);
+  });
+
+  const upstreamB = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      observedB.push({ headers: req.headers, body: Buffer.concat(chunks).toString("utf8") });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ upstream: "B" }));
+    });
+  });
+  const portB = await listen(upstreamB);
+  t.after(() => closeServer(upstreamB));
+
+  const settingsA = makeSettings({
+    baseUrl: `http://127.0.0.1:${portA}`,
+    apiKey: "a-api-key-sentinel",
+    authHeader: "x-provider-a-auth",
+    authScheme: "Token",
+    extraHeaders: { "x-snapshot-route": "A" },
+    timeoutMs: 5000,
+    verifySsl: false,
+    requestIdHeader: "x-a-request-id"
+  });
+  const settingsB = makeSettings({
+    baseUrl: `http://127.0.0.1:${portB}`,
+    apiKey: "b-api-key-sentinel",
+    authHeader: "x-provider-b-auth",
+    authScheme: "",
+    extraHeaders: { "x-snapshot-route": "B" },
+    timeoutMs: 1000,
+    verifySsl: true,
+    requestIdHeader: "x-b-request-id"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings: settingsA });
+  const captureManager = createMemoryCaptureManager();
+  const logs = [];
+  const metrics = [];
+  const proxy = createServer(settingsA, {
+    settingsSource: source,
+    captureManager,
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    },
+    logFn(level, message, fields) {
+      logs.push({ level, message, fields });
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(async () => {
+    releaseA.release();
+    await closeServer(proxy);
+  });
+
+  const responseAPromise = fetchJson(`http://127.0.0.1:${proxyPort}/responses?request=A`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-a-request-id": "request-a",
+      "x-provider-a-auth": "client-a-value"
+    },
+    body: JSON.stringify({ request: "A", model: "model-a" })
+  });
+  await Promise.race([
+    receivedA.promise,
+    responseAPromise.then((response) => {
+      throw new Error(`request A completed before reaching upstream A (${response.status})`);
+    })
+  ]);
+
+  source.apply({ generation: 2, settings: settingsB });
+  const responseB = await fetchJson(`http://127.0.0.1:${proxyPort}/responses?request=B`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-b-request-id": "request-b",
+      "x-provider-b-auth": "client-b-value"
+    },
+    body: JSON.stringify({ request: "B", model: "model-b" })
+  });
+  releaseA.release();
+  const responseA = await responseAPromise;
+
+  assert.deepEqual(responseA, { status: 200, body: { upstream: "A" } });
+  assert.deepEqual(responseB, { status: 200, body: { upstream: "B" } });
+  assert.equal(observedA.length, 1);
+  assert.equal(observedA[0].headers["x-provider-a-auth"], "Token a-api-key-sentinel");
+  assert.equal(observedA[0].headers["x-snapshot-route"], "A");
+  assert.equal(observedB.length, 1);
+  assert.equal(observedB[0].headers["x-provider-b-auth"], "b-api-key-sentinel");
+  assert.equal(observedB[0].headers["x-snapshot-route"], "B");
+  assert.deepEqual(captureManager.records.map((record) => new URL(record.targetUrl).host), [
+    `127.0.0.1:${portB}`,
+    `127.0.0.1:${portA}`
+  ]);
+  assert.deepEqual(
+    logs.filter((entry) => entry.message === "Proxied request").map((entry) => entry.fields.request_id).sort(),
+    ["request-a", "request-b"]
+  );
+  assert.deepEqual(metrics.map(({ generation, result, model, inputTokens, outputTokens }) => ({
+    generation,
+    result,
+    model,
+    inputTokens,
+    outputTokens
+  })), [
+    {
+      generation: 2,
+      result: "success",
+      model: "model-b",
+      inputTokens: null,
+      outputTokens: null
+    },
+    {
+      generation: 1,
+      result: "success",
+      model: "model-a",
+      inputTokens: null,
+      outputTokens: null
+    }
+  ]);
+});
+
+test("metrics extract bounded JSON and SSE usage while screening credential-bearing model ids", async (t) => {
+  const secret = "metrics-active-credential-sentinel";
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (payload.stream === true) {
+        res.setHeader("content-type", "text/event-stream");
+        res.end(`data: ${JSON.stringify({
+          type: "response.completed",
+          response: { usage: { input_tokens: 21, output_tokens: 8 } }
+        })}\n\ndata: [DONE]\n\n`);
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        id: "response-private-id",
+        usage: { input_tokens: 13, output_tokens: 5 }
+      }));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: secret,
+    captureEnabled: false
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 9, settings });
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createMemoryCaptureManager(),
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    },
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const jsonResponse = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "model-json", stream: false })
+  });
+  assert.equal(jsonResponse.status, 200);
+  await jsonResponse.text();
+  const streamResponse = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: `prefix-${secret}-suffix`, stream: true })
+  });
+  assert.equal(streamResponse.status, 200);
+  await streamResponse.text();
+
+  assert.equal(metrics.length, 2);
+  assert.deepEqual(metrics.map(({ generation, result, model, inputTokens, outputTokens }) => ({
+    generation,
+    result,
+    model,
+    inputTokens,
+    outputTokens
+  })), [
+    {
+      generation: 9,
+      result: "success",
+      model: "model-json",
+      inputTokens: 13,
+      outputTokens: 5
+    },
+    {
+      generation: 9,
+      result: "success",
+      model: null,
+      inputTokens: 21,
+      outputTokens: 8
+    }
+  ]);
+  const serialized = JSON.stringify(metrics);
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(serialized.includes("response-private-id"), false);
+  assert.equal(serialized.includes("url"), false);
+  assert.equal(serialized.includes("headers"), false);
+  assert.equal(serialized.includes("body"), false);
+});
+
+test("metrics response-start latency begins at the first response body byte", async (t) => {
+  const releaseBody = createGate();
+  const headersSent = createSignal();
+  t.after(() => releaseBody.release());
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (req.url === "/bodyless") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      res.setHeader("content-type", "application/json");
+      res.flushHeaders();
+      headersSent.resolve();
+      releaseBody.promise.then(() => res.end(JSON.stringify({ ok: true })));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    captureEnabled: false
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 3, settings });
+  const metricSignals = [createSignal(), createSignal()];
+  const metrics = [];
+  let metricNowMs = 1_000;
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createMemoryCaptureManager(),
+    metricNow: () => metricNowMs,
+    recordMetric(observation) {
+      const index = metrics.length;
+      const clone = structuredClone(observation);
+      metrics.push(clone);
+      metricSignals[index]?.resolve(clone);
+    },
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const bodyResponsePromise = fetch(`http://127.0.0.1:${proxyPort}/delayed-body`, {
+    method: "POST",
+    body: "{}"
+  });
+  await headersSent.promise;
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  assert.equal(metrics.length, 0);
+  metricNowMs = 1_301;
+  releaseBody.release();
+  const bodyResponse = await bodyResponsePromise;
+  assert.equal(bodyResponse.status, 200);
+  assert.deepEqual(await bodyResponse.json(), { ok: true });
+  const bodyMetric = await metricSignals[0].promise;
+  assert.equal(bodyMetric.responseStartBin, 3);
+
+  metricNowMs = 2_000;
+  const bodylessResponse = await fetch(`http://127.0.0.1:${proxyPort}/bodyless`, {
+    method: "POST",
+    body: "{}"
+  });
+  assert.equal(bodylessResponse.status, 204);
+  await bodylessResponse.arrayBuffer();
+  const bodylessMetric = await metricSignals[1].promise;
+  assert.equal(bodylessMetric.responseStartBin, null);
+});
+
+test("an in-flight A request retains its longer timeout after B is applied", async (t) => {
+  const releaseA = createGate();
+  t.after(() => releaseA.release());
+  const receivedA = createSignal();
+
+  const upstreamA = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      receivedA.resolve();
+      releaseA.promise.then(() => res.end(JSON.stringify({ upstream: "A" })));
+    });
+  });
+  const portA = await listen(upstreamA);
+  t.after(async () => {
+    releaseA.release();
+    await closeServer(upstreamA);
+  });
+
+  const upstreamB = http.createServer((req) => {
+    req.resume();
+  });
+  const portB = await listen(upstreamB);
+  t.after(() => closeServer(upstreamB));
+
+  const settingsA = makeSettings({ baseUrl: `http://127.0.0.1:${portA}`, timeoutMs: 5000 });
+  const settingsB = makeSettings({ baseUrl: `http://127.0.0.1:${portB}`, timeoutMs: 75 });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings: settingsA });
+  const metrics = [];
+  const proxy = createServer(settingsB, {
+    settingsSource: source,
+    captureManager: createMemoryCaptureManager(),
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    },
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(async () => {
+    releaseA.release();
+    await closeServer(proxy);
+  });
+
+  const responseAPromise = fetchJson(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    body: "A"
+  });
+  await Promise.race([
+    receivedA.promise,
+    responseAPromise.then((response) => {
+      throw new Error(`request A completed before reaching upstream A (${response.status})`);
+    })
+  ]);
+  source.apply({ generation: 2, settings: settingsB });
+
+  const responseB = await fetchJson(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    body: "B"
+  });
+  assert.equal(responseB.status, 504);
+  assert.equal(responseB.body.error.type, "proxy_timeout");
+
+  releaseA.release();
+  const responseA = await responseAPromise;
+  assert.deepEqual(responseA, { status: 200, body: { upstream: "A" } });
+  assert.deepEqual(metrics.map(({ generation, result }) => ({ generation, result })), [
+    { generation: 2, result: "timeout" },
+    { generation: 1, result: "success" }
+  ]);
+});
+
+test("dynamic health is allowlisted and an unconfigured source never falls back to static settings", async (t) => {
+  let staticUpstreamHits = 0;
+  const staticUpstream = http.createServer((req, res) => {
+    staticUpstreamHits += 1;
+    req.resume();
+    req.on("end", () => res.end(JSON.stringify({ unexpected: true })));
+  });
+  const upstreamPort = await listen(staticUpstream);
+  t.after(() => closeServer(staticUpstream));
+
+  const staticSettings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: "static-health-secret",
+    authHeader: "x-static-health-auth",
+    extraHeaders: { "x-static-health-extra": "static-extra-secret" }
+  });
+  const source = new RuntimeSettingsSource();
+  const captureManager = createMemoryCaptureManager({ failedWriteCount: 0 });
+  const proxy = createServer(staticSettings, { settingsSource: source, captureManager, logFn() {} });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const health = await fetchJson(`http://127.0.0.1:${proxyPort}/_proxy/health`);
+  assert.equal(health.status, 200);
+  assert.deepEqual(health.body, {
+    ok: true,
+    configured: false,
+    generation: 0,
+    captureConfigured: true,
+    captureActive: true,
+    failedWriteCount: 0
+  });
+
+  const serializedHealth = JSON.stringify(health.body);
+  for (const forbidden of [
+    "settings",
+    staticSettings.upstream.apiKey,
+    staticSettings.upstream.authHeader,
+    staticSettings.upstream.extraHeaders["x-static-health-extra"]
+  ]) {
+    assert.equal(serializedHealth.includes(forbidden), false, `health leaked ${forbidden}`);
+  }
+
+  const unavailable = await fetchJson(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    body: "{}"
+  });
+  assert.equal(unavailable.status, 503);
+  assert.equal(unavailable.body.error.code, "RUNTIME_SETTINGS_UNAVAILABLE");
+  assert.equal(staticUpstreamHits, 0);
+});
+
+test("debug and startup logs mask short keys and the active custom auth header", async (t) => {
+  let observedAuthHeader = null;
+  const upstream = http.createServer((req, res) => {
+    observedAuthHeader = req.headers["x-provider-auth"] ?? null;
+    req.resume();
+    req.on("end", () => {
+      res.setHeader("x-provider-auth", "response-custom-auth-secret");
+      res.setHeader("set-cookie", "session-cookie-secret");
+      res.setHeader("x-api-key", "tiny");
+      res.setHeader("x-diagnostic", "trace-visible");
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+
+  const staticSettings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: "static-api-key-sentinel",
+    logLevel: "debug"
+  });
+  const activeSettings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: "k3y",
+    authHeader: "x-provider-auth",
+    authScheme: "",
+    logLevel: "debug"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings: activeSettings });
+  const lines = [];
+  const originalConsoleLog = console.log;
+  console.log = (...args) => lines.push(args.join(" "));
+  t.after(() => {
+    console.log = originalConsoleLog;
+  });
+
+  let app;
+  try {
+    app = createApp(staticSettings, { settingsSource: source });
+    const proxyPort = await listen(app.server);
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+      method: "POST",
+      headers: {
+        "x-provider-auth": "client-custom-auth-sentinel"
+      },
+      body: "{}"
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+  } finally {
+    if (app) {
+      await closeServer(app.server);
+      app.captureManager.close();
+    }
+    console.log = originalConsoleLog;
+  }
+
+  const output = lines.join("\n");
+  assert.match(output, /DEBUG \[REQUEST\]/);
+  assert.equal(output.includes("k3y"), false);
+  assert.equal(output.includes("client-custom-auth-sentinel"), false);
+  assert.equal(output.includes("response-custom-auth-secret"), false);
+  assert.equal(output.includes("session-cookie-secret"), false);
+  assert.equal(output.includes('"x-api-key": "tiny"'), false);
+  assert.match(output, /"x-api-key": "\[REDACTED\]"/);
+  assert.match(output, /"x-diagnostic": "trace-visible"/);
+  assert.equal(output.includes(JSON.stringify(source.current())), false);
+  assert.equal(observedAuthHeader, "k3y");
 });

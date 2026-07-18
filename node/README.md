@@ -1,159 +1,148 @@
 # Codex Remote Proxy
 
-Codex Remote Proxy lets Codex stay signed into ChatGPT for remote-control features while sending the actual model traffic to your own OpenAI-compatible upstream and API key.
+`@cluic/codex-remote-proxy` keeps Codex signed in with ChatGPT while routing model requests through a selected OpenAI-compatible provider.
 
-## Install
+> Release status: npm `0.2.2` is still the published pre-supervisor version and does not include `crp ui`. This document describes the pending next minor release, which must not be published until its external platform and L3 gates pass.
+
+## Requirements and Install After Release
+
+Node.js 22.13 or newer is required.
 
 ```bash
 npm install -g @cluic/codex-remote-proxy
+crp ui
 ```
 
-Then run:
+Or run without a global install:
 
 ```bash
-crp start
+npx @cluic/codex-remote-proxy ui
 ```
 
-You can also run it without a global install:
+`crp ui` is the normal setup and management entry point. It starts or discovers the loopback supervisor, opens the local management UI, and supports complete English and Simplified Chinese interfaces.
 
-```bash
-npx @cluic/codex-remote-proxy start
-```
+The current development source is a responsive React + TypeScript SPA under `ui-src/`, built with Vite. Build tools and source are not shipped: the package contains exactly `ui/index.html`, `ui/app.js`, and `ui/styles.css` for the existing same-origin Admin server.
 
-## What It Solves
+## Product Behavior
 
-Codex splits request routing and authentication across two local files:
+The UI can create, test, switch, update, and delete named providers; start, stop, and restart the proxy worker; inspect anonymous 24-hour/7-day aggregate Metrics; review sanitized Activity; inspect read-only System facts; and generate in-memory diagnostic summary metadata. A provider must pass an OpenAI Responses compatibility test before explicit activation. Provider cards expose the legal switch action directly. Explicit activation applies a snapshot to a running Worker and starts a stopped Worker; the Setup-only first-provider compare-and-set selection never starts or reconfigures it. The active provider cannot be updated or deleted, even while the worker is stopped; switch to another provider first.
 
-- `~/.codex/config.toml` controls the OpenAI `base_url`
-- `~/.codex/auth.json` controls the `Authorization` token
+`Forwarding Records` is a disabled coming-soon navigation item only. It has no route, traffic request, Capture control, payload viewer, or mock records. Overview Metrics is anonymous aggregation independent from optional Capture.
 
-When Codex is signed into ChatGPT, requests may still carry `tokens.access_token` instead of the API key required by your upstream provider.
-
-This package inserts a local proxy that:
-
-1. receives Codex requests on `127.0.0.1`
-2. forwards them to the real upstream
-3. rewrites `Authorization` to the real upstream API key
-
-## Recommended Setup
-
-The easiest persistent setup is to add this section to `~/.codex/config.toml`:
+Codex remains configured as:
 
 ```toml
-[codex_remote_proxy]
-upstream_base_url = "https://your-upstream.example.com"
-upstream_api_key = "sk-your-key"
-capture_enabled = true
-capture_db_path = "/Users/you/.codex-remote-proxy/traffic.sqlite3"
+model_provider = "OpenAI"
 ```
 
-Then run:
+Its proxy address remains fixed at `http://127.0.0.1:15100`. CRP switches upstreams internally for new requests while in-flight requests retain their starting snapshot.
 
-```bash
-crp start
-```
+On a clean home, explicit `crp start` privately and atomically creates a missing `.codex` directory and `config.toml`, with no backup for a source that did not exist. New POSIX directory/file modes are `0700`/`0600`; a repeated bootstrap is byte-identical. Existing-file locking, identity/race checks, adjacent backup, mode preservation, and idempotency remain in force.
 
-If you do not want to place secrets in `~/.codex/config.toml`, use one of these alternatives instead:
+Exit Codex before a real existing-config transition. Bootstrap compares the root `model_provider` binding's effective `base_url` with the fixed proxy URL using a selected-binding scanner, not a whole-document TOML validator. A different or missing binding triggers discovery; only a nonempty history write set receives private active/archive rollout snapshots, exclusive SQLite logical backups, and a forward journal under `.codex/.crp-history-repair`. Pending repair or a config lock blocks explicit activation/start/restart and automatic crash recovery through one FIFO Codex gate. CRP-internal provider switching never triggers repair. Only provider metadata is rewritten, encrypted content is left intact, and same-URL provider-name changes remain outside the URL-only trigger.
 
-### Option 1: Save once locally
+## Credentials
 
-```bash
-crp init
-crp start
-```
+The public Supervisor requires the operating-system native store under service `org.cluic.codex-remote-proxy`. Native construction or operation failure fails closed. The UI, CLI, and Admin API expose no file-backend control. The lower-level private file adapter is limited to trusted dependency injection; a public startup-consent path remains future L3 work, and native operations never replay into the file namespace.
 
-`crp init` stores the upstream configuration under:
+Complete credentials are write-only. They are excluded from public provider projections, state, settings, activity, diagnostics, and errors. Prefer the UI for secret entry. `crp provider add` accepts a required `--api-key` for controlled automation, but command-line values may be exposed through shell history or process inspection.
+
+## Browser Session Boundary
+
+The Admin server binds exactly to `127.0.0.1:15101`, checks `Host` and `Origin`, disables CORS, and requires CSRF for browser mutations. `crp ui` launches with a control token in the URL fragment; the app exchanges it once for an HttpOnly `SameSite=Strict` session cookie plus an in-memory CSRF token, then removes and clears the fragment token.
+
+The Web UI defaults to English on first launch regardless of browser language. Only an explicit `crp.locale` selection may enter browser storage, and a selected `zh-CN` locale is retained on later launches. Session/control/CSRF tokens, credentials, drafts, responses, and errors remain memory-only. Reload with a valid cookie but no launch fragment starts GET-only; an explicit same-origin recovery may rotate that still-valid browser session and restore mutations without extending its expiry. Reopen with `crp ui` after expiry. Launch exchange and later business-session/CSRF failures remain terminal for the tab.
+
+## Commands
 
 ```text
-~/.codex-remote-proxy/config.json
+crp ui [--no-open] [--json]
+crp start [--json]
+crp status [--json]
+crp stop [--json]
+crp restart [--json]
+crp shutdown [--json]
+crp provider list [--json]
+crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]
+crp provider models (--id <ID> | --name <NAME>) [--json]
+crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]
+crp provider activate (--id <ID> | --name <NAME>) [--json]
+crp provider delete (--id <ID> | --name <NAME>) [--json]
+crp guide [--json]
 ```
 
-### Option 2: Use environment variables
+Use `crp ui` for guided setup and daily management, or `crp start` for headless CLI startup. These are the two supported setup/start entry points.
+
+Human CLI output supports `en` and `zh-CN`. English is the default regardless of process or terminal locale variables. A single global `--locale en|zh-CN` may appear anywhere; Chinese requires explicit `--locale zh-CN` and is never persisted. JSON keys, codes, enums, messages, and actions remain stable English contracts. JSON failures leave stdout empty and write exactly one parseable envelope to stderr.
+
+## License
+
+This package is licensed under the [MIT License](./LICENSE).
+
+Human `provider list` output renders count, active marker, name/ID, query/hash-free base URL, test state, model mode/override, and credential-configured state. Human `status` output renders Supervisor PID/start time; Worker phase/PID/generation/listening/in-flight state; active provider; and Codex, fixed `OpenAI`, and `15100` proxy state. Dynamic terminal text is bounded and escapes control, escape, and bidirectional-control characters; private fields are not rendered.
+
+Root help uses aligned command descriptions and consistent usage/options/examples sections. Exact `-h`/`--help` covers every supported first-level command, the provider group, and provider actions without Supervisor discovery. Flags are recognized only at exact argv positions; trailing or misplaced input remains a validation error.
+
+`stop` stops only the proxy Worker and leaves the Supervisor/Admin API available; `shutdown` stops the Worker and exits the Supervisor. The supported fixed ports remain `15100` for the Worker and `15101` for the Supervisor.
+
+Human success output confirms both processes for `shutdown`. `start` identifies failures as `supervisor_start`, `codex_bootstrap`, or `proxy_start`. Bootstrap failure short-circuits lifecycle mutation; explicit activation/start/restart and unexpected-exit recovery share one FIFO Codex readiness gate. A completed bootstrap remains durable if the proxy phase fails.
+
+Detached Supervisor startup uses a one-shot, strictly allowlisted IPC error. An approved migration-input failure wins over the readiness timeout; malformed, unknown, or unapproved child messages become the generic `SUPERVISOR_START_FAILED` contract.
+
+The former `init`, `install`, and `setup` compatibility aliases are removed. Each returns `CLI_COMMAND_REMOVED` locally without Supervisor discovery or mutation and points to `crp ui` or `crp start`. `check`, `capture on|off|status`, `guide`, and the deprecated `install-cli` shim command remain; there are no provider-update, Activity, Settings, or diagnostics CLI commands.
+
+Optional `provider add --model <MODEL>` uses that value only for the follow-up Responses test; routing override remains `--model-mode override --model-override <MODEL>`. It saves the profile first, then tests, and creation remains committed when the compatibility result fails or the second-stage request cannot complete. `provider test`, `activate`, `delete`, and `models` require exactly one of `--id` or case-insensitive exact `--name`. `provider models` refreshes the authenticated, no-redirect `<base-url>/models` catalog and rejects a complete credential reflected in any model ID before cache or output; discovery failure preserves the last good cache and does not change provider test or activation state.
+
+CLI tests request `activateIfNone` so the first successfully tested provider is selected through a first-wins compare-and-set while the Worker is stopped. That initial selection never starts or reconfigures the Worker; `crp start` remains explicit. Admin calls default `activateIfNone` to false. Conditional Web Setup opts in and runs `save -> test and CAS select -> Codex bootstrap/history repair -> Worker start`; ordinary Provider-page tests omit the flag.
+
+## Migration From 0.2.2
+
+Before first startup, stop the old proxy and privately back up the whole CRP home plus Codex configuration. Backups may contain credentials.
+
+The first supervisor startup transactionally reads legacy `config.json` and `node/proxy-config.json` when present, writes collision-safe byte-exact private backups, stores the secret through the required native adapter, creates schema-2 `providers.json` with one inactive and untested `Default` profile, validates the registry, and only then scrubs legacy secret fields. The user must test and activate `Default`; migration does not assume compatibility.
+
+Different credentials in the legacy sources produce `MIGRATION_INPUT_INVALID` before backups, credential operations, registry writes, or source mutation. CRP does not choose one source automatically; resolving a real-home conflict remains an operator-reviewed L3 migration action.
+
+On an ordinary pre-commit failure, CRP attempts reverse-order restoration and removes only transaction-owned registry/credential state. Foreign replacements and all backups are preserved. Committed or rollback-degraded migration codes require CRP to remain stopped while an operator reviews Activity and the private backups; repeated retry or partial manual copying can make an uncertain state worse.
+
+Returning to `0.2.2` requires stopping CRP and restoring the complete pre-upgrade backup as a unit. Schema 2 is not automatically downgraded. Real-home migration, native stores, and rollback are L3 platform operations.
+
+## Development and Release Gates
+
+Run the source CLI directly when a specifically authorized smoke test must use
+the real user paths:
 
 ```bash
-export CRP_UPSTREAM_BASE_URL="https://your-upstream.example.com"
-export CRP_UPSTREAM_API_KEY="sk-your-key"
-export CRP_CAPTURE_ENABLED="true"
-export CRP_CAPTURE_DB_PATH="/Users/you/.codex-remote-proxy/traffic.sqlite3"
-crp start
+npm run dev:cli -- check --json
 ```
 
-`crp start` resolves values in this order:
-
-1. CLI flags
-2. Environment variables
-3. `~/.codex/config.toml` under `[codex_remote_proxy]` using `upstream_base_url`, `upstream_api_key`, `capture_enabled`, and `capture_db_path`
-4. Saved config from `crp init`
-5. Interactive prompts
-
-## Request Capture
-
-SQLite request capture is optional and off by default.
-
-When enabled, the proxy stores one full request/response transaction per row in:
-
-```text
-~/.codex-remote-proxy/traffic.sqlite3
-```
-
-You can enable it at startup:
+The direct entry resolves `~/.codex` and `~/.codex-remote-proxy` from the real
+home directory. A test wrapper that injects `getPaths(tempHome)` is intentionally
+isolated and cannot prove a real-home transition. Do not run a mutating
+real-home command while Codex is active; copied-corpus rehearsal and L3 review
+remain required before migration or history-repair release evidence.
 
 ```bash
-crp start --capture
-crp start --capture --capture-db-path /Users/you/.codex-remote-proxy/custom-traffic.sqlite3
+npm ci
+npm run lint
+npm run typecheck:ui
+npm run build:ui
+npm run verify:ui-build
+npm test
+node scripts/run-test-group.mjs core-chain
+node --test test/session-auth.test.mjs test/integration/admin-server.test.mjs
+npm run test:e2e -- --project=chromium --workers=1
+npm audit --omit=dev
+node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs test/release-workflows.test.mjs
+npm pack --dry-run --json --ignore-scripts
 ```
 
-Or hot-toggle it on a running proxy:
+The current package-content test requires the exact reviewed 34-file allowlist, including the MIT License, provider-model cache, Codex history-repair, Metrics store, and exactly three generated UI assets. It rejects UI development source, runtime state, credentials, tests, Changesets, logs, databases, and generated output outside the reviewed UI files. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
 
-```bash
-crp capture on
-crp capture off
-crp capture status --json
-```
+The serial `core-chain` group uses the production CLI/Admin/registry/provider/WorkerManager/forked-worker path and proves switching, in-flight snapshots, restart, shutdown, cleanup, and secret scans. Its injected memory credential adapter and loopback upstreams do not satisfy the separate real native-keyring/external-provider gate.
 
-Edits to `~/.codex-remote-proxy/node/proxy-config.json` also hot-apply `capture.enabled`. Changes to `capture.dbPath` are detected but require a restart before the new database path is used.
+Final M2E/V8 local verification passes exact `npm test` 463/463 (`412` unit-core + `8` isolated capture + `42` ordinary integration + `1` serial core-chain), Metrics focus 6/6, lint across 33 source files, UI typecheck/build/exact-output verification, package-content 3/3 against the exact 33-file allowlist, Chromium 33/33 with the English/Chinese 1440/1024/390 responsive matrix, zero full/runtime audit vulnerabilities, and the same-state comparison in `../design-qa.md`. Copied-corpus real-home history rehearsal plus cross-platform native/filesystem/ACL/release L3 gates remain open.
 
-## Main Commands
+Supervisor discovery applies a 2-second liveness probe and returns a client with a separate 30-second operation timeout. Proxy forwarding joins base and incoming URLs structurally, preserving base paths and query parameters while avoiding duplicate path separators. The retained `provider add --api-key <KEY>` behavior and broader child-environment minimization remain explicit future follow-up work and do not block local core completion.
 
-- `crp check`
-  Inspect Codex config, auth mode, runtime availability, and managed service state
-
-- `crp start`
-  Accept upstream settings from CLI flags, environment variables, `~/.codex/config.toml` `[codex_remote_proxy]`, or prompts; choose a free port, patch Codex, and start the proxy in the background by default
-
-- `crp init`
-  Save upstream settings and optional capture defaults once under `~/.codex-remote-proxy/`
-
-- `crp capture on|off|status`
-  Toggle SQLite request capture at runtime for a managed proxy, or save the preference for the next start
-
-- `crp status`
-  Show managed service status and health
-
-- `crp stop`
-  Stop the managed service
-
-- `crp guide`
-  Print AI-oriented usage guidance
-
-## Release Flow
-
-This package uses Changesets and GitHub Actions for npm releases.
-
-From `node/`:
-
-```bash
-npm run changeset
-```
-
-Commit the generated file under `.changeset/` with your feature PR. After the PR is merged to `main`, GitHub Actions will open or update a release PR. Merging that release PR publishes the package to npm.
-
-See [RELEASING.md](./RELEASING.md) for the one-time npm Trusted Publishing setup.
-
-## Notes
-
-- `crp start` modifies `~/.codex/config.toml` and creates a backup
-- the managed proxy runs in the background by default
-- managed state and logs live under `~/.codex-remote-proxy/`
-- request capture redacts sensitive headers before writing
-- Node.js 22.13.0 or newer is required
+This release requires a minor Changeset. Do not run `npm run version-packages` or `npm run release` during feature preparation. See [RELEASING.md](./RELEASING.md) for local evidence and remaining remote/human gates.

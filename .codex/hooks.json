@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f docs/STATUS.md && test -f docs/AI_HANDOFF.md && test -f AGENTS.md",
+            "timeout": 10,
+            "statusMessage": "Checking CRP harness docs exist"
+          }
+        ]
+      }
+    ]
+  }
+}
