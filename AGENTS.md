@@ -60,6 +60,7 @@
 - Temporary release-smoke cleanup must stay inside its exact `$TMPDIR` root and use an allowed bounded filesystem operation.
 - Session-bootstrap routes must compare the raw request target, and tests must preserve non-canonical targets.
 - Asynchronous catalog refresh must preserve nonempty manual selections and clear provider-scoped catalogs before switching.
+- Zsh scripts must not use `path` as a variable name because it overrides the executable search path.
 
 ## Required Checks
 
