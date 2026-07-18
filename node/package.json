@@ -1,6 +1,6 @@
 {
   "name": "@cluic/codex-remote-proxy",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Local supervisor and Web UI for routing Codex through OpenAI-compatible providers while preserving ChatGPT sign-in",
   "license": "MIT",
   "keywords": [
