@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
 import { join } from "node:path";
@@ -909,6 +909,34 @@ test("successful opt-in tests select the first provider without starting the Wor
   assert.equal(workerManager.getPublicState().generation, before.generation);
 });
 
+test("legacy controlled model overrides remain startable after initial selection", async (t) => {
+  const { root, service, registry, workerManager } = makeHarness(t, {
+    fetchImpl: async () => compatibleResponse()
+  });
+  const provider = await service.createProvider({
+    ...providerInput(),
+    modelMode: "override",
+    modelOverride: "legacy-model"
+  }, makeSecret("legacy-model"));
+  const registryPath = join(root, "providers.json");
+  const document = JSON.parse(readFileSync(registryPath, "utf8"));
+  document.providers[0].modelOverride = "legacy\tmodel";
+  writeFileSync(registryPath, `${JSON.stringify(document)}\n`, { mode: 0o600 });
+
+  const tested = await service.testProvider(provider.id, "model-test", { activateIfNone: true });
+  assert.equal(tested.ok, true);
+  assert.equal(registry.getDocument().activeProviderId, provider.id);
+  assert.equal(workerManager.getPublicState().phase, "stopped");
+
+  await service.startProxy();
+  assert.equal(workerManager.calls.at(-1)[0], "start");
+  assert.equal(workerManager.calls.at(-1)[1].settings.proxy.modelOverride, "legacy\tmodel");
+
+  await service.restartProxy();
+  assert.equal(workerManager.calls.at(-1)[0], "restart");
+  assert.equal(workerManager.calls.at(-1)[1].settings.proxy.modelOverride, "legacy\tmodel");
+});
+
 test("provider test reports committed degradation when Activity fails after markTest", async (t) => {
   let fetchCalls = 0;
   const { service, registry, activity, workerManager } = makeHarness(t, {
@@ -1105,7 +1133,11 @@ test("activate persists then confirms increasing generations and rolls back fail
   const { service, registry, credentials, workerManager } = harness;
   const providerA = await service.createProvider(providerInput("A"), secretA);
   const providerB = await service.createProvider(
-    providerInput("B", "https://b.example/v1"),
+    {
+      ...providerInput("B", "https://b.example/v1"),
+      modelMode: "override",
+      modelOverride: "model-b"
+    },
     secretB
   );
 
@@ -1122,6 +1154,12 @@ test("activate persists then confirms increasing generations and rolls back fail
   assert.equal(workerManager.calls[0][1].providerId, providerA.id);
   assert.equal(workerManager.calls[0][1].generation, 1);
   assert.equal(workerManager.calls[0][1].settings.upstream.apiKey, secretA);
+  assert.deepEqual(workerManager.calls[0][1].settings.proxy, {
+    overrideAuthorization: true,
+    requestIdHeader: "x-client-request-id",
+    modelMode: "passthrough",
+    modelOverride: null
+  });
   assert.deepEqual(healthCalls, [[1, 1]]);
 
   registry.markTest(providerB.id, { status: "passed" });
@@ -1155,6 +1193,8 @@ test("activate persists then confirms increasing generations and rolls back fail
   assert.equal(workerManager.calls.at(-1)[0], "applySnapshot");
   assert.equal(workerManager.calls.at(-1)[1].providerId, providerB.id);
   assert.equal(workerManager.calls.at(-1)[1].settings.upstream.apiKey, secretB);
+  assert.equal(workerManager.calls.at(-1)[1].settings.proxy.modelMode, "override");
+  assert.equal(workerManager.calls.at(-1)[1].settings.proxy.modelOverride, "model-b");
   const credentialGets = credentials.operations
     .filter(([operation]) => operation === "get")
     .map(([, ref]) => ref);

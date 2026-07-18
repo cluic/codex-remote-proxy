@@ -930,7 +930,9 @@ export class ProviderService {
         },
         proxy: {
           overrideAuthorization: true,
-          requestIdHeader: "x-client-request-id"
+          requestIdHeader: "x-client-request-id",
+          modelMode: profile.modelMode,
+          modelOverride: profile.modelOverride
         },
         capture: {
           enabled: document.settings.captureEnabled,

@@ -142,11 +142,34 @@ test("renders populated Metrics and changes the aggregate window without stale d
     p95UpperBoundMs: null,
     overflowRequests: 2
   };
-  const sevenDay = structuredClone(crp.state.metrics);
-  sevenDay.window = "7d";
-  sevenDay.summary.requests = 777;
-  sevenDay.summary.results.success = 700;
-  sevenDay.summary.tokens.observedRequests = 650;
+  const sevenDay = crp.emptyMetrics("7d");
+  sevenDay.summary = {
+    requests: 777,
+    results: {
+      success: 700,
+      upstreamRejected: 30,
+      upstreamError: 20,
+      timeout: 10,
+      networkError: 7,
+      clientAbort: 10
+    },
+    tokens: { input: 5_000_000, output: 1_000_000, observedRequests: 650 },
+    latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 5000, overflowRequests: 0 },
+    responseStart: { p50UpperBoundMs: 250, p95UpperBoundMs: 1000, overflowRequests: 0 }
+  };
+  sevenDay.series = crp.metricSeries("7d", sevenDay.summary);
+  sevenDay.providers = [{
+    providerId: "provider-a",
+    requests: 777,
+    successfulRequests: 700,
+    tokens: { input: 5_000_000, output: 1_000_000, observedRequests: 650 },
+    latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 5000, overflowRequests: 0 }
+  }];
+  sevenDay.models = [{
+    model: "gpt-5.1-codex-mini",
+    requests: 777,
+    tokens: { input: 5_000_000, output: 1_000_000, observedRequests: 650 }
+  }];
   crp.setMetrics(sevenDay, { window: "7d" });
 
   await openCrp(page, crp);
@@ -170,12 +193,61 @@ test("renders populated Metrics and changes the aggregate window without stale d
   await assertNoSecrets(page, crp);
 });
 
+test("discloses incomplete Metrics rates and conserves the visible model remainder", async ({ page, crp }) => {
+  crp.state.metrics.models = [
+    ...Array.from({ length: 8 }, (_, index) => ({
+      model: `visible-model-${index + 1}`,
+      requests: 10 - index,
+      tokens: { input: 0, output: 0, observedRequests: 0 }
+    }))
+  ];
+  crp.state.metrics.modelOtherRequests = 76;
+  crp.state.metrics.providers[0].requests -= 3;
+  crp.state.metrics.providerOtherRequests = 3;
+  crp.state.metrics.dataQuality = {
+    unknownModelRequests: 5,
+    modelOverflowRequests: 4,
+    providerOverflowRequests: 3,
+    droppedObservations: 2
+  };
+
+  await openCrp(page, crp);
+  const successRate = page.locator(".metric-card").filter({ hasText: "Success rate" });
+  await expect(successRate.locator("strong")).toHaveText("-");
+  await expect(successRate).toContainText("Unavailable because 2 metric updates were dropped");
+  await expect(page.getByRole("table").filter({ hasText: "Provider Alpha" }))
+    .toContainText("Not available");
+
+  const quality = page.getByRole("complementary", { name: "Data quality" });
+  await expect(quality).toContainText("These counters are independent signals and may overlap.");
+  await expect(quality).toContainText("Unknown-model requests5");
+  await expect(quality).toContainText("Grouped model requests4");
+  await expect(quality).toContainText("Grouped provider requests3");
+  await expect(quality).toContainText("Dropped metric updates2");
+  await expect(page.getByText("Data quality: 14")).toHaveCount(0);
+
+  const distribution = page.locator(".distribution-chart");
+  await expect(distribution.locator("text").filter({ hasText: "Other models" })).toBeVisible();
+  await expect(distribution.locator("text").filter({ hasText: /^79$/ })).toBeVisible();
+  await expect(page.getByText("This view contains 24 UTC hourly buckets, including the current partial hour."))
+    .toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertLayoutIntegrity(page);
+  await assertNoSecrets(page, crp);
+});
+
 test("shows empty and degraded Metrics without affecting proxy readiness", async ({ page, crp }) => {
   crp.setMetrics(crp.emptyMetrics());
   await openCrp(page, crp);
   await expect(page.getByTestId("metrics-empty")).toBeVisible();
   await expect(page.getByRole("heading", { name: "No proxy traffic in this window" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Codex is securely connected" })).toBeVisible();
+  await page.getByRole("button", { name: "7 days" }).click();
+  await expect(page.getByRole("button", { name: "7 days" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("metrics-empty")).toBeVisible();
+  await expect.poll(() => crp.calls.filter((call) => (
+    call.operation === "getMetrics" && call.window === "7d"
+  )).length).toBe(1);
 
   const degraded = crp.emptyMetrics();
   degraded.storageState = "degraded";
@@ -283,6 +355,35 @@ test("creates, discovers models, tests, switches, edits, and deletes a provider 
   await expect(page.getByTestId("provider-card-provider-3")).toHaveCount(0);
   expect(crp.calls.filter((call) => call.operation === "deleteProvider")).toHaveLength(1);
   await assertNoSecrets(page, crp, [replacement]);
+});
+
+test("ordinary provider test selects the first provider through no-start compare-and-set", async ({ page, crp }) => {
+  crp.seedProviders({
+    providers: [{ id: "provider-a", name: "Provider Alpha", baseUrl: crp.upstreamBaseUrl }],
+    activeProviderId: null
+  });
+  crp.seedProviderModels("provider-a", { models: ["fixture-model"] });
+  await openCrp(page, crp);
+  await navigate(page, "Providers");
+
+  const card = page.getByTestId("provider-card-provider-a");
+  const details = await openProviderDetails(page, "Provider Alpha");
+  await expect(details.getByRole("button", { name: "Test", exact: true })).toHaveCount(0);
+  await details.getByRole("button", { name: "Test and select", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Test provider" });
+  const modelSelect = dialog.locator("select#test-model");
+  await expect(modelSelect).toBeVisible();
+  await modelSelect.selectOption("fixture-model");
+  await dialog.getByRole("button", { name: "Test and select" }).click();
+
+  await expect(card.getByText("Current", { exact: true })).toBeVisible();
+  expect(crp.state.activeProviderId).toBe("provider-a");
+  expect(crp.state.worker.phase).toBe("stopped");
+  expect(crp.calls.filter((call) => call.operation === "testProvider")).toEqual([
+    { operation: "testProvider", id: "provider-a", model: "fixture-model", activateIfNone: true }
+  ]);
+  expect(crp.calls.filter((call) => call.operation === "activate")).toEqual([]);
+  await assertNoSecrets(page, crp);
 });
 
 test("duplicates a provider configuration without copying credentials or state", async ({ page, crp }) => {

@@ -313,6 +313,31 @@ function mergeBins(target, source) {
   }
 }
 
+function projectRequestRows(rows, trackedRequests, limit = 16) {
+  const projected = [];
+  let remaining = trackedRequests;
+  for (const row of rows) {
+    if (projected.length === limit || remaining === 0) break;
+    const requests = Math.min(row.requests, remaining);
+    if (requests > 0) projected.push({ row, requests });
+    remaining -= requests;
+  }
+  return projected;
+}
+
+function leastRequestedIndex(rows, field) {
+  let selected = 0;
+  for (let index = 1; index < rows.length; index += 1) {
+    const row = rows[index];
+    const current = rows[selected];
+    if (row.requests < current.requests
+      || row.requests === current.requests && compareText(row[field], current[field]) > 0) {
+      selected = index;
+    }
+  }
+  return selected;
+}
+
 function percentileUpperBound(bins, percentile) {
   const total = bins.reduce((sum, count) => sum + count, 0);
   if (total === 0) return null;
@@ -388,6 +413,13 @@ export class MetricsStore {
       this.buckets.push(bucket);
     }
 
+    if (bucket.requests === MAX_COUNTER) {
+      bucket.droppedObservations = Math.min(MAX_COUNTER, bucket.droppedObservations + 1);
+      this.dirty = true;
+      this.#scheduleFlush();
+      return true;
+    }
+
     addBounded(bucket, "requests", 1, MAX_COUNTER, bucket);
     addBounded(bucket.results, observation.result, 1, MAX_COUNTER, bucket);
     addBin(bucket.durationBins, observation.durationBin, bucket);
@@ -402,7 +434,11 @@ export class MetricsStore {
     }
 
     let provider = bucket.providers.find((row) => row.providerId === observation.providerId);
-    if (!provider && bucket.providers.length < MAX_PROVIDERS_PER_BUCKET) {
+    if (!provider && bucket.providers.length === MAX_PROVIDERS_PER_BUCKET) {
+      const [evicted] = bucket.providers.splice(leastRequestedIndex(bucket.providers, "providerId"), 1);
+      addBounded(bucket, "providerOverflowRequests", evicted.requests, MAX_COUNTER, bucket);
+    }
+    if (!provider) {
       provider = {
         providerId: observation.providerId,
         requests: 0,
@@ -414,26 +450,26 @@ export class MetricsStore {
       };
       bucket.providers.push(provider);
     }
-    if (provider) {
-      addBounded(provider, "requests", 1, MAX_COUNTER, bucket);
-      if (observation.result === "success") {
-        addBounded(provider, "successfulRequests", 1, MAX_COUNTER, bucket);
-      }
-      addBin(provider.durationBins, observation.durationBin, bucket);
-      if (hasUsage) {
-        addBounded(provider, "usageObservedRequests", 1, MAX_COUNTER, bucket);
-        addBounded(provider, "inputTokens", observation.inputTokens, MAX_TOKEN_TOTAL, bucket);
-        addBounded(provider, "outputTokens", observation.outputTokens, MAX_TOKEN_TOTAL, bucket);
-      }
-    } else {
-      addBounded(bucket, "providerOverflowRequests", 1, MAX_COUNTER, bucket);
+    addBounded(provider, "requests", 1, MAX_COUNTER, bucket);
+    if (observation.result === "success") {
+      addBounded(provider, "successfulRequests", 1, MAX_COUNTER, bucket);
+    }
+    addBin(provider.durationBins, observation.durationBin, bucket);
+    if (hasUsage) {
+      addBounded(provider, "usageObservedRequests", 1, MAX_COUNTER, bucket);
+      addBounded(provider, "inputTokens", observation.inputTokens, MAX_TOKEN_TOTAL, bucket);
+      addBounded(provider, "outputTokens", observation.outputTokens, MAX_TOKEN_TOTAL, bucket);
     }
 
     if (observation.model === null) {
       addBounded(bucket, "unknownModelRequests", 1, MAX_COUNTER, bucket);
     } else {
       let model = bucket.models.find((row) => row.model === observation.model);
-      if (!model && bucket.models.length < MAX_MODELS_PER_BUCKET) {
+      if (!model && bucket.models.length === MAX_MODELS_PER_BUCKET) {
+        const [evicted] = bucket.models.splice(leastRequestedIndex(bucket.models, "model"), 1);
+        addBounded(bucket, "modelOverflowRequests", evicted.requests, MAX_COUNTER, bucket);
+      }
+      if (!model) {
         model = {
           model: observation.model,
           requests: 0,
@@ -443,15 +479,11 @@ export class MetricsStore {
         };
         bucket.models.push(model);
       }
-      if (model) {
-        addBounded(model, "requests", 1, MAX_COUNTER, bucket);
-        if (hasUsage) {
-          addBounded(model, "usageObservedRequests", 1, MAX_COUNTER, bucket);
-          addBounded(model, "inputTokens", observation.inputTokens, MAX_TOKEN_TOTAL, bucket);
-          addBounded(model, "outputTokens", observation.outputTokens, MAX_TOKEN_TOTAL, bucket);
-        }
-      } else {
-        addBounded(bucket, "modelOverflowRequests", 1, MAX_COUNTER, bucket);
+      addBounded(model, "requests", 1, MAX_COUNTER, bucket);
+      if (hasUsage) {
+        addBounded(model, "usageObservedRequests", 1, MAX_COUNTER, bucket);
+        addBounded(model, "inputTokens", observation.inputTokens, MAX_TOKEN_TOTAL, bucket);
+        addBounded(model, "outputTokens", observation.outputTokens, MAX_TOKEN_TOTAL, bucket);
       }
     }
 
@@ -563,6 +595,18 @@ export class MetricsStore {
       .sort((left, right) => right.requests - left.requests || compareText(left.providerId, right.providerId));
     const modelRows = [...modelTotals.values()]
       .sort((left, right) => right.requests - left.requests || compareText(left.model, right.model));
+    const providerTrackedRequests = summary.requests - Math.min(
+      summary.requests,
+      summary.providerOverflowRequests
+    );
+    const modelGroupedRequests = Math.min(
+      summary.requests,
+      summary.unknownModelRequests + summary.modelOverflowRequests
+    );
+    const providerProjection = projectRequestRows(providerRows, providerTrackedRequests);
+    const modelProjection = projectRequestRows(modelRows, summary.requests - modelGroupedRequests);
+    const projectedProviderRequests = providerProjection.reduce((sum, entry) => sum + entry.requests, 0);
+    const projectedModelRequests = modelProjection.reduce((sum, entry) => sum + entry.requests, 0);
     return {
       window,
       bucketMinutes: METRICS_BUCKET_MINUTES,
@@ -575,26 +619,26 @@ export class MetricsStore {
         responseStart: latencyProjection(summary.responseStartBins)
       },
       series,
-      providers: providerRows.slice(0, 16).map((row) => ({
+      providers: providerProjection.map(({ row, requests }) => ({
         providerId: row.providerId,
-        requests: row.requests,
-        successfulRequests: row.successfulRequests,
-        tokens: tokenProjection(row),
+        requests,
+        successfulRequests: Math.min(row.successfulRequests, requests),
+        tokens: {
+          ...tokenProjection(row),
+          observedRequests: Math.min(row.usageObservedRequests, requests)
+        },
         latency: latencyProjection(row.durationBins)
       })),
-      providerOtherRequests: providerRows.slice(16).reduce(
-        (sum, row) => Math.min(MAX_COUNTER, sum + row.requests),
-        0
-      ),
-      models: modelRows.slice(0, 16).map((row) => ({
+      providerOtherRequests: summary.requests - projectedProviderRequests,
+      models: modelProjection.map(({ row, requests }) => ({
         model: row.model,
-        requests: row.requests,
-        tokens: tokenProjection(row)
+        requests,
+        tokens: {
+          ...tokenProjection(row),
+          observedRequests: Math.min(row.usageObservedRequests, requests)
+        }
       })),
-      modelOtherRequests: modelRows.slice(16).reduce(
-        (sum, row) => Math.min(MAX_COUNTER, sum + row.requests),
-        0
-      ),
+      modelOtherRequests: summary.requests - projectedModelRequests,
       dataQuality: {
         unknownModelRequests: summary.unknownModelRequests,
         modelOverflowRequests: summary.modelOverflowRequests,
@@ -726,6 +770,7 @@ export class MetricsStore {
       retentionBuckets: METRICS_RETENTION_BUCKETS,
       buckets: this.buckets
     };
+    validateDocument(document);
     const bytes = Buffer.from(`${JSON.stringify(document)}\n`, "utf8");
     if (bytes.length > METRICS_MAX_FILE_BYTES) throw new Error("Metrics document is too large.");
     const tempPath = join(parent, `.${basename(this.path)}.${this.createId()}.tmp`);

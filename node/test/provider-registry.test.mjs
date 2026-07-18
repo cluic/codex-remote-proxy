@@ -395,6 +395,13 @@ test("validates passthrough and override model modes", () => {
     })),
     assertCrpError("PROVIDER_INPUT_INVALID", 400)
   );
+  assert.throws(
+    () => validateProviderInput(validInput({
+      modelMode: "override",
+      modelOverride: "model\ninvalid"
+    })),
+    assertCrpError("PROVIDER_INPUT_INVALID", 400)
+  );
 
   assert.deepEqual(TEST_STATUSES, new Set(["untested", "passed", "failed"]));
   assert.deepEqual(
@@ -422,6 +429,29 @@ test("validates passthrough and override model modes", () => {
       updatedAt: FIXED_NOW
     }
   );
+});
+
+test("loads a legacy controlled model override and allows replacing it safely", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const legacy = normalizeProvider(validInput({
+    modelMode: "override",
+    modelOverride: "legacy-model"
+  }), { id: "provider-legacy", now: FIXED_NOW });
+  legacy.modelOverride = "legacy\tmodel";
+  writeFileSync(registryPath, `${JSON.stringify({
+    schemaVersion: 2,
+    activeProviderId: null,
+    providers: [legacy],
+    settings: DEFAULT_SETTINGS
+  })}\n`, { mode: 0o600 });
+
+  const registry = new ProviderRegistry({
+    path: registryPath,
+    now: () => LATER_NOW
+  });
+  assert.equal(registry.get("provider-legacy").modelOverride, "legacy\tmodel");
+  const repaired = registry.update("provider-legacy", { modelOverride: "safe-model" });
+  assert.equal(repaired.modelOverride, "safe-model");
 });
 
 test("marks passed and failed tests and manages active deletion", (t) => {

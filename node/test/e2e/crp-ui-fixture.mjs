@@ -14,8 +14,24 @@ const REPO_UI_ROOT = resolve(import.meta.dirname, "../../ui");
 const STARTED_AT = "2026-07-13T08:00:00.000Z";
 const MODEL_CATALOG_FETCHED_AT = "2026-07-13T08:15:00.000Z";
 const MODEL_CATALOG_EXPIRES_AT = "2026-07-14T08:15:00.000Z";
+const MAX_METRIC_COUNTER = 1_000_000_000_000;
+const MAX_METRIC_TOKENS = 9_000_000_000_000_000;
+const METRIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+const METRIC_LATENCY_BOUNDS = new Set([
+  50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000
+]);
+const METRIC_RESULTS = [
+  "success",
+  "upstreamRejected",
+  "upstreamError",
+  "timeout",
+  "networkError",
+  "clientAbort"
+];
 
 function emptyMetrics(window = "24h") {
+  const bucketCount = window === "24h" ? 24 : 168;
+  const currentStart = Date.parse(STARTED_AT);
   return {
     window,
     bucketMinutes: 60,
@@ -34,7 +50,19 @@ function emptyMetrics(window = "24h") {
       latency: { p50UpperBoundMs: null, p95UpperBoundMs: null, overflowRequests: 0 },
       responseStart: { p50UpperBoundMs: null, p95UpperBoundMs: null, overflowRequests: 0 }
     },
-    series: [],
+    series: Array.from({ length: bucketCount }, (_, index) => ({
+      start: new Date(currentStart - ((bucketCount - 1 - index) * 60 * 60 * 1_000)).toISOString(),
+      requests: 0,
+      results: {
+        success: 0,
+        upstreamRejected: 0,
+        upstreamError: 0,
+        timeout: 0,
+        networkError: 0,
+        clientAbort: 0
+      },
+      tokens: { input: 0, output: 0, observedRequests: 0 }
+    })),
     providers: [],
     providerOtherRequests: 0,
     models: [],
@@ -46,6 +74,204 @@ function emptyMetrics(window = "24h") {
       droppedObservations: 0
     }
   };
+}
+
+function distributeTotal(total, count) {
+  const base = Math.floor(total / count);
+  const remainder = total % count;
+  return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0));
+}
+
+function distributeCapped(total, capacities) {
+  const distributed = Array(capacities.length).fill(0);
+  let remaining = total;
+  for (let index = 0; index < capacities.length && remaining > 0; index += 1) {
+    const fairShare = Math.ceil(remaining / (capacities.length - index));
+    const amount = Math.min(capacities[index], fairShare);
+    distributed[index] = amount;
+    remaining -= amount;
+  }
+  assert.equal(remaining, 0);
+  return distributed;
+}
+
+function metricSeries(window, summary) {
+  const bucketCount = window === "24h" ? 24 : 168;
+  const requests = distributeTotal(summary.requests, bucketCount);
+  const remaining = [...requests];
+  const results = Array.from({ length: bucketCount }, () => ({
+    success: 0,
+    upstreamRejected: 0,
+    upstreamError: 0,
+    timeout: 0,
+    networkError: 0,
+    clientAbort: 0
+  }));
+  for (const result of ["upstreamRejected", "upstreamError", "timeout", "networkError", "clientAbort"]) {
+    const distributed = distributeCapped(summary.results[result], remaining);
+    for (let index = 0; index < bucketCount; index += 1) {
+      results[index][result] = distributed[index];
+      remaining[index] -= distributed[index];
+    }
+  }
+  assert.equal(remaining.reduce((sum, value) => sum + value, 0), summary.results.success);
+  const observed = distributeCapped(summary.tokens.observedRequests, requests);
+  const input = distributeTotal(summary.tokens.input, bucketCount);
+  const output = distributeTotal(summary.tokens.output, bucketCount);
+  const currentStart = Date.parse(STARTED_AT);
+  return Array.from({ length: bucketCount }, (_, index) => ({
+    start: new Date(currentStart - ((bucketCount - 1 - index) * 60 * 60 * 1_000)).toISOString(),
+    requests: requests[index],
+    results: { ...results[index], success: remaining[index] },
+    tokens: {
+      input: input[index],
+      output: output[index],
+      observedRequests: observed[index]
+    }
+  }));
+}
+
+function assertUnsaturatedMetricsFixture(metrics, expectedWindow = metrics.window) {
+  assert.ok(expectedWindow === "24h" || expectedWindow === "7d", "metrics window must be supported");
+  assert.equal(metrics.window, expectedWindow, "metrics payload window must match the requested window");
+  assert.equal(metrics.bucketMinutes, 60, "metrics buckets must remain hourly");
+  assert.ok(["ready", "degraded", "unavailable"].includes(metrics.storageState),
+    "metrics storage state must use the public enum");
+
+  const bucketCount = expectedWindow === "24h" ? 24 : 168;
+  assert.equal(metrics.series.length, bucketCount, `${expectedWindow} metrics must contain ${bucketCount} buckets`);
+
+  const assertCounter = (value, label, maximum = MAX_METRIC_COUNTER) => {
+    assert.ok(Number.isSafeInteger(value) && value >= 0 && value <= maximum,
+      `${label} must be a bounded non-negative safe integer`);
+  };
+  const assertBoundedText = (value, maximum, label) => {
+    assert.ok(typeof value === "string"
+      && value.length > 0
+      && value.length <= maximum * 2
+      && [...value].length <= maximum
+      && value.trim() === value
+      && !METRIC_TEXT_CONTROL_PATTERN.test(value), `${label} must be bounded safe text`);
+  };
+  const assertLatency = (value, label) => {
+    assert.deepEqual(Object.keys(value).sort(), ["overflowRequests", "p50UpperBoundMs", "p95UpperBoundMs"],
+      `${label} must use the exact public latency fields`);
+    assert.ok(value.p50UpperBoundMs === null || METRIC_LATENCY_BOUNDS.has(value.p50UpperBoundMs),
+      `${label}.p50UpperBoundMs must use a fixed histogram boundary`);
+    assert.ok(value.p95UpperBoundMs === null || METRIC_LATENCY_BOUNDS.has(value.p95UpperBoundMs),
+      `${label}.p95UpperBoundMs must use a fixed histogram boundary`);
+    assertCounter(value.overflowRequests, `${label}.overflowRequests`);
+  };
+  const resultTotal = (results, label) => METRIC_RESULTS.reduce((total, result) => {
+    assertCounter(results[result], `${label}.${result}`);
+    return total + results[result];
+  }, 0);
+  const seriesTotals = {
+    requests: 0,
+    results: Object.fromEntries(METRIC_RESULTS.map((result) => [result, 0])),
+    input: 0,
+    output: 0,
+    observedRequests: 0
+  };
+  const currentStart = Date.parse(STARTED_AT);
+
+  metrics.series.forEach((bucket, index) => {
+    const expectedStart = new Date(currentStart - ((bucketCount - 1 - index) * 60 * 60 * 1_000)).toISOString();
+    assert.equal(bucket.start, expectedStart, `metrics bucket ${index} must use the fixed UTC fixture timeline`);
+    assertCounter(bucket.requests, `series[${index}].requests`);
+    assert.equal(resultTotal(bucket.results, `series[${index}].results`), bucket.requests,
+      `series[${index}] result counts must conserve requests`);
+    assertCounter(bucket.tokens.input, `series[${index}].tokens.input`, MAX_METRIC_TOKENS);
+    assertCounter(bucket.tokens.output, `series[${index}].tokens.output`, MAX_METRIC_TOKENS);
+    assertCounter(bucket.tokens.observedRequests, `series[${index}].tokens.observedRequests`);
+    assert.ok(bucket.tokens.observedRequests <= bucket.requests,
+      `series[${index}] observed token requests cannot exceed requests`);
+
+    seriesTotals.requests += bucket.requests;
+    seriesTotals.input += bucket.tokens.input;
+    seriesTotals.output += bucket.tokens.output;
+    seriesTotals.observedRequests += bucket.tokens.observedRequests;
+    for (const result of METRIC_RESULTS) seriesTotals.results[result] += bucket.results[result];
+  });
+
+  assertCounter(metrics.summary.requests, "summary.requests");
+  assert.ok(metrics.summary.requests < MAX_METRIC_COUNTER,
+    "conserving E2E fixtures must stay below the aggregate counter saturation boundary");
+  assert.equal(resultTotal(metrics.summary.results, "summary.results"), metrics.summary.requests,
+    "summary result counts must conserve requests");
+  assertCounter(metrics.summary.tokens.input, "summary.tokens.input", MAX_METRIC_TOKENS);
+  assertCounter(metrics.summary.tokens.output, "summary.tokens.output", MAX_METRIC_TOKENS);
+  assert.ok(metrics.summary.tokens.input < MAX_METRIC_TOKENS
+    && metrics.summary.tokens.output < MAX_METRIC_TOKENS,
+    "conserving E2E fixtures must stay below the aggregate token saturation boundary");
+  assertCounter(metrics.summary.tokens.observedRequests, "summary.tokens.observedRequests");
+  assert.ok(metrics.summary.tokens.observedRequests <= metrics.summary.requests,
+    "summary observed token requests cannot exceed requests");
+  assert.equal(seriesTotals.requests, metrics.summary.requests, "series requests must match the summary");
+  assert.equal(seriesTotals.input, metrics.summary.tokens.input, "series input tokens must match the summary");
+  assert.equal(seriesTotals.output, metrics.summary.tokens.output, "series output tokens must match the summary");
+  assert.equal(seriesTotals.observedRequests, metrics.summary.tokens.observedRequests,
+    "series observed token requests must match the summary");
+  for (const result of METRIC_RESULTS) {
+    assert.equal(seriesTotals.results[result], metrics.summary.results[result],
+      `series ${result} results must match the summary`);
+  }
+  assertLatency(metrics.summary.latency, "summary.latency");
+  assertLatency(metrics.summary.responseStart, "summary.responseStart");
+
+  const qualityFields = [
+    "unknownModelRequests",
+    "modelOverflowRequests",
+    "providerOverflowRequests",
+    "droppedObservations"
+  ];
+  assert.deepEqual(Object.keys(metrics.dataQuality).sort(), [...qualityFields].sort(),
+    "data quality must use the exact public counters");
+  for (const field of qualityFields) assertCounter(metrics.dataQuality[field], `dataQuality.${field}`);
+
+  assert.ok(metrics.providers.length <= 16, "public metrics may contain at most 16 Provider rows");
+  assert.equal(new Set(metrics.providers.map((provider) => provider.providerId)).size,
+    metrics.providers.length, "Provider rows must be unique");
+  for (const [index, provider] of metrics.providers.entries()) {
+    assertBoundedText(provider.providerId, 128, `providers[${index}].providerId`);
+    assertCounter(provider.requests, `providers[${index}].requests`);
+    assertCounter(provider.successfulRequests, `providers[${index}].successfulRequests`);
+    assert.ok(provider.successfulRequests <= provider.requests,
+      `providers[${index}] successful requests cannot exceed requests`);
+    assertCounter(provider.tokens.input, `providers[${index}].tokens.input`, MAX_METRIC_TOKENS);
+    assertCounter(provider.tokens.output, `providers[${index}].tokens.output`, MAX_METRIC_TOKENS);
+    assertCounter(provider.tokens.observedRequests, `providers[${index}].tokens.observedRequests`);
+    assert.ok(provider.tokens.observedRequests <= provider.requests,
+      `providers[${index}] observed token requests cannot exceed requests`);
+    assertLatency(provider.latency, `providers[${index}].latency`);
+  }
+  assertCounter(metrics.providerOtherRequests, "providerOtherRequests");
+  assert.equal(metrics.providers.reduce((total, provider) => total + provider.requests, 0)
+    + metrics.providerOtherRequests, metrics.summary.requests,
+    "provider distribution must conserve requests");
+  assert.ok(metrics.dataQuality.providerOverflowRequests <= metrics.providerOtherRequests,
+    "grouped Provider requests must include the Provider overflow remainder");
+
+  assert.ok(metrics.models.length <= 16, "public metrics may contain at most 16 model rows");
+  assert.equal(new Set(metrics.models.map((model) => model.model)).size,
+    metrics.models.length, "model rows must be unique");
+  for (const [index, model] of metrics.models.entries()) {
+    assertBoundedText(model.model, 256, `models[${index}].model`);
+    assertCounter(model.requests, `models[${index}].requests`);
+    assertCounter(model.tokens.input, `models[${index}].tokens.input`, MAX_METRIC_TOKENS);
+    assertCounter(model.tokens.output, `models[${index}].tokens.output`, MAX_METRIC_TOKENS);
+    assertCounter(model.tokens.observedRequests, `models[${index}].tokens.observedRequests`);
+    assert.ok(model.tokens.observedRequests <= model.requests,
+      `models[${index}] observed token requests cannot exceed requests`);
+  }
+  assertCounter(metrics.modelOtherRequests, "modelOtherRequests");
+  assert.equal(metrics.models.reduce((total, model) => total + model.requests, 0)
+    + metrics.modelOtherRequests, metrics.summary.requests,
+    "model distribution must conserve requests");
+  assert.ok(Math.min(
+    metrics.summary.requests,
+    metrics.dataQuality.unknownModelRequests + metrics.dataQuality.modelOverflowRequests
+  ) <= metrics.modelOtherRequests, "other models must include unknown and overflow requests");
 }
 
 function publicProvider(input = {}, index = 0) {
@@ -470,8 +696,14 @@ function createServices({ upstream }) {
     metricsService: {
       getOverview({ window }) {
         calls.push({ operation: "getMetrics", window });
-        const metrics = state.metricsByWindow.get(window) ?? state.metrics;
-        return structuredClone({ ...metrics, window });
+        const configured = state.metricsByWindow.get(window);
+        const response = structuredClone(configured ?? state.metrics);
+        if (configured === undefined && response.window !== window) {
+          response.window = window;
+          response.series = metricSeries(window, response.summary);
+        }
+        assertUnsaturatedMetricsFixture(response, window);
+        return response;
       }
     },
     requestSupervisorShutdown() {
@@ -819,39 +1051,24 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
             latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 5000, overflowRequests: 0 }
           }] : [])
         ];
+        const metricsSummary = {
+          requests: 128,
+          results: {
+            success: 119,
+            upstreamRejected: 3,
+            upstreamError: 2,
+            timeout: 1,
+            networkError: 1,
+            clientAbort: 2
+          },
+          tokens: { input: 842000, output: 214000, observedRequests: 96 },
+          latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 5000, overflowRequests: 0 },
+          responseStart: { p50UpperBoundMs: 250, p95UpperBoundMs: 1000, overflowRequests: 0 }
+        };
         services.state.metrics = {
           ...emptyMetrics(),
-          summary: {
-            requests: 128,
-            results: {
-              success: 119,
-              upstreamRejected: 3,
-              upstreamError: 2,
-              timeout: 1,
-              networkError: 1,
-              clientAbort: 2
-            },
-            tokens: { input: 842000, output: 214000, observedRequests: 96 },
-            latency: { p50UpperBoundMs: 1000, p95UpperBoundMs: 5000, overflowRequests: 0 },
-            responseStart: { p50UpperBoundMs: 250, p95UpperBoundMs: 1000, overflowRequests: 0 }
-          },
-          series: Array.from({ length: 24 }, (_, index) => ({
-            start: new Date(Date.parse(STARTED_AT) + index * 60 * 60 * 1_000).toISOString(),
-            requests: 3 + (index % 7),
-            results: {
-              success: 3 + (index % 5),
-              upstreamRejected: index % 6 === 0 ? 1 : 0,
-              upstreamError: index % 8 === 0 ? 1 : 0,
-              timeout: 0,
-              networkError: 0,
-              clientAbort: index % 11 === 0 ? 1 : 0
-            },
-            tokens: {
-              input: 12000 + index * 900,
-              output: 4000 + index * 300,
-              observedRequests: 3 + (index % 4)
-            }
-          })),
+          summary: metricsSummary,
+          series: metricSeries("24h", metricsSummary),
           providers: providerMetrics,
           models: [
             {
@@ -866,13 +1083,18 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
             }
           ]
         };
+        assertUnsaturatedMetricsFixture(services.state.metrics);
         services.state.metricsByWindow.clear();
       },
       emptyMetrics(window = "24h") {
         return structuredClone(emptyMetrics(window));
       },
+      metricSeries(window, summary) {
+        return structuredClone(metricSeries(window, summary));
+      },
       setMetrics(metrics, { window = null } = {}) {
         const next = structuredClone(metrics);
+        assertUnsaturatedMetricsFixture(next, window ?? next.window);
         if (window === null) {
           services.state.metrics = next;
           services.state.metricsByWindow.clear();

@@ -364,7 +364,12 @@ export function ProvidersPage({
 
   const runTest = async () => {
     if (!selected || !model.trim()) return;
-    const complete = await onTest(selected.id, model.trim(), switchAfterTest);
+    const complete = await onTest(
+      selected.id,
+      model.trim(),
+      switchAfterTest,
+      activeProviderId === null
+    );
     if (complete) close();
   };
 
@@ -442,14 +447,16 @@ export function ProvidersPage({
                       variant="primary"
                       busy={pending === `provider-switch-${provider.id}`}
                       disabled={readOnly || pending !== null || !provider.credentialConfigured}
-                      onClick={() => eligible
+                      onClick={() => eligible && activeProviderId !== null
                         ? void onActivate(provider.id)
                         : open("test", provider, true)}
                     >
                       <ArrowRightLeft className="icon" aria-hidden="true" />
-                      {eligible
-                        ? t(workerRunning ? "providers.switch" : "providers.switchAndStart")
-                        : t(workerRunning ? "providers.testAndSwitch" : "providers.testSwitchAndStart")}
+                      {activeProviderId === null
+                        ? t("providers.runTestAndSelect")
+                        : eligible
+                          ? t(workerRunning ? "providers.switch" : "providers.switchAndStart")
+                          : t(workerRunning ? "providers.testAndSwitch" : "providers.testSwitchAndStart")}
                     </Button>
                   )}
                 </footer>
@@ -575,16 +582,26 @@ export function ProvidersPage({
               onClick={() => setMode("edit")}
               aria-label={t("providers.editNamed", { name: selected.name })}
             ><Pencil className="icon" aria-hidden="true" />{t("providers.editTitle")}</Button>
-            <Button disabled={readOnly || pending !== null || !selected.credentialConfigured} onClick={() => setMode("test")}>
-              <TestTube2 className="icon" aria-hidden="true" />{t("providers.test")}
-            </Button>
+            {activeProviderId !== null ? (
+              <Button disabled={readOnly || pending !== null || !selected.credentialConfigured} onClick={() => setMode("test")}>
+                <TestTube2 className="icon" aria-hidden="true" />{t("providers.test")}
+              </Button>
+            ) : null}
             {selected.id !== activeProviderId ? (
               <Button
                 variant="primary"
-                disabled={readOnly || pending !== null || selected.lastTestStatus !== "passed" || !selected.credentialConfigured}
-                onClick={async () => { if (await onActivate(selected.id)) close(); }}
+                disabled={readOnly || pending !== null || !selected.credentialConfigured
+                  || activeProviderId !== null && selected.lastTestStatus !== "passed"}
+                onClick={async () => {
+                  if (activeProviderId === null) {
+                    setSwitchAfterTest(true);
+                    setMode("test");
+                  } else if (await onActivate(selected.id)) close();
+                }}
               ><ArrowRightLeft className="icon" aria-hidden="true" />
-                {t(workerRunning ? "providers.activate" : "providers.activateAndStart")}
+                {t(activeProviderId === null
+                  ? "providers.runTestAndSelect"
+                  : workerRunning ? "providers.activate" : "providers.activateAndStart")}
               </Button>
             ) : null}
           </>
@@ -647,7 +664,9 @@ export function ProvidersPage({
               disabled={readOnly || pending !== null || !model.trim()}
               onClick={() => void runTest()}
             >{switchAfterTest
-                ? t(workerRunning ? "providers.runTestAndSwitch" : "providers.runTestSwitchAndStart")
+                ? t(activeProviderId === null
+                  ? "providers.runTestAndSelect"
+                  : workerRunning ? "providers.runTestAndSwitch" : "providers.runTestSwitchAndStart")
                 : t("providers.runTest")}</Button>
           </>
         )}

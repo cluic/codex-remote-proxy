@@ -24,7 +24,9 @@ function makeSettings(label = "a") {
     },
     proxy: {
       overrideAuthorization: true,
-      requestIdHeader: "x-client-request-id"
+      requestIdHeader: "x-client-request-id",
+      modelMode: "passthrough",
+      modelOverride: null
     },
     capture: {
       enabled: false,

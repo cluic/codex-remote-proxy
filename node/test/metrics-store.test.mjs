@@ -18,6 +18,7 @@ import {
 } from "../src/supervisor/metrics-store.mjs";
 
 const HOUR_MS = 60 * 60 * 1_000;
+const MAX_COUNTER = 1_000_000_000_000;
 
 function observation(overrides = {}) {
   return {
@@ -48,6 +49,47 @@ function harness(t, { timestamp = Date.parse("2026-07-16T12:34:56.000Z") } = {})
     advance(milliseconds) {
       now += milliseconds;
     }
+  };
+}
+
+function saturatedBucket(start, suffix) {
+  const durationBins = Array.from({ length: 13 }, (_, index) => index === 0 ? MAX_COUNTER : 0);
+  return {
+    start,
+    requests: MAX_COUNTER,
+    results: {
+      success: MAX_COUNTER,
+      upstreamRejected: 0,
+      upstreamError: 0,
+      timeout: 0,
+      networkError: 0,
+      clientAbort: 0
+    },
+    usageObservedRequests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    durationBins,
+    responseStartBins: Array(13).fill(0),
+    unknownModelRequests: 0,
+    modelOverflowRequests: 0,
+    providerOverflowRequests: 0,
+    droppedObservations: 0,
+    providers: [{
+      providerId: `provider-${suffix}`,
+      requests: MAX_COUNTER,
+      successfulRequests: MAX_COUNTER,
+      usageObservedRequests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      durationBins
+    }],
+    models: [{
+      model: `model-${suffix}`,
+      requests: MAX_COUNTER,
+      usageObservedRequests: 0,
+      inputTokens: 0,
+      outputTokens: 0
+    }]
   };
 }
 
@@ -101,6 +143,7 @@ test("metrics store aggregates hourly observations and restores the strict priva
     overflowRequests: 0
   });
   assert.equal(overview.dataQuality.unknownModelRequests, 1);
+  assert.equal(overview.modelOtherRequests, 1);
   assert.deepEqual(overview.providers.map((provider) => ({
     providerId: provider.providerId,
     requests: provider.requests,
@@ -109,6 +152,14 @@ test("metrics store aggregates hourly observations and restores the strict priva
   assert.deepEqual(overview.models.map((model) => ({ model: model.model, requests: model.requests })), [
     { model: "gpt-5-codex", requests: 1 }
   ]);
+  assert.equal(
+    overview.models.reduce((sum, model) => sum + model.requests, overview.modelOtherRequests),
+    overview.summary.requests
+  );
+  assert.equal(
+    overview.providers.reduce((sum, provider) => sum + provider.requests, overview.providerOtherRequests),
+    overview.summary.requests
+  );
 
   assert.equal(state.store.flush(), true);
   if (process.platform !== "win32") {
@@ -158,6 +209,14 @@ test("metrics store bounds dimensions, prunes after seven days, and rejects unsa
   assert.equal(overview.dataQuality.modelOverflowRequests, 1);
   assert.equal(overview.dataQuality.providerOverflowRequests, 2);
   assert.equal(overview.dataQuality.unknownModelRequests, 33);
+  assert.equal(
+    overview.models.reduce((sum, model) => sum + model.requests, overview.modelOtherRequests),
+    overview.summary.requests
+  );
+  assert.equal(
+    overview.providers.reduce((sum, provider) => sum + provider.requests, overview.providerOtherRequests),
+    overview.summary.requests
+  );
 
   assert.equal(state.store.flush(), true);
   const persisted = readFileSync(state.path, "utf8");
@@ -173,6 +232,69 @@ test("metrics store bounds dimensions, prunes after seven days, and rejects unsa
   assert.equal(overview.summary.requests, 1);
   assert.equal(overview.providers[0].providerId, "provider-new");
   assert.equal(overview.models[0].model, "model-new");
+});
+
+test("late high-volume dimensions replace bounded low-volume groups without losing requests", (t) => {
+  const state = harness(t);
+  for (let index = 0; index < 64; index += 1) {
+    assert.equal(state.store.record(observation({ model: `early-model-${index}` })), true);
+  }
+  for (let index = 0; index < 40; index += 1) {
+    assert.equal(state.store.record(observation({ model: "late-heavy-model" })), true);
+  }
+  for (let index = 0; index < 32; index += 1) {
+    assert.equal(state.store.record(observation({
+      providerId: `early-provider-${index}`,
+      model: "late-heavy-model"
+    })), true);
+  }
+  for (let index = 0; index < 30; index += 1) {
+    assert.equal(state.store.record(observation({
+      providerId: "late-heavy-provider",
+      model: "late-heavy-model"
+    })), true);
+  }
+
+  const overview = state.store.getOverview();
+  assert.equal(overview.models[0].model, "late-heavy-model");
+  assert.equal(overview.models[0].requests, 102);
+  assert.equal(overview.providers.some((provider) => (
+    provider.providerId === "late-heavy-provider" && provider.requests === 30
+  )), true);
+  assert.ok(overview.dataQuality.modelOverflowRequests > 0);
+  assert.ok(overview.dataQuality.providerOverflowRequests > 0);
+  assert.equal(
+    overview.models.reduce((sum, model) => sum + model.requests, overview.modelOtherRequests),
+    overview.summary.requests
+  );
+  assert.equal(
+    overview.providers.reduce((sum, provider) => sum + provider.requests, overview.providerOtherRequests),
+    overview.summary.requests
+  );
+});
+
+test("hourly windows include the current UTC bucket and exclude the exact outer boundary", (t) => {
+  const day = harness(t, { timestamp: Date.parse("2026-07-01T12:00:00.000Z") });
+  assert.equal(day.store.record(observation()), true);
+  day.advance((24 * HOUR_MS) - 1);
+  let overview = day.store.getOverview({ window: "24h" });
+  assert.equal(overview.summary.requests, 1);
+  assert.equal(overview.series.length, 24);
+  assert.equal(overview.series[0].start, "2026-07-01T12:00:00.000Z");
+  day.advance(1);
+  overview = day.store.getOverview({ window: "24h" });
+  assert.equal(overview.summary.requests, 0);
+  assert.equal(overview.series[0].start, "2026-07-01T13:00:00.000Z");
+
+  const week = harness(t, { timestamp: Date.parse("2026-07-01T12:00:00.000Z") });
+  assert.equal(week.store.record(observation()), true);
+  week.advance((168 * HOUR_MS) - 1);
+  overview = week.store.getOverview({ window: "7d" });
+  assert.equal(overview.summary.requests, 1);
+  assert.equal(overview.series.length, 168);
+  week.advance(1);
+  overview = week.store.getOverview({ window: "7d" });
+  assert.equal(overview.summary.requests, 0);
 });
 
 test("maximum valid seven-day dimensions fit the metrics storage limit", (t) => {
@@ -214,6 +336,86 @@ test("maximum valid seven-day dimensions fit the metrics storage limit", (t) => 
   assert.equal(overview.models.length, 16);
   assert.equal(overview.providerOtherRequests, 168 * 32);
   assert.equal(overview.modelOtherRequests, 168 * 48);
+});
+
+test("public distributions conserve a summary capped across valid maximum buckets", (t) => {
+  const dir = mkdtempSync(join(os.tmpdir(), "crp-metrics-capped-"));
+  const path = join(dir, "metrics.json");
+  writeFileSync(path, `${JSON.stringify({
+    schemaVersion: 1,
+    bucketMinutes: 60,
+    retentionBuckets: 168,
+    buckets: [
+      saturatedBucket("2026-07-16T11:00:00.000Z", "a"),
+      saturatedBucket("2026-07-16T12:00:00.000Z", "b")
+    ]
+  })}\n`, { mode: 0o600 });
+  const store = new MetricsStore({
+    path,
+    now: () => Date.parse("2026-07-16T12:30:00.000Z"),
+    flushDelayMs: 60_000
+  });
+  t.after(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const overview = store.getOverview({ window: "24h" });
+  assert.equal(overview.summary.requests, MAX_COUNTER);
+  assert.ok(overview.dataQuality.droppedObservations > 0);
+  assert.equal(
+    overview.providers.reduce((sum, provider) => sum + provider.requests, overview.providerOtherRequests),
+    overview.summary.requests
+  );
+  assert.equal(
+    overview.models.reduce((sum, model) => sum + model.requests, overview.modelOtherRequests),
+    overview.summary.requests
+  );
+  assert.equal(overview.providers.every((provider) => (
+    provider.successfulRequests <= provider.requests
+      && provider.tokens.observedRequests <= provider.requests
+  )), true);
+  assert.equal(overview.models.every((model) => model.tokens.observedRequests <= model.requests), true);
+});
+
+test("recording after a saturated bucket preserves its persisted partition invariants", (t) => {
+  const dir = mkdtempSync(join(os.tmpdir(), "crp-metrics-saturated-record-"));
+  const path = join(dir, "metrics.json");
+  writeFileSync(path, `${JSON.stringify({
+    schemaVersion: 1,
+    bucketMinutes: 60,
+    retentionBuckets: 168,
+    buckets: [saturatedBucket("2026-07-16T12:00:00.000Z", "stable")]
+  })}\n`, { mode: 0o600 });
+  const now = () => Date.parse("2026-07-16T12:30:00.000Z");
+  const store = new MetricsStore({ path, now, flushDelayMs: 60_000 });
+  t.after(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  assert.equal(store.record(observation({
+    providerId: "provider-new",
+    model: "model-new",
+    result: "upstreamError",
+    durationBin: 4
+  })), true);
+  let overview = store.getOverview({ window: "24h" });
+  assert.equal(overview.summary.requests, MAX_COUNTER);
+  assert.equal(overview.summary.results.success, MAX_COUNTER);
+  assert.equal(overview.summary.results.upstreamError, 0);
+  assert.equal(overview.dataQuality.droppedObservations, 1);
+  assert.equal(store.flush(), true);
+  store.close();
+
+  const restored = new MetricsStore({ path, now, flushDelayMs: 60_000 });
+  t.after(() => restored.close());
+  overview = restored.getOverview({ window: "24h" });
+  assert.equal(overview.storageState, "ready");
+  assert.equal(overview.summary.requests, MAX_COUNTER);
+  assert.equal(overview.summary.results.success, MAX_COUNTER);
+  assert.equal(overview.summary.results.upstreamError, 0);
+  assert.equal(overview.dataQuality.droppedObservations, 1);
 });
 
 test("invalid canonical storage is unavailable and is never overwritten", (t) => {

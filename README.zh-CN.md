@@ -6,9 +6,9 @@ Codex Remote Proxy（CRP）让 Codex 保持 ChatGPT 登录态，同时把模型�
 
 [English](./README.md)
 
-> 发布状态：npm 当前发布的仍是 pre-supervisor `0.2.2`，其中不包含 `crp ui`。下文说明待发布的下一个 minor 版本；必须先通过外部平台门禁与 L3 确认才能发布。
+> 发布状态：npm 当前版本是 `0.3.0`，已经包含 Supervisor 和 `crp ui`。`0.3.0` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布。
 
-## 发布后安装
+## 安装
 
 需要 Node.js 22.13 或更高版本。
 
@@ -46,9 +46,13 @@ npx @cluic/codex-remote-proxy ui
 - 查看已脱敏的控制面 Activity 和只读系统事实；
 - 生成只包含创建状态、生成时间和已脱敏事件数量的内存诊断摘要。
 
-侧边栏会显示不可操作的 `转发记录 / 即将上线` 占位项。本 MVP 不提供转发记录路由、请求/响应查看器、Capture 控件或模拟流量数据；总览 Metrics 是独立于可选 Capture 的匿名聚合状态。
+侧边栏会显示不可操作的 `转发记录 / 即将上线` 占位项。本 MVP 不提供转发记录路由、请求/响应查看器、Capture 控件或模拟流量数据；总览 Metrics 是独立于可选 Capture 的匿名聚合状态。24 小时和 7 天序列使用固定 UTC 小时桶。只有成功的 Responses 终态事件或已完成 JSON 响应才计为成功；如果存在丢弃的指标更新，界面会把成功率标记为不可用，而不是展示看似精确的百分比。Provider 和模型分布始终保留明确的合并余量。
 
-提供商切换只影响新请求。已经在处理中的请求继续使用其开始时捕获的提供商快照。显式 activation 路由同时也是生产切换操作：Worker 运行时应用新快照，Worker 停止时会启动它。首次 Setup 路径有意不同：兼容性测试成功后只通过 compare-and-set 选中首个 Provider，Worker 保持停止。
+提供商切换只影响新请求。已经在处理中的请求继续使用其开始时捕获的提供商快照，包括模型策略。`passthrough` 模式保留客户端模型；`override` 模式只替换 JSON 顶层 `model` 值。显式 activation 路由同时也是生产切换操作：Worker 运行时应用新快照，Worker 停止时会启动它。首次选中有意不同：兼容性测试成功后，Setup、CLI 和普通 Providers 页面都会在尚无当前 Provider 时通过 first-wins compare-and-set 选中候选，Worker 保持停止。
+
+代理透传会按背压流式转发请求和响应字节，不会自动解压请求体。模型覆盖只在 8 MiB 有界范围内改写 JSON；发生改写时会尽可能保留 gzip、deflate、Brotli 和原生 zstd 编码，并移除已经失效的正文完整性/签名头。Node 没有原生 zstd 压缩能力时，经过验证的单帧 zstd 覆盖请求会在改写后以 identity 转发；非覆盖流量中无法安全检查的 zstd 帧仍保持字节完全一致。客户端取消连接会终止对应的上游工作。
+
+可选 Capture 对请求体和响应体各自最多保存 1 MiB，同时保留实际观测总字节数。存在已配置保护值时，截断正文、已声明或检测到的压缩正文，以及包含明文或可恢复编码保护值的正文都会记录为 `empty-truncated`；能够完整筛查的文本/二进制记录仍使用明确的 UTF-8/base64 编码。配置的 API key 和额外请求头值不会进入 Capture header、正文、URL/ID 元数据或 debug 日志。Metrics 的缓冲正文检查独立限制为 8 MiB，SSE 使用有界事件做增量检查，两者都不会隐式开启 Capture。
 
 ## 固定的 Codex 配置
 
@@ -133,11 +137,11 @@ Detached Supervisor 启动只使用一次性、严格白名单化的 IPC 错误�
 
 `provider test`、`activate`、`delete` 和 `models` 必须且只能提供一个选择器：`--id` 或 `--name`。名称通过公开 provider 列表做精确的大小写不敏感匹配。`provider models` 会向 `<base-url>/models` 发起带鉴权、禁止重定向的刷新；Admin API 另提供独立的缓存读取。模型发现有界，并会在进入缓存或输出前拒绝任何包含完整 credential 的模型 ID。它独立于 Responses 兼容性测试，因此模型端点缺失或不兼容不会修改 provider 的测试或激活状态，刷新失败也不会清除最后一次成功目录。
 
-CLI 发起的兼容性测试（包括 `provider add --model`）只会在当前没有 provider 时请求首次选中。第一个成功候选在 Worker 已停止时通过原子 compare-and-set 胜出。选中只写入 `activeProviderId`，绝不会启动或重新配置 Worker；仍需显式运行 `crp start`。未提供 `activateIfNone` 的 Admin 调用继续保持不自动选中。条件式 Web Setup 会明确选择该行为，并按 `保存 Provider -> 测试并 CAS 选中 -> 配置 Codex/修复历史 -> 启动 Worker` 执行；首次设置不调用显式 activation。Provider 日常页面的普通测试仍不自动选中，只有用户选择切换操作时才切换。
+CLI 发起的兼容性测试（包括 `provider add --model`）只会在当前没有 Provider 时请求首次选中，普通 Web Providers 页面现在也会发出同样的请求。第一个成功候选在 Worker 已停止时通过原子 compare-and-set 胜出。选中只写入 `activeProviderId`，绝不会启动或重新配置 Worker，也不会调用受 readiness gate 保护的显式 activation 路由；界面会刷新服务端状态确认结果。仍需显式运行 `crp start`。未提供 `activateIfNone` 的 Admin 调用继续保持不自动选中。条件式 Web Setup 同样会选择该行为，并按 `保存 Provider -> 测试并 CAS 选中 -> 配置 Codex/修复历史 -> 启动 Worker` 执行。
 
 ## 从 0.2.2 升级
 
-下一个 minor 版本会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 2。
+`0.3` 系列会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 2。
 
 1. 停止旧的托管代理。
 2. 私下备份 `~/.codex-remote-proxy/` 和 `~/.codex/config.toml`；所有备份都应视为包含敏感信息。

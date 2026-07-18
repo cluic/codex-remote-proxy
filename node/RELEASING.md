@@ -1,6 +1,6 @@
 # Releasing
 
-This package publishes from `node/` through Changesets and GitHub Actions. The currently published version is `0.2.2`; the supervisor, multi-provider, and bilingual local-UI work is an unreleased minor change.
+This package publishes from `node/` through Changesets and GitHub Actions. The currently published version is `0.3.0`, including the Supervisor, multi-provider routing, and bilingual local UI. This audit remediation is an unreleased behavior change.
 
 ## One-Time Publishing Setup
 
@@ -14,7 +14,7 @@ Publishing uses GitHub OIDC and requires no long-lived `NPM_TOKEN`.
 
 ## Feature Pull Request
 
-1. Add a minor Changeset under `node/.changeset/`.
+1. Add a minor Changeset under `node/.changeset/` for package behavior changes, as required by release preflight.
 2. Run every local gate below on the final tree.
 3. Push a branch and open a pull request only after L3 human review is scheduled.
 4. Wait for the macOS, Windows, Linux, and release-preflight workflows and retain their run URLs.
@@ -88,7 +88,7 @@ V8.1 release-preparation rerun on 2026-07-17:
   `~/.codex-remote-proxy`, while the earlier `crpdev` wrapper is confirmed to
   be intentionally isolated through its injected temporary paths.
 
-Publication remains blocked on deliberate working-tree staging,
+Publication of changes after `0.3.0` remains blocked on deliberate working-tree staging,
 copied-real-history rehearsal, remote platform evidence, and final L3 approval.
 
 Current release-preparation adjustments include a shipped MIT License and a
@@ -99,6 +99,16 @@ The final local rerun passes CLI/i18n 30/30, Chromium 39/39, UI
 typecheck/build/exact-output, lint, runtime audit, package/release tests 21/21,
 the exact 34-file package dry run, and exact `npm test` 467/467 (`415`
 unit-core + `8` Capture + `43` ordinary integration + `1` serial core chain).
+
+The 2026-07-18 audit-remediation branch supersedes those aggregate counts for
+the current source tree: exact `npm test` passes 519/519 (`458` unit-core +
+`9` isolated Capture + `51` ordinary integration + `1` serial core chain),
+Chromium passes 46/46, lint checks 33 source files, UI typecheck and exact-build
+verification pass, the runtime audit reports zero vulnerabilities, and the
+package/release suite passes 21/21 against the exact 34-file dry-run package.
+The required Changeset is minor and independent final review reports no
+remaining P0-P2. These are local temporary-root and loopback results; they do
+not replace the external release gates below.
 
 Historical commits remain Task 11 implementation `d114061`, Task 11 docs `dd4de3f`, Task 12 package/platform gates `af918d5`, and credential-boundary hardening `210cb71`; the then-current M2D/V7 evidence was for its uncommitted reviewed working tree. These local results used temporary roots and synthetic history and do not prove copied-corpus real-home performance/recovery, remote Keychain/Credential Manager/Secret Service behavior, cross-platform filesystem semantics, browser launch behavior, or platform screenshots.
 

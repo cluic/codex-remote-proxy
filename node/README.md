@@ -2,9 +2,9 @@
 
 `@cluic/codex-remote-proxy` keeps Codex signed in with ChatGPT while routing model requests through a selected OpenAI-compatible provider.
 
-> Release status: npm `0.2.2` is still the published pre-supervisor version and does not include `crp ui`. This document describes the pending next minor release, which must not be published until its external platform and L3 gates pass.
+> Release status: npm `0.3.0` is current and includes the Supervisor and `crp ui`. Changes after `0.3.0` remain unreleased until their deterministic, platform, and human-review gates pass.
 
-## Requirements and Install After Release
+## Requirements and Install
 
 Node.js 22.13 or newer is required.
 
@@ -25,9 +25,9 @@ The current development source is a responsive React + TypeScript SPA under `ui-
 
 ## Product Behavior
 
-The UI can create, test, switch, update, and delete named providers; start, stop, and restart the proxy worker; inspect anonymous 24-hour/7-day aggregate Metrics; review sanitized Activity; inspect read-only System facts; and generate in-memory diagnostic summary metadata. A provider must pass an OpenAI Responses compatibility test before explicit activation. Provider cards expose the legal switch action directly. Explicit activation applies a snapshot to a running Worker and starts a stopped Worker; the Setup-only first-provider compare-and-set selection never starts or reconfigures it. The active provider cannot be updated or deleted, even while the worker is stopped; switch to another provider first.
+The UI can create, test, switch, update, and delete named providers; start, stop, and restart the proxy worker; inspect anonymous 24-hour/7-day aggregate Metrics; review sanitized Activity; inspect read-only System facts; and generate in-memory diagnostic summary metadata. A provider must pass an OpenAI Responses compatibility test before explicit activation. Provider cards expose the legal switch action directly. Explicit activation applies a snapshot to a running Worker and starts a stopped Worker; first-provider compare-and-set selection from Setup, CLI, or the ordinary Providers page never starts or reconfigures it. The active provider cannot be updated or deleted, even while the worker is stopped; switch to another provider first.
 
-`Forwarding Records` is a disabled coming-soon navigation item only. It has no route, traffic request, Capture control, payload viewer, or mock records. Overview Metrics is anonymous aggregation independent from optional Capture.
+`Forwarding Records` is a disabled coming-soon navigation item only. It has no route, traffic request, Capture control, payload viewer, or mock records. Overview Metrics is anonymous aggregation independent from optional Capture. It uses fixed UTC hourly buckets, classifies Responses success from semantic terminal state, marks rates unavailable after dropped metric updates, and retains explicit grouped remainders for Provider and model distributions.
 
 Codex remains configured as:
 
@@ -35,7 +35,11 @@ Codex remains configured as:
 model_provider = "OpenAI"
 ```
 
-Its proxy address remains fixed at `http://127.0.0.1:15100`. CRP switches upstreams internally for new requests while in-flight requests retain their starting snapshot.
+Its proxy address remains fixed at `http://127.0.0.1:15100`. CRP switches upstreams internally for new requests while in-flight requests retain their starting snapshot, including the Provider model policy. Passthrough preserves the client's model; override replaces only the top-level JSON `model` value.
+
+Pass-through traffic streams with backpressure and preserves request encodings byte-for-byte. Model override is an 8 MiB bounded JSON transformation that preserves gzip, deflate, Brotli, and native zstd encoding when available, strips stale integrity/signature headers after a rewrite, and falls back to identity for a verified single-frame zstd request when Node has no native zstd compressor. Downstream cancellation destroys the corresponding upstream work.
+
+Optional Capture stores at most 1 MiB per request and response body and retains total observed byte counts. With configured protected values, truncated bodies, declared or detected compressed bodies, and bodies containing literal or recoverably encoded protected values are stored as `empty-truncated`; fully screened text/binary records retain explicit UTF-8/base64 encoding. Configured API keys and extra-header values are redacted from Capture headers, bodies, URL/ID metadata, and debug logs. Independent buffered Metrics inspection is bounded to 8 MiB, SSE inspection is incremental with bounded events, and Responses success requires semantic completion rather than HTTP 2xx alone.
 
 On a clean home, explicit `crp start` privately and atomically creates a missing `.codex` directory and `config.toml`, with no backup for a source that did not exist. New POSIX directory/file modes are `0700`/`0600`; a repeated bootstrap is byte-identical. Existing-file locking, identity/race checks, adjacent backup, mode preservation, and idempotency remain in force.
 
@@ -93,7 +97,7 @@ The former `init`, `install`, and `setup` compatibility aliases are removed. Eac
 
 Optional `provider add --model <MODEL>` uses that value only for the follow-up Responses test; routing override remains `--model-mode override --model-override <MODEL>`. It saves the profile first, then tests, and creation remains committed when the compatibility result fails or the second-stage request cannot complete. `provider test`, `activate`, `delete`, and `models` require exactly one of `--id` or case-insensitive exact `--name`. `provider models` refreshes the authenticated, no-redirect `<base-url>/models` catalog and rejects a complete credential reflected in any model ID before cache or output; discovery failure preserves the last good cache and does not change provider test or activation state.
 
-CLI tests request `activateIfNone` so the first successfully tested provider is selected through a first-wins compare-and-set while the Worker is stopped. That initial selection never starts or reconfigures the Worker; `crp start` remains explicit. Admin calls default `activateIfNone` to false. Conditional Web Setup opts in and runs `save -> test and CAS select -> Codex bootstrap/history repair -> Worker start`; ordinary Provider-page tests omit the flag.
+CLI tests and ordinary Web Providers-page tests request `activateIfNone` so the first successfully tested Provider is selected through a first-wins compare-and-set while the Worker is stopped. That initial selection never starts or reconfigures the Worker, never calls the readiness-gated explicit activation route, and is confirmed from refreshed server state; `crp start` remains explicit. Admin calls default `activateIfNone` to false. Conditional Web Setup also opts in and runs `save -> test and CAS select -> Codex bootstrap/history repair -> Worker start`.
 
 ## Migration From 0.2.2
 
@@ -145,4 +149,4 @@ Final M2E/V8 local verification passes exact `npm test` 463/463 (`412` unit-core
 
 Supervisor discovery applies a 2-second liveness probe and returns a client with a separate 30-second operation timeout. Proxy forwarding joins base and incoming URLs structurally, preserving base paths and query parameters while avoiding duplicate path separators. The retained `provider add --api-key <KEY>` behavior and broader child-environment minimization remain explicit future follow-up work and do not block local core completion.
 
-This release requires a minor Changeset. Do not run `npm run version-packages` or `npm run release` during feature preparation. See [RELEASING.md](./RELEASING.md) for local evidence and remaining remote/human gates.
+This unreleased behavior change uses the repository-required minor Changeset. Do not run `npm run version-packages` or `npm run release` during feature preparation. See [RELEASING.md](./RELEASING.md) for local evidence and remaining remote/human gates.

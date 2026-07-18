@@ -6,9 +6,9 @@ Codex Remote Proxy (CRP) keeps Codex signed in with ChatGPT while routing model 
 
 [简体中文](./README.zh-CN.md)
 
-> Release status: npm `0.2.2` is still the published pre-supervisor version and does not include `crp ui`. The instructions below describe the pending next minor release; its external platform and L3 gates must pass before publication.
+> Release status: npm `0.3.0` is the current release and includes the Supervisor and `crp ui`. Changes after `0.3.0` remain unreleased until their deterministic, platform, and human-review gates pass.
 
-## Install After Release
+## Install
 
 Node.js 22.13 or newer is required.
 
@@ -46,9 +46,13 @@ The local UI supports the complete daily workflow:
 - review sanitized control-plane Activity and read-only System facts;
 - generate an in-memory diagnostic summary containing only creation state, generation time, and sanitized event count.
 
-`Forwarding Records` is visible as a disabled `Coming soon` navigation item. This MVP has no forwarding-record route, request/response viewer, Capture control, or mock traffic data. Overview Metrics is anonymous aggregate state and remains independent from optional Capture.
+`Forwarding Records` is visible as a disabled `Coming soon` navigation item. This MVP has no forwarding-record route, request/response viewer, Capture control, or mock traffic data. Overview Metrics is anonymous aggregate state and remains independent from optional Capture. Its 24-hour and 7-day series use fixed UTC hourly buckets. A request counts as successful only after a successful Responses terminal event or completed JSON response; if metric updates were dropped, the UI marks success rates unavailable instead of presenting a precise percentage. Provider and model distributions always retain an explicit grouped remainder.
 
-Provider activation affects new requests. Requests already in flight keep the provider snapshot with which they started. The explicit activation route is also the production switch operation: it applies a new snapshot to a running Worker and starts a stopped Worker. The first-provider Setup path is deliberately different: a successful compatibility test uses compare-and-set selection while the Worker remains stopped.
+Provider activation affects new requests. Requests already in flight keep the provider snapshot, including its model policy, with which they started. In `passthrough` mode CRP preserves the client model; in `override` mode it replaces only the top-level JSON `model` value with the Provider's configured model. The explicit activation route is also the production switch operation: it applies a new snapshot to a running Worker and starts a stopped Worker. Initial selection is deliberately different: after a successful compatibility test, Setup, CLI, and the ordinary Providers page all use a first-wins compare-and-set when no Provider is active, while the Worker remains stopped.
+
+Proxy pass-through streams request and response bytes with backpressure and does not auto-decompress request bodies. Model override performs a bounded 8 MiB JSON transformation, preserves gzip, deflate, Brotli, and native zstd encoding when possible, and removes stale body-integrity/signature headers after a rewrite. On Node versions without native zstd compression, a verified single-frame zstd override is forwarded as identity after rewriting; zstd frames that cannot be safely inspected remain byte-exact pass-through for non-override traffic. Client cancellation stops the corresponding upstream work.
+
+Optional Capture stores at most 1 MiB for each request and response body while retaining the total observed byte count. When configured protected values exist, truncated bodies, declared or detected compressed bodies, and bodies containing literal or recoverably encoded protected values are stored as `empty-truncated`; fully screened text/binary records still use explicit UTF-8/base64 encoding. Configured API keys and extra-header values are removed from captured headers, bodies, URL/ID metadata, and debug logs. Buffered Metrics body inspection is independently bounded to 8 MiB, SSE inspection is incremental with bounded events, and neither path enables Capture.
 
 ## Stable Codex Configuration
 
@@ -133,11 +137,11 @@ The former compatibility aliases `crp init`, `crp install`, and `crp setup` have
 
 `provider test`, `activate`, `delete`, and `models` require exactly one selector: `--id` or `--name`. Names resolve by exact case-insensitive match against the unique public provider list. `provider models` performs an authenticated, no-redirect refresh from `<base-url>/models`; the Admin API also exposes a cached read separately. Discovery is bounded and rejects any model ID containing the complete credential before it can reach cache or output. It is independent from Responses compatibility testing, so a missing or incompatible model endpoint does not change provider test or activation state and a failed refresh does not erase the last good catalog.
 
-CLI-triggered compatibility tests, including `provider add --model`, request initial selection only when no provider is active. The first successful candidate wins an atomic compare-and-set while the Worker is stopped. Selection writes `activeProviderId` but never starts or reconfigures the Worker; run `crp start` explicitly. Admin callers that omit `activateIfNone` retain non-selecting test behavior. The conditional Web Setup explicitly opts in and runs `save provider -> test and compare-and-set select -> prepare Codex/history repair -> start Worker`; it does not call explicit activation during first setup. Ordinary Provider-page tests remain non-selecting until the user chooses a switch action.
+CLI-triggered compatibility tests, including `provider add --model`, request initial selection only when no Provider is active. The ordinary Web Providers page now makes the same request. The first successful candidate wins an atomic compare-and-set while the Worker is stopped. Selection writes `activeProviderId` but never starts or reconfigures the Worker, never calls the readiness-gated explicit activation route, and is confirmed from refreshed server state; run `crp start` explicitly. Admin callers that omit `activateIfNone` retain non-selecting test behavior. The conditional Web Setup also opts in and runs `save provider -> test and compare-and-set select -> prepare Codex/history repair -> start Worker`.
 
 ## Upgrading From 0.2.2
 
-The next minor release migrates the pre-supervisor flat configuration to provider-registry schema 2 on first supervisor startup.
+The `0.3` series migrates the pre-supervisor flat configuration to provider-registry schema 2 on first supervisor startup.
 
 1. Stop the old managed proxy.
 2. Make a private backup of `~/.codex-remote-proxy/` and `~/.codex/config.toml`. Treat every backup as secret-bearing.

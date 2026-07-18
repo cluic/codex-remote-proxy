@@ -51,7 +51,12 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
         authScheme: "Bearer",
         extraHeaders: {}
       },
-      proxy: { overrideAuthorization: true, requestIdHeader: "x-client-request-id" },
+      proxy: {
+        overrideAuthorization: true,
+        requestIdHeader: "x-client-request-id",
+        modelMode: "passthrough",
+        modelOverride: null
+      },
       capture: { enabled: false, dbPath: join(dir, "traffic.sqlite3") }
     }
   };

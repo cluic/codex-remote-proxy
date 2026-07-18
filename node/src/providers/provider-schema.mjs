@@ -177,7 +177,7 @@ function normalizeExtraHeaders(value) {
   return extraHeaders;
 }
 
-function normalizeModelPolicy(modeValue, overrideValue) {
+function normalizeModelPolicy(modeValue, overrideValue, { allowControlCharacters = false } = {}) {
   const modelMode = modeValue === undefined ? "passthrough" : modeValue;
   if (modelMode !== "passthrough" && modelMode !== "override") {
     inputError("modelMode", "must be passthrough or override");
@@ -185,7 +185,9 @@ function normalizeModelPolicy(modeValue, overrideValue) {
 
   let modelOverride = overrideValue === undefined ? null : overrideValue;
   if (modelOverride !== null) {
-    if (typeof modelOverride !== "string" || modelOverride.trim().length === 0) {
+    if (typeof modelOverride !== "string"
+      || modelOverride.trim().length === 0
+      || (!allowControlCharacters && CONTROL_CHARACTER_PATTERN.test(modelOverride))) {
       inputError("modelOverride", "must be a non-empty string or null");
     }
     modelOverride = modelOverride.trim();
@@ -196,12 +198,12 @@ function normalizeModelPolicy(modeValue, overrideValue) {
   return { modelMode, modelOverride };
 }
 
-function normalizeInput(input) {
+function normalizeInput(input, options) {
   if (!isPlainObject(input)) {
     inputError("provider", "must be an object");
   }
   assertExactFields(input, INPUT_FIELDS, "provider");
-  const modelPolicy = normalizeModelPolicy(input.modelMode, input.modelOverride);
+  const modelPolicy = normalizeModelPolicy(input.modelMode, input.modelOverride, options);
   return {
     name: normalizeRequiredString(input.name, "name"),
     baseUrl: normalizeBaseUrl(input.baseUrl),
@@ -272,7 +274,7 @@ export function validateStoredProvider(profile) {
     extraHeaders: profile.extraHeaders,
     modelMode: profile.modelMode,
     modelOverride: profile.modelOverride
-  });
+  }, { allowControlCharacters: true });
   assertStoredValue(
     typeof profile.id === "string" && profile.id.trim() === profile.id && profile.id.length > 0,
     "id",

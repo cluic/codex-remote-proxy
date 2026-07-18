@@ -59,6 +59,73 @@ test("encodeBody preserves utf8 and base64 encodes binary", () => {
   const binary = encodeBody(Buffer.from([0xff, 0x00, 0x10]));
   assert.equal(binary.encoding, "base64");
   assert.equal(binary.bytes, 3);
+
+  const truncated = encodeBody(Buffer.from("prefix", "utf8"), {
+    totalBytes: 4096,
+    truncated: true
+  });
+  assert.deepEqual(truncated, {
+    body: "prefix",
+    encoding: "utf8-truncated",
+    bytes: 4096
+  });
+  assert.throws(
+    () => encodeBody(Buffer.from("too-long"), { totalBytes: 2, truncated: true }),
+    /byte count is invalid/
+  );
+  assert.throws(
+    () => encodeBody(Buffer.from("prefix"), { totalBytes: 4096, truncated: false }),
+    /truncation marker is inconsistent/
+  );
+});
+
+test("capture manager persists truncated prefixes with total observed byte counts", (t) => {
+  const dir = makeTempDir("crp-capture-truncated");
+  mkdirSync(dir, { recursive: true });
+  const runtimeConfigPath = join(dir, "proxy-config.json");
+  const dbPath = join(dir, "traffic.sqlite3");
+  writeFileSync(runtimeConfigPath, JSON.stringify({ capture: { enabled: true, dbPath } }));
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false
+  }).start();
+  t.after(() => {
+    manager.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  manager.beginRecord().save({
+    startedAt: "2026-05-19T00:00:00.000Z",
+    completedAt: "2026-05-19T00:00:01.000Z",
+    durationMs: 1000,
+    requestId: "req-truncated",
+    sessionId: null,
+    threadId: null,
+    method: "POST",
+    incomingUrl: "http://127.0.0.1:15100/responses",
+    targetUrl: "https://example.test/responses",
+    requestHeaders: {},
+    requestBody: Buffer.from("request-prefix"),
+    requestBodyBytes: 2_000_000,
+    requestBodyTruncated: true,
+    responseStatus: 200,
+    responseHeaders: {},
+    responseBody: Buffer.from([0xff, 0x00]),
+    responseBodyBytes: 3_000_000,
+    responseBodyTruncated: true,
+    isStream: false,
+    upstreamRequestId: null
+  });
+
+  const db = new DatabaseSync(dbPath);
+  const row = db.prepare("SELECT * FROM http_transactions WHERE request_id = ?").get("req-truncated");
+  db.close();
+  assert.equal(row.request_body, "request-prefix");
+  assert.equal(row.request_body_encoding, "utf8-truncated");
+  assert.equal(row.request_body_bytes, 2_000_000);
+  assert.equal(row.response_body, Buffer.from([0xff, 0x00]).toString("base64"));
+  assert.equal(row.response_body_encoding, "base64-truncated");
+  assert.equal(row.response_body_bytes, 3_000_000);
 });
 
 test("capture manager writes a complete request/response record", async () => {
