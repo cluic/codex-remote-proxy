@@ -11,6 +11,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from "node:fs";
 import os from "node:os";
@@ -333,6 +334,57 @@ test("imports the CLI module without executing a command", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "imported\n");
+});
+
+test("executes help through an npm-style POSIX bin symlink without making imports executable", {
+  skip: process.platform === "win32"
+}, (t) => {
+  const tempRoot = mkdtempSync(join(os.tmpdir(), "crp-cli-bin-link-"));
+  t.after(() => rmSync(tempRoot, { recursive: true, force: true }));
+
+  const binDir = join(tempRoot, "bin");
+  const packageScopeDir = join(tempRoot, "lib", "node_modules", "@cluic");
+  const packageInstallDir = join(packageScopeDir, "codex-remote-proxy");
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(packageScopeDir, { recursive: true });
+  symlinkSync(PACKAGE_ROOT, packageInstallDir, "dir");
+
+  const cliLink = join(binDir, "crp");
+  const homeDir = join(tempRoot, "home");
+  symlinkSync("../lib/node_modules/@cluic/codex-remote-proxy/bin/crp.mjs", cliLink);
+  const environment = {
+    ...process.env,
+    CRP_LOCALE: "en",
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+    LANG: "C",
+    LC_ALL: "C"
+  };
+
+  const executed = spawnSync(process.execPath, [cliLink, "--locale", "en", "--help"], {
+    cwd: tempRoot,
+    env: environment,
+    encoding: "utf8"
+  });
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.equal(executed.stderr, "");
+  assert.match(executed.stdout, /^Usage:$/m);
+  assert.match(executed.stdout, /^  crp <command> \[options\]$/m);
+
+  const cliLinkUrl = pathToFileURL(cliLink).href;
+  const missingEntryPath = join(tempRoot, "missing-entry.mjs");
+  const imported = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `process.argv[1] = ${JSON.stringify(missingEntryPath)}; await import(${JSON.stringify(cliLinkUrl)}); process.stdout.write("imported\\n");`
+  ], {
+    cwd: tempRoot,
+    env: environment,
+    encoding: "utf8"
+  });
+  assert.equal(imported.status, 0, imported.stderr);
+  assert.equal(imported.stderr, "");
+  assert.equal(imported.stdout, "imported\n");
 });
 
 test("prints mature English-default CLI help without discovery", async () => {

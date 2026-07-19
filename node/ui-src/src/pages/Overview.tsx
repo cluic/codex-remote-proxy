@@ -119,12 +119,17 @@ export function OverviewPage({
     ? metrics.summary.tokens.input + metrics.summary.tokens.output
     : null;
   const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
-  const dataQualityTotal = metrics
-    ? metrics.dataQuality.unknownModelRequests
-      + metrics.dataQuality.modelOverflowRequests
-      + metrics.dataQuality.providerOverflowRequests
-      + metrics.dataQuality.droppedObservations
-    : 0;
+  const droppedObservations = metrics?.dataQuality.droppedObservations ?? 0;
+  const successRateComplete = droppedObservations === 0;
+  const successRateUnavailable = t("overview.successRateUnavailable", {
+    count: formatNumber(locale, droppedObservations)
+  });
+  const dataQualitySignals = metrics ? [
+    { label: t("overview.unknownModelRequests"), value: metrics.dataQuality.unknownModelRequests },
+    { label: t("overview.modelOverflowRequests"), value: metrics.dataQuality.modelOverflowRequests },
+    { label: t("overview.providerOverflowRequests"), value: metrics.dataQuality.providerOverflowRequests },
+    { label: t("overview.droppedObservations"), value: droppedObservations }
+  ].filter((signal) => signal.value > 0) : [];
   const metricsUnavailable = metricsError !== null
     || metrics === null
     || metrics.storageState === "unavailable";
@@ -182,7 +187,9 @@ export function OverviewPage({
         <header className="section-heading">
           <div>
             <h2 id="metrics-heading">{t("overview.metricsTitle")}</h2>
-            <p>{t("overview.metricsHelp")}</p>
+            <p>{t("overview.metricsHelp")} {t(metricsWindow === "24h"
+              ? "overview.window24Detail"
+              : "overview.window7Detail")}</p>
           </div>
           <div className="segmented-control" aria-label={t("overview.metricsTitle")}>
             <button
@@ -219,8 +226,10 @@ export function OverviewPage({
               />
               <MetricCard
                 label={t("overview.successRate")}
-                value={requests > 0 ? formatPercent(locale, successful / requests) : "-"}
-                detail={`${formatNumber(locale, successful)} ${t("overview.successful").toLowerCase()}`}
+                value={requests > 0 && successRateComplete ? formatPercent(locale, successful / requests) : "-"}
+                detail={successRateComplete
+                  ? `${formatNumber(locale, successful)} ${t("overview.successful").toLowerCase()}`
+                  : successRateUnavailable}
               />
               <MetricCard
                 label={t("overview.observedTokens")}
@@ -287,9 +296,11 @@ export function OverviewPage({
                               {providerNames.get(provider.providerId) ?? provider.providerId}
                             </th>
                             <td>{formatNumber(locale, provider.requests)}</td>
-                            <td>{provider.requests > 0
+                            <td title={successRateComplete ? undefined : successRateUnavailable}>
+                              {successRateComplete && provider.requests > 0
                               ? formatPercent(locale, provider.successfulRequests / provider.requests)
-                              : "-"}</td>
+                              : successRateComplete ? "-" : t("common.notAvailable")}
+                            </td>
                             <td>{formatLatency(locale, provider.latency)}</td>
                           </tr>
                         ))}
@@ -308,10 +319,16 @@ export function OverviewPage({
               </div>
             )}
 
-            {dataQualityTotal > 0 ? (
-              <p className="data-quality-note">
-                {t("overview.dataQuality")}: {formatNumber(locale, dataQualityTotal)} · {t("overview.other")}
-              </p>
+            {dataQualitySignals.length > 0 ? (
+              <aside className="data-quality-note" aria-label={t("overview.dataQuality")}>
+                <p><strong>{t("overview.dataQuality")}</strong> · {t("overview.dataQualityHelp")}</p>
+                <dl>{dataQualitySignals.map((signal) => (
+                  <div key={signal.label}>
+                    <dt>{signal.label}</dt>
+                    <dd>{formatNumber(locale, signal.value)}</dd>
+                  </div>
+                ))}</dl>
+              </aside>
             ) : null}
           </>
         )}

@@ -139,12 +139,22 @@ export function redactHeaders(headersInput) {
   return result;
 }
 
-export function encodeBody(buffer) {
+export function encodeBody(buffer, {
+  totalBytes = buffer?.length ?? 0,
+  truncated = false
+} = {}) {
+  if (!Number.isSafeInteger(totalBytes) || totalBytes < 0 || totalBytes < (buffer?.length ?? 0)) {
+    throw new Error("Captured body byte count is invalid");
+  }
+  if (truncated !== (totalBytes > (buffer?.length ?? 0))) {
+    throw new Error("Captured body truncation marker is inconsistent");
+  }
+  const suffix = truncated ? "-truncated" : "";
   if (!buffer || buffer.length === 0) {
     return {
       body: "",
-      encoding: "empty",
-      bytes: 0
+      encoding: `empty${suffix}`,
+      bytes: totalBytes
     };
   }
 
@@ -152,15 +162,15 @@ export function encodeBody(buffer) {
   if (Buffer.compare(Buffer.from(text, "utf8"), buffer) === 0) {
     return {
       body: text,
-      encoding: "utf8",
-      bytes: buffer.length
+      encoding: `utf8${suffix}`,
+      bytes: totalBytes
     };
   }
 
   return {
     body: buffer.toString("base64"),
-    encoding: "base64",
-    bytes: buffer.length
+    encoding: `base64${suffix}`,
+    bytes: totalBytes
   };
 }
 
@@ -504,9 +514,15 @@ export class CaptureManager {
       return;
     }
 
-    const requestBody = encodeBody(record.requestBody);
-    const responseBody = encodeBody(record.responseBody);
     try {
+      const requestBody = encodeBody(record.requestBody, {
+        totalBytes: record.requestBodyBytes,
+        truncated: record.requestBodyTruncated === true
+      });
+      const responseBody = encodeBody(record.responseBody, {
+        totalBytes: record.responseBodyBytes,
+        truncated: record.responseBodyTruncated === true
+      });
       this.insertStatement.run({
         started_at: record.startedAt,
         completed_at: record.completedAt,

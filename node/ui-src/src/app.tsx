@@ -316,10 +316,12 @@ export function App() {
       async () => {
         const test = await api.testProvider(id, model, activateIfNone);
         if (!test.ok) throw ApiError.fromTestResult(test);
-        if (switchAfter) await api.activateProvider(id);
+        if (switchAfter && !activateIfNone) await api.activateProvider(id);
         return true;
       },
-      switchAfter ? "notice.providerSwitched" : "notice.providerTested"
+      activateIfNone
+        ? "notice.providerTested"
+        : switchAfter ? "notice.providerSwitched" : "notice.providerTested"
     );
     return result === true;
   }, [api, executeMutation]);

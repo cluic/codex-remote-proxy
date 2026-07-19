@@ -40,7 +40,12 @@ const UPSTREAM_FIELDS = new Set([
   "authScheme",
   "extraHeaders"
 ]);
-const PROXY_FIELDS = new Set(["overrideAuthorization", "requestIdHeader"]);
+const PROXY_FIELDS = new Set([
+  "overrideAuthorization",
+  "requestIdHeader",
+  "modelMode",
+  "modelOverride"
+]);
 const CAPTURE_FIELDS = new Set(["enabled", "dbPath"]);
 const WORKER_PHASES = new Set(["ready", "running", "draining", "drained", "stopping", "failed"]);
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -145,6 +150,20 @@ function isValidAuthenticationHeader(upstream) {
   }
 }
 
+function isValidModelPolicy(proxy) {
+  if (proxy.modelMode !== "passthrough" && proxy.modelMode !== "override") {
+    return false;
+  }
+  // Schema 2 historically allowed internal controls, so existing snapshots must remain startable.
+  if (proxy.modelOverride !== null
+    && (typeof proxy.modelOverride !== "string"
+      || proxy.modelOverride.length === 0
+      || proxy.modelOverride.trim() !== proxy.modelOverride)) {
+    return false;
+  }
+  return proxy.modelMode !== "override" || proxy.modelOverride !== null;
+}
+
 function isValidBaseUrl(value) {
   if (!isNonEmptyString(value)) {
     return false;
@@ -213,6 +232,7 @@ function validateRuntimeSettings(settings) {
     || !hasExactFields(settings.proxy, PROXY_FIELDS)
     || typeof settings.proxy.overrideAuthorization !== "boolean"
     || !isValidHeaderName(settings.proxy.requestIdHeader)
+    || !isValidModelPolicy(settings.proxy)
     || (settings.proxy.overrideAuthorization
       && !isValidAuthenticationHeader(settings.upstream))
     || (settings.proxy.overrideAuthorization && settings.upstream.apiKey.length === 0)

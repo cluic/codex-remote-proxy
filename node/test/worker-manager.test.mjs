@@ -22,7 +22,12 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
         authScheme: "Bearer",
         extraHeaders: {}
       },
-      proxy: { overrideAuthorization: true, requestIdHeader: "x-client-request-id" },
+      proxy: {
+        overrideAuthorization: true,
+        requestIdHeader: "x-client-request-id",
+        modelMode: "passthrough",
+        modelOverride: null
+      },
       capture: { enabled: false, dbPath: "/tmp/crp-worker-manager/traffic.sqlite3" }
     }
   };

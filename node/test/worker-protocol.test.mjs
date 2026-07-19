@@ -30,7 +30,9 @@ function makeSettings() {
     },
     proxy: {
       overrideAuthorization: true,
-      requestIdHeader: "x-client-request-id"
+      requestIdHeader: "x-client-request-id",
+      modelMode: "passthrough",
+      modelOverride: null
     },
     capture: {
       enabled: false,
@@ -110,6 +112,16 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
   emptyApiKey.upstream.apiKey = "";
   const invalidExtraHeaders = makeSettings();
   invalidExtraHeaders.upstream.extraHeaders = { "x-region": 123 };
+  const invalidModelMode = makeSettings();
+  invalidModelMode.proxy.modelMode = "automatic";
+  const missingModelOverride = makeSettings();
+  missingModelOverride.proxy.modelMode = "override";
+  const blankModelOverride = makeSettings();
+  blankModelOverride.proxy.modelMode = "override";
+  blankModelOverride.proxy.modelOverride = " ";
+  const controlModelOverride = makeSettings();
+  controlModelOverride.proxy.modelMode = "override";
+  controlModelOverride.proxy.modelOverride = "model\ninvalid";
 
   for (const settings of [
     missingServer,
@@ -118,7 +130,10 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
     invalidPort,
     invalidTimeout,
     emptyApiKey,
-    invalidExtraHeaders
+    invalidExtraHeaders,
+    invalidModelMode,
+    missingModelOverride,
+    blankModelOverride
   ]) {
     assert.throws(
       () => validateParentMessage({
@@ -132,6 +147,14 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
         && !String(error.message).includes("must-not-pass")
     );
   }
+
+  assert.doesNotThrow(() => validateParentMessage({
+    version: 1,
+    type: "configure",
+    requestId: "configure-legacy-model",
+    generation: 1,
+    settings: controlModelOverride
+  }));
 });
 
 test("configure enforces provider URL and header security contracts", () => {

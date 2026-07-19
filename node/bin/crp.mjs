@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { resolve } from "node:path";
 import net from "node:net";
 import readline from "node:readline/promises";
@@ -2876,9 +2886,15 @@ export async function runCli(argv, {
 }
 
 function isDirectExecution(metaUrl = import.meta.url, argv1 = process.argv[1]) {
-  return typeof argv1 === "string"
-    && argv1.length > 0
-    && resolve(fileURLToPath(metaUrl)) === resolve(argv1);
+  if (typeof argv1 !== "string" || argv1.length === 0) return false;
+  try {
+    const modulePath = resolve(fileURLToPath(metaUrl));
+    const entryPath = resolve(argv1);
+    if (modulePath === entryPath) return true;
+    return realpathSync(modulePath) === realpathSync(entryPath);
+  } catch {
+    return false;
+  }
 }
 
 if (isDirectExecution()) {

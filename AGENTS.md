@@ -60,6 +60,16 @@
 - Session-bootstrap routes must compare the raw request target, and tests must preserve non-canonical targets.
 - Asynchronous catalog refresh must preserve nonempty manual selections and clear provider-scoped catalogs before switching.
 - Zsh scripts must not use `path` as a variable name because it overrides the executable search path.
+- Package-manager CLI entry checks must compare canonical filesystem paths so POSIX bin symlinks execute.
+- Legacy persisted values accepted by storage validation must remain valid through every downstream runtime validator or be explicitly migrated.
+- E2E Metrics fixtures must declare unsaturated conservation assumptions and return the exact requested window shape.
+- Overlapping command-output ranges must be de-duplicated before reporting duplicate source content.
+- Package and lockfile root versions must remain synchronized.
+- UI command-label changes must update every role/name locator in the same edit.
+- Debug previews and Capture bodies, metadata, paths, and errors must redact every configured protected value without changing forwarded bytes.
+- Protected-value scanning must cover reversible percent, JSON-escape, Base64, base64url, and mixed-case hex representations without emitting decoded metadata.
+- Diagnostics must be issued as separate commands instead of chaining them with shell separators.
+- Integration tests must await terminal Metrics/Capture settlement before closing the server that owns those resources.
 
 ## Required Checks
 

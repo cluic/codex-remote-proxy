@@ -171,6 +171,7 @@ function createResponsesFixture({ label, secret, heldInput = null, holdGate = nu
         response.end(JSON.stringify({
           id: `response-${label}-${++sequence}`,
           object: "response",
+          status: "completed",
           output: [],
           provider: label,
           input: body.input
@@ -313,6 +314,8 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
     "--name", "Provider B",
     "--base-url", `http://127.0.0.1:${portB}/v1`,
     "--api-key", SECRET_B,
+    "--model-mode", "override",
+    "--model-override", "provider-b-model",
     "--json"
   ]);
   const providerAId = addedA.provider.id;
@@ -394,6 +397,7 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
     body: {
       id: "response-B-2",
       object: "response",
+      status: "completed",
       output: [],
       provider: "B",
       input: "new-B"
@@ -407,6 +411,7 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
     body: {
       id: "response-A-2",
       object: "response",
+      status: "completed",
       output: [],
       provider: "A",
       input: "held-A"
@@ -434,7 +439,7 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
   });
   assert.deepEqual(compatibilityB.body, compatibilityA.body);
   assert.deepEqual(proxiedA.body, { model: "client-model", input: "held-A" });
-  assert.deepEqual(proxiedB.body, { model: "client-model", input: "new-B" });
+  assert.deepEqual(proxiedB.body, { model: "provider-b-model", input: "new-B" });
 
   const restarted = await invoke(["restart", "--json"]);
   assert.equal(restarted.supervisorPid, process.pid);
@@ -449,6 +454,23 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
   assert.equal(health.configured, true);
   assert.equal(health.generation, restarted.worker.generation);
   assertSecretsAbsent("proxy health", JSON.stringify(health));
+
+  const responseAfterRestart = await postResponses("after-restart");
+  assert.deepEqual(responseAfterRestart, {
+    status: 200,
+    body: {
+      id: "response-B-3",
+      object: "response",
+      status: "completed",
+      output: [],
+      provider: "B",
+      input: "after-restart"
+    }
+  });
+  assert.deepEqual(observationForInput(fixtureB, "after-restart").body, {
+    model: "provider-b-model",
+    input: "after-restart"
+  });
 
   const afterRestart = await invoke(["status", "--json"]);
   assert.equal(afterRestart.running, true);
