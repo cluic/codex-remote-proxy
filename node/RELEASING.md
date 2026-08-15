@@ -1,6 +1,6 @@
 # Releasing
 
-This package publishes from `node/` through Changesets and GitHub Actions. Ordinary updates use patch Changesets so releases remain on the current minor line. Both preflight and the publication workflow reject a minor or major release until the release policy is deliberately changed, and versioning refreshes the npm lockfile root version before opening the release pull request.
+This package publishes from `node/` through Changesets and GitHub Actions. Ordinary updates use patch Changesets so releases remain on the current minor line. Both preflight and the publication workflow reject a minor or major release until the release policy is deliberately changed, and versioning synchronizes only the npm lockfile root version before opening the release pull request.
 
 ## One-Time Publishing Setup
 
