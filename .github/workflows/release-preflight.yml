@@ -83,13 +83,13 @@ jobs:
             echo "release_impact=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Require a minor Changeset for package behavior changes
+      - name: Require a patch Changeset for package behavior changes
         if: steps.release_pr.outputs.exempt != 'true' && steps.changesets.outputs.release_impact == 'true' && steps.changesets.outputs.present != 'true'
         run: |
-          echo "A minor Changeset is required for package behavior changes." >&2
+          echo "A patch Changeset is required for package behavior changes." >&2
           exit 1
 
-      - name: Validate minor Changeset state
+      - name: Validate patch Changeset state
         if: steps.release_pr.outputs.exempt != 'true' && steps.changesets.outputs.present == 'true'
         shell: bash
         run: |
@@ -102,8 +102,8 @@ jobs:
           const release = status.releases?.find((entry) => (
             entry.name === "@cluic/codex-remote-proxy"
           ));
-          if (!release || release.type !== "minor") {
-            process.stderr.write("The package requires a minor Changeset.\n");
+          if (!release || release.type !== "patch") {
+            process.stderr.write("The package requires a patch Changeset.\n");
             process.exit(1);
           }
           NODE

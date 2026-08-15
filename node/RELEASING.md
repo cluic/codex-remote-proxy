@@ -1,6 +1,6 @@
 # Releasing
 
-This package publishes from `node/` through Changesets and GitHub Actions. The currently published version is `0.3.0`, including the Supervisor, multi-provider routing, and bilingual local UI. This audit remediation is an unreleased behavior change.
+This package publishes from `node/` through Changesets and GitHub Actions. Ordinary updates use patch Changesets so releases remain on the current minor line. Both preflight and the publication workflow reject a minor or major release until the release policy is deliberately changed, and versioning refreshes the npm lockfile root version before opening the release pull request.
 
 ## One-Time Publishing Setup
 
@@ -14,7 +14,7 @@ Publishing uses GitHub OIDC and requires no long-lived `NPM_TOKEN`.
 
 ## Feature Pull Request
 
-1. Add a minor Changeset under `node/.changeset/` for package behavior changes, as required by release preflight.
+1. Add a patch Changeset under `node/.changeset/` for package behavior changes, as required by release preflight.
 2. Run every local gate below on the final tree.
 3. Push a branch and open a pull request only after L3 human review is scheduled.
 4. Wait for the macOS, Windows, Linux, and release-preflight workflows and retain their run URLs.
@@ -88,7 +88,7 @@ V8.1 release-preparation rerun on 2026-07-17:
   `~/.codex-remote-proxy`, while the earlier `crpdev` wrapper is confirmed to
   be intentionally isolated through its injected temporary paths.
 
-Publication of changes after `0.3.0` remains blocked on deliberate working-tree staging,
+Publication of changes after `0.4.0` remains blocked on deliberate working-tree staging,
 copied-real-history rehearsal, remote platform evidence, and final L3 approval.
 
 Current release-preparation adjustments include a shipped MIT License and a

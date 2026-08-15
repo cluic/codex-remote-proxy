@@ -6,7 +6,7 @@ Codex Remote Proxy (CRP) keeps Codex signed in with ChatGPT while routing model 
 
 [简体中文](./README.zh-CN.md)
 
-> Release status: npm `0.3.0` is the current release and includes the Supervisor and `crp ui`. Changes after `0.3.0` remain unreleased until their deterministic, platform, and human-review gates pass.
+> Release status: npm `0.4.0` is the current release and includes the Supervisor and `crp ui`. Changes after `0.4.0` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
 
 ## Install
 

@@ -6,7 +6,7 @@ Codex Remote Proxy（CRP）让 Codex 保持 ChatGPT 登录态，同时把模型�
 
 [English](./README.md)
 
-> 发布状态：npm 当前版本是 `0.3.0`，已经包含 Supervisor 和 `crp ui`。`0.3.0` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布。
+> 发布状态：npm 当前版本是 `0.4.0`，已经包含 Supervisor 和 `crp ui`。`0.4.0` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布；普通更新使用 patch 版本。
 
 ## 安装
 

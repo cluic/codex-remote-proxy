@@ -2,7 +2,7 @@
 
 `@cluic/codex-remote-proxy` keeps Codex signed in with ChatGPT while routing model requests through a selected OpenAI-compatible provider.
 
-> Release status: npm `0.3.0` is current and includes the Supervisor and `crp ui`. Changes after `0.3.0` remain unreleased until their deterministic, platform, and human-review gates pass.
+> Release status: npm `0.4.0` is current and includes the Supervisor and `crp ui`. Changes after `0.4.0` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
 
 ## Requirements and Install
 
@@ -149,4 +149,4 @@ Final M2E/V8 local verification passes exact `npm test` 463/463 (`412` unit-core
 
 Supervisor discovery applies a 2-second liveness probe and returns a client with a separate 30-second operation timeout. Proxy forwarding joins base and incoming URLs structurally, preserving base paths and query parameters while avoiding duplicate path separators. The retained `provider add --api-key <KEY>` behavior and broader child-environment minimization remain explicit future follow-up work and do not block local core completion.
 
-This unreleased behavior change uses the repository-required minor Changeset. Do not run `npm run version-packages` or `npm run release` during feature preparation. See [RELEASING.md](./RELEASING.md) for local evidence and remaining remote/human gates.
+Unreleased package behavior changes use repository-required patch Changesets. Do not run `npm run version-packages` or `npm run release` during feature preparation. See [RELEASING.md](./RELEASING.md) for local evidence and remaining remote/human gates.
