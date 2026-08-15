@@ -1,5 +1,12 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.1
+
+### Patch Changes
+
+- 698f3ac: Synchronize only the package-lock root version during release preparation so version bumps cannot recalculate or prune the reviewed dependency graph.
+- 78dce69: Keep ordinary releases on the current minor line by requiring patch Changesets instead of incrementing the minor version for every package behavior update.
+
 ## 0.4.0
 
 ### Minor Changes
