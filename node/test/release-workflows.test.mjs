@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { syncLockfileVersion } from "../scripts/sync-lockfile-version.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const packageName = "@cluic/codex-remote-proxy";
@@ -255,12 +258,70 @@ test("package versioning keeps package and lockfile root versions synchronized",
   assert.equal(packageJson.version, packageLock.packages[""].version);
   assert.equal(
     packageJson.scripts["version-packages"],
-    "changeset version && npm install --package-lock-only --ignore-scripts --no-audit --no-fund"
+    "changeset version && node scripts/sync-lockfile-version.mjs"
   );
   assert.match(
     extractStepBlock(readWorkflowText("release.yml"), "Create release PR or publish"),
     /^          version: npm run version-packages$/m
   );
+});
+
+test("lockfile version sync preserves the dependency graph and is byte-idempotent", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "crp-lock-version-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const packagePath = join(directory, "package.json");
+  const lockPath = join(directory, "package-lock.json");
+  const packageJson = { name: packageName, version: "0.4.1" };
+  const packageLock = {
+    name: packageName,
+    version: "0.4.0",
+    lockfileVersion: 3,
+    packages: {
+      "": { name: packageName, version: "0.4.0", dependencies: { stable: "1.0.0" } },
+      "node_modules/stable": { version: "1.0.0", integrity: "sha512-stable" }
+    }
+  };
+  writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+  writeFileSync(lockPath, `${JSON.stringify(packageLock, null, 2)}\n`);
+
+  assert.deepEqual(syncLockfileVersion({ packagePath, lockPath }), {
+    changed: true,
+    version: "0.4.1"
+  });
+  const synchronizedBytes = readFileSync(lockPath);
+  const synchronized = JSON.parse(synchronizedBytes);
+  assert.equal(synchronized.version, "0.4.1");
+  assert.equal(synchronized.packages[""].version, "0.4.1");
+  assert.deepEqual(
+    synchronized.packages["node_modules/stable"],
+    packageLock.packages["node_modules/stable"]
+  );
+
+  assert.deepEqual(syncLockfileVersion({ packagePath, lockPath }), {
+    changed: false,
+    version: "0.4.1"
+  });
+  assert.deepEqual(readFileSync(lockPath), synchronizedBytes);
+});
+
+test("lockfile version sync fails before writing mismatched package metadata", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "crp-lock-version-invalid-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const packagePath = join(directory, "package.json");
+  const lockPath = join(directory, "package-lock.json");
+  writeFileSync(packagePath, JSON.stringify({ name: packageName, version: "0.4.1" }));
+  writeFileSync(lockPath, JSON.stringify({
+    name: "another-package",
+    version: "0.4.0",
+    packages: { "": { name: "another-package", version: "0.4.0" } }
+  }));
+  const original = readFileSync(lockPath);
+
+  assert.throws(
+    () => syncLockfileVersion({ packagePath, lockPath }),
+    /Package and lockfile root metadata do not match\./
+  );
+  assert.deepEqual(readFileSync(lockPath), original);
 });
 
 test("every workflow checkout disables persisted credentials", () => {

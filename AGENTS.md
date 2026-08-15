@@ -72,6 +72,7 @@
 - Integration tests must await terminal Metrics/Capture settlement before closing the server that owns those resources.
 - Routine package updates must use patch Changesets; minor or major releases require an explicit release-policy change.
 - Package versioning must refresh the npm lockfile root version before opening a release pull request.
+- Version-only release updates must not recalculate or prune the dependency graph.
 
 ## Required Checks
 
