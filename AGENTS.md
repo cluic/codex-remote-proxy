@@ -70,6 +70,8 @@
 - Protected-value scanning must cover reversible percent, JSON-escape, Base64, base64url, and mixed-case hex representations without emitting decoded metadata.
 - Diagnostics must be issued as separate commands instead of chaining them with shell separators.
 - Integration tests must await terminal Metrics/Capture settlement before closing the server that owns those resources.
+- Routine package updates must use patch Changesets; minor or major releases require an explicit release-policy change.
+- Package versioning must refresh the npm lockfile root version before opening a release pull request.
 
 ## Required Checks
 

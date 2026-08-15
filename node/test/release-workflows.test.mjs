@@ -99,13 +99,13 @@ function evaluateChangesetGate({ event, changedPaths, releases }) {
     /^node\/\.changeset\/.*\.md$/.test(path)
     && path !== "node/.changeset/README.md"
   ));
-  const minorRelease = releases.some((release) => (
-    release.name === packageName && release.type === "minor"
+  const patchRelease = releases.some((release) => (
+    release.name === packageName && release.type === "patch"
   ));
 
   if (exempt) return { passes: true, exempt: true };
   if (releaseImpact && !changesetPathPresent) return { passes: false, exempt: false };
-  if (changesetPathPresent && !minorRelease) return { passes: false, exempt: false };
+  if (changesetPathPresent && !patchRelease) return { passes: false, exempt: false };
   return { passes: true, exempt: false };
 }
 
@@ -147,7 +147,7 @@ test("release workflow allows only the exact Changesets release pull request exe
   }
 });
 
-test("ordinary feature pull requests require this package's minor Changeset", () => {
+test("ordinary feature pull requests require this package's patch Changeset", () => {
   const event = makePullRequestEvent();
   const sourceChange = "node/src/providers/provider-service.mjs";
   const changeset = "node/.changeset/multi-provider-local-ui.md";
@@ -155,7 +155,7 @@ test("ordinary feature pull requests require this package's minor Changeset", ()
   assert.equal(evaluateChangesetGate({
     event,
     changedPaths: [sourceChange, changeset],
-    releases: [{ name: packageName, type: "minor" }]
+    releases: [{ name: packageName, type: "patch" }]
   }).passes, true);
   assert.equal(evaluateChangesetGate({
     event,
@@ -165,26 +165,31 @@ test("ordinary feature pull requests require this package's minor Changeset", ()
   assert.equal(evaluateChangesetGate({
     event,
     changedPaths: [sourceChange, changeset],
-    releases: [{ name: packageName, type: "patch" }]
+    releases: [{ name: packageName, type: "minor" }]
   }).passes, false);
   assert.equal(evaluateChangesetGate({
     event,
     changedPaths: [sourceChange, changeset],
-    releases: [{ name: "another-package", type: "minor" }]
+    releases: [{ name: packageName, type: "major" }]
+  }).passes, false);
+  assert.equal(evaluateChangesetGate({
+    event,
+    changedPaths: [sourceChange, changeset],
+    releases: [{ name: "another-package", type: "patch" }]
   }).passes, false);
   assert.equal(evaluateChangesetGate({
     event,
     changedPaths: [sourceChange, "node/.changeset/feature-README.md"],
-    releases: [{ name: packageName, type: "minor" }]
+    releases: [{ name: packageName, type: "patch" }]
   }).passes, true);
   assert.equal(evaluateChangesetGate({
     event,
     changedPaths: [sourceChange, "node/.changeset/README.md"],
-    releases: [{ name: packageName, type: "minor" }]
+    releases: [{ name: packageName, type: "patch" }]
   }).passes, false);
 });
 
-test("release preflight encodes the strict event-field exemption and minor gate", () => {
+test("release preflight encodes the strict event-field exemption and patch gate", () => {
   const workflow = readWorkflowText("release-preflight.yml");
   assert.deepEqual(extractTopLevelChildKeys(workflow, "on"), ["pull_request"]);
 
@@ -201,21 +206,21 @@ test("release preflight encodes the strict event-field exemption and minor gate"
 
   const requireStep = extractStepBlock(
     workflow,
-    "Require a minor Changeset for package behavior changes"
+    "Require a patch Changeset for package behavior changes"
   );
   assert.equal(
     normalizeExpression(extractSingleLineIf(requireStep)),
     "steps.release_pr.outputs.exempt != 'true' && steps.changesets.outputs.release_impact == 'true' && steps.changesets.outputs.present != 'true'"
   );
 
-  const validateStep = extractStepBlock(workflow, "Validate minor Changeset state");
+  const validateStep = extractStepBlock(workflow, "Validate patch Changeset state");
   assert.equal(
     normalizeExpression(extractSingleLineIf(validateStep)),
     "steps.release_pr.outputs.exempt != 'true' && steps.changesets.outputs.present == 'true'"
   );
   assert.match(validateStep, /changeset -- status --since=origin\/main --output/);
   assert.match(validateStep, /@cluic\/codex-remote-proxy/);
-  assert.match(validateStep, /type !== "minor"/);
+  assert.match(validateStep, /type !== "patch"/);
 
   const detectStep = extractStepBlock(
     workflow,
@@ -228,8 +233,38 @@ test("release preflight encodes the strict event-field exemption and minor gate"
   assert.equal(detectStep.includes("grep -v 'README.md'"), false);
 });
 
+test("release workflow rejects non-patch Changesets before publication", () => {
+  const workflow = readWorkflowText("release.yml");
+  const validation = extractStepBlock(workflow, "Validate pending Changesets are patch-only");
+  const release = extractStepBlock(workflow, "Create release PR or publish");
+
+  assert.match(validation, /changeset -- status --output/);
+  assert.match(validation, /@cluic\/codex-remote-proxy/);
+  assert.match(validation, /entry\.type !== "patch"/);
+  assert.match(validation, /Only patch Changesets may be published\./);
+  assert.equal(workflow.indexOf(validation) < workflow.indexOf(release), true);
+});
+
+test("package versioning keeps package and lockfile root versions synchronized", () => {
+  const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, "node/package.json"), "utf8"));
+  const packageLock = JSON.parse(
+    readFileSync(resolve(repositoryRoot, "node/package-lock.json"), "utf8")
+  );
+
+  assert.equal(packageJson.version, packageLock.version);
+  assert.equal(packageJson.version, packageLock.packages[""].version);
+  assert.equal(
+    packageJson.scripts["version-packages"],
+    "changeset version && npm install --package-lock-only --ignore-scripts --no-audit --no-fund"
+  );
+  assert.match(
+    extractStepBlock(readWorkflowText("release.yml"), "Create release PR or publish"),
+    /^          version: npm run version-packages$/m
+  );
+});
+
 test("every workflow checkout disables persisted credentials", () => {
-  for (const name of ["release-preflight.yml", "platform-tests.yml"]) {
+  for (const name of ["release.yml", "release-preflight.yml", "platform-tests.yml"]) {
     const checkout = extractStepBlock(readWorkflowText(name), "Checkout");
     assert.match(checkout, /^        uses: actions\/checkout@v4$/m);
     assert.match(checkout, /^          persist-credentials: false$/m);

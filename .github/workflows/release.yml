@@ -21,6 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -39,6 +40,24 @@ jobs:
           EOF
           echo "NPM_CONFIG_USERCONFIG=$HOME/.npmrc" >> "$GITHUB_ENV"
           echo "NODE_AUTH_TOKEN=" >> "$GITHUB_ENV"
+
+      - name: Validate pending Changesets are patch-only
+        shell: bash
+        run: |
+          status_file="$RUNNER_TEMP/crp-changeset-status.json"
+          npm run changeset -- status --output "$status_file"
+          CHANGESET_STATUS_FILE="$status_file" node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const status = JSON.parse(readFileSync(process.env.CHANGESET_STATUS_FILE, "utf8"));
+          const disallowed = (status.releases ?? []).filter((entry) => (
+            entry.name === "@cluic/codex-remote-proxy" && entry.type !== "patch"
+          ));
+          if (disallowed.length > 0) {
+            process.stderr.write("Only patch Changesets may be published.\n");
+            process.exit(1);
+          }
+          NODE
 
       - name: Create release PR or publish
         uses: changesets/action@v1
