@@ -74,6 +74,8 @@
 - Package versioning must refresh the npm lockfile root version before opening a release pull request.
 - Version-only release updates must not recalculate or prune the dependency graph.
 - Authenticated visual checks must keep control tokens in-process instead of placing them in browser command arguments or logs.
+- Custom-provider routing must strip ChatGPT authorization independently of the provider auth-header configuration.
+- A block spanning multiple exhausted quota windows must last until the latest exhausted-window reset.
 
 ## Required Checks
 

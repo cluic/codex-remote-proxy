@@ -121,7 +121,7 @@ test("projects only bounded routing state from the account monitor", () => {
   assert.deepEqual(projected, {
     authMode: "chatgpt",
     quotaStatus: "exhausted",
-    blockedUntil: 1_800_000_000,
+    blockedUntil: 1_800_000_100,
     updatedAt: "2026-08-20T00:00:00.000Z"
   });
   assert.equal(isValidAccountRoutingState(projected), true);
@@ -152,6 +152,12 @@ test("parses bounded Codex windows and derives explicit or generic 429 cooldowns
   assert.equal(quota.status, "exhausted");
   assert.equal(quota.blockedUntilMs, NOW_MS + 120_000);
   assert.equal(quota.windows[1].usedPercent, 62);
+  assert.equal(parseCodexQuotaHeaders({
+    "x-codex-primary-used-percent": "100",
+    "x-codex-primary-reset-after-seconds": "120",
+    "x-codex-secondary-used-percent": "100",
+    "x-codex-secondary-reset-after-seconds": "240"
+  }, NOW_MS).blockedUntilMs, NOW_MS + 240_000);
   assert.deepEqual(account429Cooldown({
     "x-codex-primary-used-percent": "100",
     "x-codex-primary-reset-after-seconds": "120"

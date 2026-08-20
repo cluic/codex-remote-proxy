@@ -99,7 +99,7 @@ export function projectAccountRoutingState(monitorState) {
   return {
     authMode,
     quotaStatus,
-    blockedUntil: exhaustedResets.length > 0 ? Math.min(...exhaustedResets) : null,
+    blockedUntil: exhaustedResets.length > 0 ? Math.max(...exhaustedResets) : null,
     updatedAt: safeIsoTimestamp(monitorState?.updatedAt ?? null)
   };
 }
@@ -210,7 +210,7 @@ export function parseCodexQuotaHeaders(headers, nowMs = Date.now()) {
       : "available",
     windows,
     blockedUntilMs: exhaustedResets.length > 0
-      ? nowMs + (Math.min(...exhaustedResets) * 1_000)
+      ? nowMs + (Math.max(...exhaustedResets) * 1_000)
       : null
   };
 }

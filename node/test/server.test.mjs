@@ -291,6 +291,54 @@ test("custom-only routing strips Codex account credentials before nonstandard pr
   assert.equal(metrics[0].model, null);
 });
 
+test("custom routing strips Codex account credentials when provider authorization passthrough is disabled", async (t) => {
+  const observed = createSignal();
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      observed.resolve({
+        hasAuthorization: Object.hasOwn(req.headers, "authorization"),
+        hasAccountId: Object.hasOwn(req.headers, "chatgpt-account-id")
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    captureEnabled: false,
+    routingMode: "custom_only"
+  });
+  settings.proxy.overrideAuthorization = false;
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer account-token-sentinel",
+      "chatgpt-account-id": "account-id-sentinel"
+    },
+    body: JSON.stringify({ model: "client-account-model" })
+  });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  assert.deepEqual(
+    await withDeadline(observed.promise, "custom request was not observed"),
+    { hasAuthorization: false, hasAccountId: false }
+  );
+});
+
 test("account-first sends eligible Responses traffic to the fixed Codex route", async (t) => {
   const accountObserved = createSignal();
   let customRequests = 0;

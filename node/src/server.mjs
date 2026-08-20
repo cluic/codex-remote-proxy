@@ -923,7 +923,7 @@ export function buildUpstreamHeaders(req, settings, targetUrl, {
       HOP_BY_HOP_HEADERS.has(loweredKey) ||
       connectionHeaders.has(loweredKey) ||
       (stripAccountHeaders && loweredKey === "chatgpt-account-id") ||
-      (stripAccountHeaders && authHeader !== "authorization" && loweredKey === "authorization") ||
+      (stripAccountHeaders && loweredKey === "authorization") ||
       (stripContentHeaders && CONTENT_HEADERS.has(loweredKey))
     ) {
       continue;
