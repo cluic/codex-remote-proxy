@@ -10,6 +10,14 @@ import {
 
 const NOW = "2026-08-20T00:00:00.000Z";
 
+function createSignal() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function fakeAppServer(onRequest) {
   const child = new EventEmitter();
   child.stdin = new PassThrough();
@@ -377,16 +385,30 @@ test("isolates replaced app-server events and contains stdin failures", async (t
 });
 
 test("retires a timed-out child and keeps close as the terminal state", async () => {
+  const accountRead = createSignal();
+  let fireTimeout = null;
+  const clock = {
+    setTimeout(callback) {
+      fireTimeout = callback;
+      return { unref() {} };
+    },
+    clearTimeout() {}
+  };
   const timedOutChild = fakeAppServer((message, child) => {
     if (message.method === "initialize") respond(child, message.id, {});
+    if (message.method === "account/read") accountRead.resolve();
   });
   const timedOutMonitor = new AccountMonitor({
     spawnImpl: () => timedOutChild,
     now: () => NOW,
     autoPoll: false,
-    requestTimeoutMs: 10
+    requestTimeoutMs: 10,
+    clock
   });
-  const unavailable = await timedOutMonitor.refresh();
+  const timingOut = timedOutMonitor.refresh();
+  await accountRead.promise;
+  fireTimeout();
+  const unavailable = await timingOut;
   assert.equal(unavailable.phase, "unavailable");
   assert.equal(timedOutChild.signalCode, "SIGTERM");
   await timedOutMonitor.close();
