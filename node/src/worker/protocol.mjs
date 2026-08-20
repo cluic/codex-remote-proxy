@@ -1,12 +1,21 @@
 import { validateHeaderValue } from "node:http";
 
+import { isValidAccountRoutingState } from "../routing/account-routing.mjs";
+
 export const PROTOCOL_VERSION = 1;
 
-const PARENT_TYPES = new Set(["configure", "drain", "shutdown", "status"]);
+const PARENT_TYPES = new Set(["configure", "account-state", "drain", "shutdown", "status"]);
 const CHILD_STATE_TYPES = new Set(["ready", "configured", "drained", "status"]);
-const CHILD_TYPES = new Set([...CHILD_STATE_TYPES, "fatal", "metric"]);
+const CHILD_TYPES = new Set([
+  ...CHILD_STATE_TYPES,
+  "account-state-applied",
+  "fatal",
+  "metric"
+]);
 const BASE_FIELDS = new Set(["version", "type", "requestId"]);
 const CONFIGURE_FIELDS = new Set([...BASE_FIELDS, "generation", "settings"]);
+const ACCOUNT_STATE_FIELDS = new Set([...BASE_FIELDS, "revision", "state"]);
+const ACCOUNT_STATE_APPLIED_FIELDS = new Set([...BASE_FIELDS, "revision"]);
 const CHILD_STATE_FIELDS = new Set([...BASE_FIELDS, "state"]);
 const FATAL_FIELDS = new Set([...BASE_FIELDS, "error"]);
 const METRIC_FIELDS = new Set([...BASE_FIELDS, "observation"]);
@@ -22,6 +31,7 @@ const STATE_FIELDS = new Set([
 const ERROR_FIELDS = new Set(["code", "message"]);
 const METRIC_OBSERVATION_FIELDS = new Set([
   "generation",
+  "route",
   "result",
   "model",
   "inputTokens",
@@ -29,7 +39,14 @@ const METRIC_OBSERVATION_FIELDS = new Set([
   "durationBin",
   "responseStartBin"
 ]);
-const SETTINGS_FIELDS = new Set(["configPath", "server", "upstream", "proxy", "capture"]);
+const SETTINGS_FIELDS = new Set([
+  "configPath",
+  "server",
+  "upstream",
+  "proxy",
+  "capture",
+  "routing"
+]);
 const SERVER_FIELDS = new Set(["host", "port", "logLevel"]);
 const UPSTREAM_FIELDS = new Set([
   "baseUrl",
@@ -47,6 +64,9 @@ const PROXY_FIELDS = new Set([
   "modelOverride"
 ]);
 const CAPTURE_FIELDS = new Set(["enabled", "dbPath"]);
+const ROUTING_FIELDS = new Set(["mode", "accountRevision", "account"]);
+const ROUTING_MODES = new Set(["custom_only", "account_first"]);
+const METRIC_ROUTES = new Set(["custom", "account"]);
 const WORKER_PHASES = new Set(["ready", "running", "draining", "drained", "stopping", "failed"]);
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -239,7 +259,13 @@ function validateRuntimeSettings(settings) {
     || !isPlainObject(settings.capture)
     || !hasExactFields(settings.capture, CAPTURE_FIELDS)
     || typeof settings.capture.enabled !== "boolean"
-    || !isNonEmptyString(settings.capture.dbPath)) {
+    || !isNonEmptyString(settings.capture.dbPath)
+    || !isPlainObject(settings.routing)
+    || !hasExactFields(settings.routing, ROUTING_FIELDS)
+    || !ROUTING_MODES.has(settings.routing.mode)
+    || !Number.isSafeInteger(settings.routing.accountRevision)
+    || settings.routing.accountRevision <= 0
+    || !isValidAccountRoutingState(settings.routing.account)) {
     throw protocolError();
   }
   return settings;
@@ -321,6 +347,7 @@ function validateMetricObservation(observation) {
     || !hasExactFields(observation, METRIC_OBSERVATION_FIELDS)
     || !Number.isSafeInteger(observation.generation)
     || observation.generation <= 0
+    || !METRIC_ROUTES.has(observation.route)
     || !METRIC_RESULTS.has(observation.result)
     || (observation.model !== null && !isBoundedMetricModel(observation.model))
     || (!noUsage && !completeUsage)
@@ -361,6 +388,15 @@ export function validateParentMessage(message) {
     validateRuntimeSettings(message.settings);
     return message;
   }
+  if (message.type === "account-state") {
+    if (!hasExactFields(message, ACCOUNT_STATE_FIELDS)
+      || !Number.isSafeInteger(message.revision)
+      || message.revision <= 0
+      || !isValidAccountRoutingState(message.state)) {
+      throw protocolError();
+    }
+    return message;
+  }
   if (!hasExactFields(message, BASE_FIELDS)) {
     throw protocolError();
   }
@@ -382,6 +418,14 @@ export function validateChildMessage(message) {
       throw protocolError();
     }
     validateMetricObservation(message.observation);
+    return message;
+  }
+  if (message.type === "account-state-applied") {
+    if (!hasExactFields(message, ACCOUNT_STATE_APPLIED_FIELDS)
+      || !Number.isSafeInteger(message.revision)
+      || message.revision <= 0) {
+      throw protocolError();
+    }
     return message;
   }
   if (!hasExactFields(message, FATAL_FIELDS)) {
@@ -407,6 +451,11 @@ export function sanitizeProtocolMessage(message) {
   };
   if (message.type === "configure" && Number.isSafeInteger(message.generation) && message.generation > 0) {
     result.generation = message.generation;
+  }
+  if ((message.type === "account-state" || message.type === "account-state-applied")
+    && Number.isSafeInteger(message.revision)
+    && message.revision > 0) {
+    result.revision = message.revision;
   }
   if (CHILD_STATE_TYPES.has(message.type)) {
     const state = projectState(message.state);

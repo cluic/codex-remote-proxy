@@ -416,6 +416,22 @@ export function App() {
     await executeMutation("diagnostics", () => api.generateDiagnostics(), "notice.diagnosticsReady")
   ), [api, executeMutation]);
 
+  const refreshAccount = useCallback(() => {
+    void executeMutation(
+      "account-refresh",
+      () => api.refreshAccount(),
+      "notice.accountRefreshed"
+    );
+  }, [api, executeMutation]);
+
+  const updateRoutingMode = useCallback((routingMode: "custom_only" | "account_first") => {
+    void executeMutation(
+      "routing-mode",
+      () => api.updateRoutingMode(routingMode),
+      "notice.routingUpdated"
+    );
+  }, [api, executeMutation]);
+
   const changeMetricsWindow = useCallback((next: MetricsWindow) => {
     metricsWindowRef.current = next;
     setMetricsWindow(next);
@@ -617,6 +633,8 @@ export function App() {
           pending={pending}
           onPrepareCodex={prepareCodex}
           onGenerateDiagnostics={generateDiagnostics}
+          onRefreshAccount={refreshAccount}
+          onRoutingModeChange={updateRoutingMode}
         />
       ) : null}
       {route === "setup" ? (

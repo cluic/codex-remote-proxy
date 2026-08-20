@@ -14,6 +14,12 @@ import {
   headersToObject,
   normalizeCaptureConfig
 } from "./capture-store.mjs";
+import {
+  ACCOUNT_REQUEST_REPLAY_MAX_BYTES,
+  account429Cooldown,
+  decideUpstreamRoute,
+  parseCodexQuotaHeaders
+} from "./routing/account-routing.mjs";
 
 const CONFIG_ENV_VAR = "CODEX_PROXY_CONFIG";
 const DEFAULT_CONFIG_PATH = resolve(import.meta.dirname, "..", "proxy-config.json");
@@ -849,6 +855,20 @@ function protectedHeaderValues(settings) {
   ]);
 }
 
+function protectedRequestValues(req, settings) {
+  const values = [
+    settings.upstream.apiKey,
+    ...Object.values(settings.upstream.extraHeaders)
+  ];
+  for (let index = 0; index < req.rawHeaders.length; index += 2) {
+    const name = req.rawHeaders[index].toLowerCase();
+    if (name === "authorization" || name === "chatgpt-account-id") {
+      values.push(req.rawHeaders[index + 1]);
+    }
+  }
+  return normalizeProtectedValues(values);
+}
+
 function headerContainsProtectedValue(value, protectedValues) {
   const values = Array.isArray(value) ? value : [value];
   return values.some((item) => containsRecoverableProtectedValue(String(item), protectedValues));
@@ -886,7 +906,10 @@ function sanitizeHeadersForCapture(headersInput, authHeader, protectedValues = [
   return result;
 }
 
-export function buildUpstreamHeaders(req, settings, targetUrl, { stripContentHeaders }) {
+export function buildUpstreamHeaders(req, settings, targetUrl, {
+  stripContentHeaders,
+  stripAccountHeaders = false
+}) {
   const headers = [];
   const authHeader = settings.upstream.authHeader.toLowerCase();
   const connectionHeaders = connectionHeaderTokens(req.rawHeaders);
@@ -899,6 +922,8 @@ export function buildUpstreamHeaders(req, settings, targetUrl, { stripContentHea
       loweredKey === "host" ||
       HOP_BY_HOP_HEADERS.has(loweredKey) ||
       connectionHeaders.has(loweredKey) ||
+      (stripAccountHeaders && loweredKey === "chatgpt-account-id") ||
+      (stripAccountHeaders && loweredKey === "authorization") ||
       (stripContentHeaders && CONTENT_HEADERS.has(loweredKey))
     ) {
       continue;
@@ -926,6 +951,32 @@ export function buildUpstreamHeaders(req, settings, targetUrl, { stripContentHea
     if (generatedHeaderAllowed(key)) upsertHeader(headers, key, value);
   }
 
+  return headers;
+}
+
+export function buildAccountUpstreamHeaders(
+  req,
+  settings,
+  targetUrl,
+  { stripContentHeaders = false } = {}
+) {
+  const headers = [];
+  const connectionHeaders = connectionHeaderTokens(req.rawHeaders);
+  const customAuthHeader = settings.upstream.authHeader.toLowerCase();
+  for (let index = 0; index < req.rawHeaders.length; index += 2) {
+    const key = req.rawHeaders[index];
+    const value = req.rawHeaders[index + 1];
+    const loweredKey = key.toLowerCase();
+    if (loweredKey === "host"
+      || HOP_BY_HOP_HEADERS.has(loweredKey)
+      || connectionHeaders.has(loweredKey)
+      || (customAuthHeader !== "authorization" && loweredKey === customAuthHeader)
+      || (stripContentHeaders && CONTENT_HEADERS.has(loweredKey))) {
+      continue;
+    }
+    headers.push([key, value]);
+  }
+  upsertHeader(headers, "Host", targetUrl.host);
   return headers;
 }
 
@@ -1105,7 +1156,7 @@ function rewriteTopLevelModel(buffer, modelOverride) {
     : { tooLarge: true };
 }
 
-function safeMetricModel(value, settings) {
+function safeMetricModel(value, settings, protectedValues = protectedHeaderValues(settings)) {
   if (typeof value !== "string" || value.length === 0
     || value.length > METRIC_MAX_MODEL_CODE_POINTS * 2
     || [...value].length > METRIC_MAX_MODEL_CODE_POINTS
@@ -1113,7 +1164,7 @@ function safeMetricModel(value, settings) {
     || METRIC_TEXT_CONTROL_PATTERN.test(value)) {
     return null;
   }
-  return containsRecoverableProtectedValue(value, protectedHeaderValues(settings)) ? null : value;
+  return containsRecoverableProtectedValue(value, protectedValues) ? null : value;
 }
 
 function normalizeMetricUsage(value) {
@@ -1336,9 +1387,13 @@ export function createServer(settings, {
   }).start(),
   logFn = log,
   settingsSource,
+  accountStateSource,
   recordMetric = () => {},
-  metricNow = Date.now
+  metricNow = Date.now,
+  routingNow = Date.now,
+  resolveAccountTarget = (target) => target
 } = {}) {
+  let accountBlockedUntilMs = null;
   return http.createServer((req, res) => {
     if (!req.url) {
       writeJson(res, 400, { error: { message: "Missing request URL", type: "proxy_bad_request" } });
@@ -1370,15 +1425,34 @@ export function createServer(settings, {
       return;
     }
     const requestSettings = active.settings;
-    const requestProtectedValues = protectedHeaderValues(requestSettings);
+    const requestProtectedValues = protectedRequestValues(req, requestSettings);
     const requestDebugEnabled = requestSettings.server.logLevel.toLowerCase() === "debug";
     const rawRequestId = req.headers[requestSettings.proxy.requestIdHeader] || req.headers["x-request-id"] || "-";
     const requestId = redactRecoverableProtectedText(String(rawRequestId), requestProtectedValues);
-    const targetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
+    const customTargetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
+    let accountState = requestSettings.routing?.account ?? null;
+    try {
+      accountState = accountStateSource?.current().state ?? accountState;
+    } catch {
+      // A missing live state falls back to the validated Worker configuration snapshot.
+    }
+    const routeDecision = decideUpstreamRoute({
+      mode: requestSettings.routing?.mode ?? "custom_only",
+      method: req.method,
+      requestUrl: req.url,
+      rawHeaders: req.rawHeaders,
+      accountState,
+      localBlockedUntilMs: accountBlockedUntilMs,
+      nowMs: routingNow()
+    });
+    let metricRoute = routeDecision.route;
+    let targetUrl = routeDecision.target
+      ? resolveAccountTarget(new URL(routeDecision.target.href))
+      : customTargetUrl;
     const safeRequestPath = redactProtectedUrl(req.url, requestProtectedValues);
-    const safeTargetUrl = redactProtectedUrl(targetUrl.href, requestProtectedValues);
+    let safeTargetUrl = redactProtectedUrl(targetUrl.href, requestProtectedValues);
     const safeMethod = redactRecoverableProtectedText(req.method || "GET", requestProtectedValues);
-    const transport = targetUrl.protocol === "https:" ? https : http;
+    let transport = targetUrl.protocol === "https:" ? https : http;
     const startedAt = Date.now();
     const metricStartedAt = metricNow();
     const responsesRequest = isResponsesRequest(req.url);
@@ -1392,28 +1466,37 @@ export function createServer(settings, {
     const captureHandle = captureManager.beginRecord();
     let requestCapture = captureHandle ? createBoundedCollector(CAPTURE_BODY_MAX_BYTES) : null;
     const requestPreview = requestDebugEnabled ? createBoundedCollector(4096) : null;
-    const requestModelInspector = !overrideModel && directRequestInspection
+    const initialAccountRoute = metricRoute === "account";
+    const requestModelInspector = (!overrideModel || initialAccountRoute) && directRequestInspection
       ? createTopLevelJsonInspector({ stringKeys: ["model"] })
       : null;
-    const encodedRequestMetric = !overrideModel && !directRequestInspection
+    const encodedRequestMetric = (!overrideModel || initialAccountRoute) && !directRequestInspection
       ? createBoundedCollector(METRIC_BODY_INSPECTION_MAX_BYTES)
       : null;
-    const overrideCollector = overrideModel ? createBoundedCollector(MODEL_OVERRIDE_MAX_BYTES) : null;
-    let forwardedHeaders = buildUpstreamHeaders(req, requestSettings, targetUrl, {
-      stripContentHeaders: false
-    });
+    const overrideCollector = overrideModel && !initialAccountRoute
+      ? createBoundedCollector(MODEL_OVERRIDE_MAX_BYTES)
+      : null;
+    let forwardedHeaders = initialAccountRoute
+      ? buildAccountUpstreamHeaders(req, requestSettings, targetUrl)
+      : buildUpstreamHeaders(req, requestSettings, targetUrl, {
+          stripContentHeaders: false,
+          stripAccountHeaders: true
+        });
     let captureContext = null;
     let captureSaved = false;
     let metricSaved = false;
     let terminal = false;
     let requestEnded = false;
-    let requestModel = overrideModel ? safeMetricModel(overrideModel, requestSettings) : null;
-    let requestInspectionFinished = Boolean(overrideModel);
+    let requestModel = overrideModel && !initialAccountRoute
+      ? safeMetricModel(overrideModel, requestSettings, requestProtectedValues)
+      : null;
+    let requestInspectionFinished = Boolean(overrideModel && !initialAccountRoute);
     let upstreamRequest = null;
     let upstreamResponse = null;
     let responseState = null;
     let responseStartBin = null;
     let timedOut = false;
+    let replayBody = null;
 
     function requestCaptureSnapshot() {
       const snapshot = captureBodySnapshot(requestCapture, requestEncoding, requestProtectedValues);
@@ -1454,7 +1537,7 @@ export function createServer(settings, {
       if (requestModelInspector) {
         const inspection = requestModelInspector.end();
         requestModel = inspection.complete && !inspection.invalid
-          ? safeMetricModel(inspection.strings.model, requestSettings)
+          ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
           : null;
       } else if (encodedRequestMetric && !encodedRequestMetric.truncated) {
         const decoded = decodeBoundedBody(
@@ -1467,7 +1550,7 @@ export function createServer(settings, {
           inspector.write(decoded);
           const inspection = inspector.end();
           requestModel = inspection.complete && !inspection.invalid
-            ? safeMetricModel(inspection.strings.model, requestSettings)
+            ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
             : null;
         }
       }
@@ -1480,6 +1563,7 @@ export function createServer(settings, {
       if (!Number.isSafeInteger(active.generation) || active.generation <= 0) return;
       const observation = {
         generation: active.generation,
+        route: metricRoute,
         result,
         model: requestEnded ? finishRequestInspection() : requestModel,
         inputTokens: result === "success" ? (usage?.inputTokens ?? null) : null,
@@ -1498,6 +1582,123 @@ export function createServer(settings, {
     function clearResponseHeaders() {
       if (res.headersSent) return;
       for (const name of res.getHeaderNames()) res.removeHeader(name);
+    }
+
+    function switchToCustomRoute() {
+      metricRoute = "custom";
+      targetUrl = customTargetUrl;
+      safeTargetUrl = redactProtectedUrl(targetUrl.href, requestProtectedValues);
+      transport = targetUrl.protocol === "https:" ? https : http;
+      forwardedHeaders = buildUpstreamHeaders(req, requestSettings, targetUrl, {
+        stripContentHeaders: false,
+        stripAccountHeaders: true
+      });
+      upstreamResponse = null;
+      responseState = null;
+      responseStartBin = null;
+      timedOut = false;
+      if (captureContext) {
+        captureContext.targetUrl = safeTargetUrl;
+        captureContext.requestHeaders = sanitizeHeadersForCapture(
+          forwardedHeaders,
+          requestSettings.upstream.authHeader,
+          requestProtectedValues
+        );
+      }
+    }
+
+    function prepareCustomOverrideBody(encodedBody) {
+      const normalizedEncoding = singleContentEncoding(requestEncoding);
+      const supportedEncoding = normalizedEncoding === ""
+        || normalizedEncoding === "identity"
+        || normalizedEncoding === "gzip"
+        || normalizedEncoding === "deflate"
+        || normalizedEncoding === "br"
+        || normalizedEncoding === "zstd";
+      if (!supportedEncoding) {
+        logRequestBody();
+        finishProxyFailure({
+          statusCode: 415,
+          errorType: "proxy_unsupported_content_encoding",
+          result: "upstreamError",
+          error: new Error("model override content encoding is unsupported")
+        });
+        return null;
+      }
+      let decodedBody;
+      try {
+        decodedBody = decompressBody(encodedBody, normalizedEncoding, MODEL_OVERRIDE_MAX_BYTES);
+      } catch (error) {
+        const tooLarge = error?.code === "ERR_BUFFER_TOO_LARGE"
+          || String(error?.message).includes("exceeds the inspection limit");
+        finishProxyFailure({
+          statusCode: tooLarge ? 413 : 400,
+          errorType: tooLarge ? "proxy_request_too_large" : "proxy_bad_request",
+          result: "upstreamError",
+          error
+        });
+        return null;
+      }
+      const rewrite = rewriteTopLevelModel(decodedBody, overrideModel);
+      if (!rewrite) {
+        logRequestBody();
+        finishProxyFailure({
+          statusCode: 400,
+          errorType: "proxy_bad_request",
+          result: "upstreamError",
+          error: new Error("model override request is not a valid JSON object")
+        });
+        return null;
+      }
+      if (rewrite.tooLarge) {
+        finishProxyFailure({
+          statusCode: 413,
+          errorType: "proxy_request_too_large",
+          result: "upstreamError",
+          error: new Error("rewritten model override request exceeds the bounded transformation limit")
+        });
+        return null;
+      }
+      let forwardedBody = encodedBody;
+      if (rewrite.changed) {
+        try {
+          if (normalizedEncoding === "zstd" && typeof zlib.zstdCompressSync !== "function") {
+            forwardedBody = rewrite.body;
+            removeHeader(forwardedHeaders, "content-encoding");
+          } else {
+            forwardedBody = encodeBodyWithOriginalEncoding(rewrite.body, requestEncoding);
+          }
+        } catch (error) {
+          finishProxyFailure({
+            statusCode: 415,
+            errorType: "proxy_unsupported_content_encoding",
+            result: "upstreamError",
+            error
+          });
+          return null;
+        }
+        stripBodyIntegrityHeaders(forwardedHeaders);
+        upsertHeader(forwardedHeaders, "content-length", String(forwardedBody.length));
+      }
+      if (requestCapture) {
+        requestCapture = createBoundedCollector(CAPTURE_BODY_MAX_BYTES);
+        requestCapture.append(forwardedBody);
+      }
+      requestModel = safeMetricModel(overrideModel, requestSettings, requestProtectedValues);
+      requestInspectionFinished = true;
+      return forwardedBody;
+    }
+
+    function startCustomFallback() {
+      if (terminal || !Buffer.isBuffer(replayBody)) return;
+      switchToCustomRoute();
+      const forwardedBody = overrideModel
+        ? prepareCustomOverrideBody(replayBody)
+        : replayBody;
+      if (!forwardedBody || terminal) return;
+      logRequestBody(forwardedBody.subarray(0, 4096));
+      const outgoing = createUpstreamRequest();
+      outgoing?.end(forwardedBody);
     }
 
     function logRequestBody(body = null) {
@@ -1681,6 +1882,23 @@ export function createServer(settings, {
         incoming.destroy();
         return;
       }
+      if (metricRoute === "account") {
+        const observedQuota = parseCodexQuotaHeaders(incoming.headers, routingNow());
+        if (observedQuota?.blockedUntilMs !== null
+          && observedQuota?.blockedUntilMs !== undefined) {
+          accountBlockedUntilMs = observedQuota.blockedUntilMs;
+        } else if (incoming.statusCode >= 200
+          && incoming.statusCode <= 299
+          && observedQuota?.status === "available") {
+          accountBlockedUntilMs = null;
+        }
+        if (incoming.statusCode === 429 && Buffer.isBuffer(replayBody)) {
+          accountBlockedUntilMs = account429Cooldown(incoming.headers, routingNow()).untilMs;
+          incoming.destroy();
+          startCustomFallback();
+          return;
+        }
+      }
       upstreamResponse = incoming;
       const stream = isEventStream(incoming.headers["content-type"]);
       const contentEncoding = incoming.headers["content-encoding"];
@@ -1760,8 +1978,9 @@ export function createServer(settings, {
 
     function createUpstreamRequest() {
       if (terminal) return null;
+      let createdRequest;
       try {
-        upstreamRequest = transport.request(
+        createdRequest = transport.request(
           {
             method: req.method,
             protocol: targetUrl.protocol,
@@ -1769,10 +1988,13 @@ export function createServer(settings, {
             port: targetUrl.port || undefined,
             path: `${targetUrl.pathname}${targetUrl.search}`,
             headers: forwardedHeaders,
-            rejectUnauthorized: requestSettings.upstream.verifySsl
+            rejectUnauthorized: metricRoute === "account"
+              ? true
+              : requestSettings.upstream.verifySsl
           },
           onUpstreamResponse
         );
+        upstreamRequest = createdRequest;
       } catch (error) {
         finishProxyFailure({
           statusCode: 502,
@@ -1783,12 +2005,13 @@ export function createServer(settings, {
         return null;
       }
       ensureCaptureContext();
-      upstreamRequest.setTimeout(requestSettings.upstream.timeoutMs, () => {
+      createdRequest.setTimeout(requestSettings.upstream.timeoutMs, () => {
+        if (createdRequest !== upstreamRequest) return;
         timedOut = true;
-        upstreamRequest.destroy(new Error("upstream timeout"));
+        createdRequest.destroy(new Error("upstream timeout"));
       });
-      upstreamRequest.on("error", (error) => {
-        if (terminal) return;
+      createdRequest.on("error", (error) => {
+        if (terminal || createdRequest !== upstreamRequest) return;
         finishProxyFailure({
           statusCode: timedOut ? 504 : 502,
           errorType: timedOut ? "proxy_timeout" : "proxy_upstream_error",
@@ -1797,10 +2020,10 @@ export function createServer(settings, {
           responseStarted: Boolean(upstreamResponse && res.headersSent)
         });
       });
-      upstreamRequest.on("drain", () => {
-        if (!terminal) req.resume?.();
+      createdRequest.on("drain", () => {
+        if (!terminal && createdRequest === upstreamRequest) req.resume?.();
       });
-      return upstreamRequest;
+      return createdRequest;
     }
 
     res.on("finish", () => {
@@ -1811,6 +2034,66 @@ export function createServer(settings, {
     res.on("close", handleClientAbort);
     req.on("aborted", handleClientAbort);
     req.on("error", handleClientAbort);
+
+    if (initialAccountRoute) {
+      const accountChunks = [];
+      let accountBytes = 0;
+      let outgoing = null;
+      let streamingCustom = false;
+      req.on("data", (chunk) => {
+        if (terminal) return;
+        requestCapture?.append(chunk);
+        requestPreview?.append(chunk);
+        requestModelInspector?.write(chunk);
+        encodedRequestMetric?.append(chunk);
+        if (streamingCustom) {
+          if (outgoing && !outgoing.write(chunk)) req.pause?.();
+          return;
+        }
+        if (accountBytes + chunk.length <= ACCOUNT_REQUEST_REPLAY_MAX_BYTES) {
+          accountChunks.push(Buffer.from(chunk));
+          accountBytes += chunk.length;
+          return;
+        }
+        if (overrideModel) {
+          logRequestBody();
+          finishProxyFailure({
+            statusCode: 413,
+            errorType: "proxy_request_too_large",
+            result: "upstreamError",
+            error: new Error("model override request exceeds the bounded transformation limit")
+          });
+          return;
+        }
+        streamingCustom = true;
+        replayBody = null;
+        switchToCustomRoute();
+        outgoing = createUpstreamRequest();
+        let backpressured = false;
+        for (const buffered of accountChunks) {
+          if (outgoing && !outgoing.write(buffered)) backpressured = true;
+        }
+        accountChunks.length = 0;
+        if (outgoing && !outgoing.write(chunk)) backpressured = true;
+        if (backpressured) req.pause?.();
+      });
+      req.on("end", () => {
+        requestEnded = true;
+        finishRequestInspection();
+        if (terminal) return;
+        if (streamingCustom) {
+          logRequestBody();
+          outgoing ??= createUpstreamRequest();
+          outgoing?.end();
+          return;
+        }
+        replayBody = Buffer.concat(accountChunks, accountBytes);
+        logRequestBody(replayBody.subarray(0, 4096));
+        outgoing = createUpstreamRequest();
+        outgoing?.end(replayBody);
+      });
+      return;
+    }
 
     if (overrideModel) {
       req.on("data", (chunk) => {
@@ -1832,82 +2115,8 @@ export function createServer(settings, {
         requestEnded = true;
         if (terminal) return;
         const encodedBody = overrideCollector.buffer();
-        const normalizedEncoding = singleContentEncoding(requestEncoding);
-        const supportedEncoding = normalizedEncoding === ""
-          || normalizedEncoding === "identity"
-          || normalizedEncoding === "gzip"
-          || normalizedEncoding === "deflate"
-          || normalizedEncoding === "br"
-          || normalizedEncoding === "zstd";
-        if (!supportedEncoding) {
-          logRequestBody();
-          finishProxyFailure({
-            statusCode: 415,
-            errorType: "proxy_unsupported_content_encoding",
-            result: "upstreamError",
-            error: new Error("model override content encoding is unsupported")
-          });
-          return;
-        }
-        let decodedBody;
-        try {
-          decodedBody = decompressBody(encodedBody, normalizedEncoding, MODEL_OVERRIDE_MAX_BYTES);
-        } catch (error) {
-          const tooLarge = error?.code === "ERR_BUFFER_TOO_LARGE"
-            || String(error?.message).includes("exceeds the inspection limit");
-          finishProxyFailure({
-            statusCode: tooLarge ? 413 : 400,
-            errorType: tooLarge ? "proxy_request_too_large" : "proxy_bad_request",
-            result: "upstreamError",
-            error
-          });
-          return;
-        }
-        const rewrite = rewriteTopLevelModel(decodedBody, overrideModel);
-        if (!rewrite) {
-          logRequestBody();
-          finishProxyFailure({
-            statusCode: 400,
-            errorType: "proxy_bad_request",
-            result: "upstreamError",
-            error: new Error("model override request is not a valid JSON object")
-          });
-          return;
-        }
-        if (rewrite.tooLarge) {
-          finishProxyFailure({
-            statusCode: 413,
-            errorType: "proxy_request_too_large",
-            result: "upstreamError",
-            error: new Error("rewritten model override request exceeds the bounded transformation limit")
-          });
-          return;
-        }
-        let forwardedBody = encodedBody;
-        if (rewrite.changed) {
-          try {
-            if (normalizedEncoding === "zstd" && typeof zlib.zstdCompressSync !== "function") {
-              forwardedBody = rewrite.body;
-              removeHeader(forwardedHeaders, "content-encoding");
-            } else {
-              forwardedBody = encodeBodyWithOriginalEncoding(rewrite.body, requestEncoding);
-            }
-          } catch (error) {
-            finishProxyFailure({
-              statusCode: 415,
-              errorType: "proxy_unsupported_content_encoding",
-              result: "upstreamError",
-              error
-            });
-            return;
-          }
-          stripBodyIntegrityHeaders(forwardedHeaders);
-          upsertHeader(forwardedHeaders, "content-length", String(forwardedBody.length));
-        }
-        if (requestCapture) {
-          requestCapture = createBoundedCollector(CAPTURE_BODY_MAX_BYTES);
-          requestCapture.append(forwardedBody);
-        }
+        const forwardedBody = prepareCustomOverrideBody(encodedBody);
+        if (!forwardedBody || terminal) return;
         logRequestBody(forwardedBody.subarray(0, 4096));
         const outgoing = createUpstreamRequest();
         outgoing?.end(forwardedBody);
@@ -1937,7 +2146,11 @@ export function createServer(settings, {
   });
 }
 
-export function createApp(settings = loadConfig(), { settingsSource, recordMetric } = {}) {
+export function createApp(settings = loadConfig(), {
+  settingsSource,
+  accountStateSource,
+  recordMetric
+} = {}) {
   const protectedValues = protectedHeaderValues(settings);
   const captureManager = createCaptureManager({
     configPath: settings.configPath,
@@ -1963,6 +2176,7 @@ export function createApp(settings = loadConfig(), { settingsSource, recordMetri
     captureManager,
     logFn: log,
     settingsSource,
+    accountStateSource,
     recordMetric
   });
   server.on("close", () => {

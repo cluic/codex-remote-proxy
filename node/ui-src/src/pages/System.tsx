@@ -1,9 +1,10 @@
-import { FileJson, LockKeyhole, Settings2, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { FileJson, LockKeyhole, RefreshCw, Settings2, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import {
   Button,
   DefinitionList,
+  IconButton,
   Modal,
   Notice,
   PageHeader,
@@ -33,6 +34,8 @@ type SystemProps = {
   pending: string | null;
   onPrepareCodex: () => Promise<BootstrapResult | null>;
   onGenerateDiagnostics: () => Promise<DiagnosticResult | null>;
+  onRefreshAccount: () => void;
+  onRoutingModeChange: (mode: "custom_only" | "account_first") => void;
 };
 
 function storageLabel(state: MetricsOverview["storageState"] | null, t: Translator): string {
@@ -40,6 +43,12 @@ function storageLabel(state: MetricsOverview["storageState"] | null, t: Translat
   if (state === "ready") return t("common.ready");
   if (state === "degraded") return t("common.degraded");
   return t("common.unknown");
+}
+
+function quotaWindowLabel(minutes: number | null, kind: "primary" | "secondary", t: Translator): string {
+  if (minutes === 300) return t("system.quota5h");
+  if (minutes === 10_080) return t("system.quota7d");
+  return kind === "primary" ? t("system.quotaPrimary") : t("system.quotaSecondary");
 }
 
 export function SystemPage({
@@ -52,11 +61,17 @@ export function SystemPage({
   readOnly,
   pending,
   onPrepareCodex,
-  onGenerateDiagnostics
+  onGenerateDiagnostics,
+  onRefreshAccount,
+  onRoutingModeChange
 }: SystemProps) {
   const [prepareOpen, setPrepareOpen] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BootstrapResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticResult | null>(null);
+  const [routingSelection, setRoutingSelection] = useState(settings.routingMode);
+  useEffect(() => {
+    if (pending !== "routing-mode") setRoutingSelection(settings.routingMode);
+  }, [pending, settings.routingMode]);
   const workerRunning = status.worker?.phase === "running" && status.worker.state?.listening === true;
   const prepare = async () => {
     setPrepareOpen(false);
@@ -73,6 +88,18 @@ export function SystemPage({
   const proxyAddress = settings.proxyHost && settings.proxyPort
     ? `http://${settings.proxyHost}:${settings.proxyPort}`
     : "http://127.0.0.1:15100";
+  const account = status.account;
+  const accountTone = account.authenticated === true
+    ? "success"
+    : account.authenticated === false
+      ? "neutral"
+      : account.phase === "unavailable" ? "warning" : "neutral";
+  const accountLabel = account.authenticated === true
+    ? t("system.accountSignedIn")
+    : account.authenticated === false
+      ? t("system.accountApiKey")
+      : t("system.accountUnknown");
+  const accountFirst = routingSelection === "account_first";
 
   return (
     <div className="page-stack" data-testid="page-system">
@@ -100,6 +127,88 @@ export function SystemPage({
           </div>
         </Panel>
         <div className="system-tools">
+          <Panel>
+            <PanelHeader
+              title={t("system.accountTitle")}
+              description={t("system.accountHelp")}
+              action={(
+                <IconButton
+                  label={t("system.refreshAccount")}
+                  disabled={readOnly || pending !== null}
+                  onClick={onRefreshAccount}
+                >
+                  <RefreshCw
+                    className={pending === "account-refresh" ? "spin" : undefined}
+                    aria-hidden="true"
+                  />
+                </IconButton>
+              )}
+            />
+            <div className="panel-content account-panel-content">
+              <div className="account-summary">
+                <StatusBadge tone={accountTone}>{accountLabel}</StatusBadge>
+                {account.planType ? <span className="account-plan">{account.planType}</span> : null}
+              </div>
+              <DefinitionList rows={[
+                { label: t("system.authMode"), value: account.authMode ?? t("common.unknown") },
+                {
+                  label: t("system.quotaStatus"),
+                  value: account.quota?.status === "available"
+                    ? t("system.quotaAvailable")
+                    : account.quota?.status === "exhausted"
+                      ? t("system.quotaExhausted")
+                      : account.quotaSupported === false
+                        ? t("system.quotaUnsupported")
+                        : t("common.unknown")
+                },
+                { label: t("system.accountUpdated"), value: formatDate(locale, account.updatedAt, true) }
+              ]} />
+              {account.quota?.windows.length ? (
+                <div className="quota-window-list">
+                  {account.quota.windows.map((window) => {
+                    const label = quotaWindowLabel(window.windowDurationMins, window.kind, t);
+                    const resetAt = window.resetsAt === null
+                      ? null
+                      : new Date(window.resetsAt * 1_000).toISOString();
+                    return (
+                      <div className="quota-window" key={`${window.kind}-${window.windowDurationMins ?? "unknown"}`}>
+                        <div className="quota-window-heading">
+                          <span>{label}</span>
+                          <strong>{t("system.quotaRemaining", { value: window.remainingPercent })}</strong>
+                        </div>
+                        <progress
+                          max={100}
+                          value={window.remainingPercent}
+                          aria-label={`${label}: ${t("system.quotaRemaining", { value: window.remainingPercent })}`}
+                        />
+                        <small>{resetAt
+                          ? t("system.quotaResets", { value: formatDate(locale, resetAt, true) })
+                          : t("system.quotaResetUnknown")}</small>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {account.errorCode ? <code className="account-error-code">{account.errorCode}</code> : null}
+              <label className="routing-switch">
+                <input
+                  type="checkbox"
+                  checked={accountFirst}
+                  disabled={readOnly || pending !== null}
+                  onChange={(event) => {
+                    const mode = event.target.checked ? "account_first" : "custom_only";
+                    setRoutingSelection(mode);
+                    onRoutingModeChange(mode);
+                  }}
+                />
+                <span className="switch-track" aria-hidden="true"><span /></span>
+                <span className="routing-switch-copy">
+                  <strong>{t("system.accountFirst")}</strong>
+                  <small>{t(accountFirst ? "system.accountFirstOn" : "system.accountFirstOff")}</small>
+                </span>
+              </label>
+            </div>
+          </Panel>
           <Panel>
             <PanelHeader
               title={t("system.codexTitle")}

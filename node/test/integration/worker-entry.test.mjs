@@ -204,6 +204,16 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
     capture: {
       enabled: false,
       dbPath: join(configPath, "..", "traffic.sqlite3")
+    },
+    routing: {
+      mode: "custom_only",
+      accountRevision: 1,
+      account: {
+        authMode: null,
+        quotaStatus: "unknown",
+        blockedUntil: null,
+        updatedAt: null
+      }
     }
   };
 }

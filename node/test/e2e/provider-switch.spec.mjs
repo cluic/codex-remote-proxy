@@ -486,6 +486,39 @@ test("paginates sanitized Activity and exposes diagnostics on System", async ({ 
   await assertNoSecrets(page, crp);
 });
 
+test("shows ChatGPT quota and hot-updates account-first routing", async ({ page, crp }) => {
+  crp.seedProviders({
+    providers: [{ id: "provider-account-fallback", name: "Fallback API" }],
+    activeProviderId: "provider-account-fallback",
+    generation: 8
+  });
+  await openCrp(page, crp);
+  await navigate(page, "System");
+
+  await expect(page.getByText("ChatGPT signed in")).toBeVisible();
+  await expect(page.getByText("5-hour window")).toBeVisible();
+  await expect(page.getByText("65% remaining")).toBeVisible();
+  await expect(page.getByText("7-day window")).toBeVisible();
+  await expect(page.getByText("38% remaining")).toBeVisible();
+
+  const accountFirst = page.getByRole("checkbox", { name: /Use ChatGPT quota first/ });
+  await expect(accountFirst).not.toBeChecked();
+  await accountFirst.check();
+  await expect(accountFirst).toBeChecked();
+  expect(crp.state.routingMode).toBe("account_first");
+  expect(crp.state.generation).toBe(9);
+  expect(crp.calls.findLast((call) => call.operation === "updateRoutingMode")).toEqual({
+    operation: "updateRoutingMode",
+    mode: "account_first"
+  });
+
+  await page.getByRole("button", { name: "Refresh account quota" }).click();
+  await expect.poll(() => crp.calls.filter((call) => call.operation === "refreshAccount").length).toBe(1);
+  await navigate(page, "Activity");
+  await expect(page.locator(".activity-event").first()).toContainText("Routing preference changed");
+  await assertNoSecrets(page, crp);
+});
+
 test("keeps fragmentless reload GET-only until explicit same-origin management recovery", async ({ page, crp }) => {
   crp.seedActivity(55);
   await openCrp(page, crp);

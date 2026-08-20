@@ -118,7 +118,10 @@ export function OverviewPage({
   const tokensObserved = metrics?.summary.tokens.observedRequests
     ? metrics.summary.tokens.input + metrics.summary.tokens.output
     : null;
-  const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
+  const providerNames = new Map([
+    ...providers.map((provider) => [provider.id, provider.name] as const),
+    ["crp-chatgpt-account", t("overview.chatgptAccount")] as const
+  ]);
   const droppedObservations = metrics?.dataQuality.droppedObservations ?? 0;
   const successRateComplete = droppedObservations === 0;
   const successRateUnavailable = t("overview.successRateUnavailable", {

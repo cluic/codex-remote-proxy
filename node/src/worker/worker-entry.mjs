@@ -5,11 +5,13 @@ import {
   validateChildMessage,
   validateParentMessage
 } from "./protocol.mjs";
+import { AccountRoutingStateSource } from "./account-routing-state.mjs";
 import { RuntimeSettingsSource } from "./runtime-settings.mjs";
 
 const PARENT_DISCONNECT_GRACE_MS = 250;
 
 const runtimeSettings = new RuntimeSettingsSource();
+const accountRoutingState = new AccountRoutingStateSource();
 
 let app = null;
 let phase = "ready";
@@ -167,9 +169,14 @@ async function configure(message) {
     generation: message.generation,
     settings: message.settings
   });
+  accountRoutingState.seed({
+    revision: message.settings.routing.accountRevision,
+    state: message.settings.routing.account
+  });
   if (!app) {
     app = createApp(message.settings, {
       settingsSource: runtimeSettings,
+      accountStateSource: accountRoutingState,
       recordMetric: emitMetric
     });
     trackRequests(app.server);
@@ -182,6 +189,21 @@ async function configure(message) {
   }
   phase = "running";
   await sendChildMessage(lifecycleMessage("configured", message.requestId));
+}
+
+async function applyAccountState(message) {
+  if (stopping || phase !== "running") {
+    const error = new Error("Worker account routing state is unavailable.");
+    error.code = "WORKER_CONFIGURE_FAILED";
+    throw error;
+  }
+  accountRoutingState.apply({ revision: message.revision, state: message.state });
+  await sendChildMessage({
+    version: PROTOCOL_VERSION,
+    type: "account-state-applied",
+    requestId: message.requestId,
+    revision: message.revision
+  });
 }
 
 async function shutdown() {
@@ -283,6 +305,10 @@ async function handleParentMessage(rawMessage) {
   try {
     if (message.type === "configure") {
       await configure(message);
+      return;
+    }
+    if (message.type === "account-state") {
+      await applyAccountState(message);
       return;
     }
     if (message.type === "status") {

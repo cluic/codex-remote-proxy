@@ -29,7 +29,8 @@ const DEFAULT_SETTINGS = {
   proxyPort: 15100,
   adminHost: "127.0.0.1",
   adminPort: 15101,
-  captureEnabled: false
+  captureEnabled: false,
+  routingMode: "custom_only"
 };
 
 function makeTempRegistry(t, prefix = "crp-provider-registry-") {
@@ -91,7 +92,7 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
   });
 
   assert.deepEqual(registry.getDocument(), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     activeProviderId: null,
     providers: [],
     settings: DEFAULT_SETTINGS
@@ -439,7 +440,7 @@ test("loads a legacy controlled model override and allows replacing it safely", 
   }), { id: "provider-legacy", now: FIXED_NOW });
   legacy.modelOverride = "legacy\tmodel";
   writeFileSync(registryPath, `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     activeProviderId: null,
     providers: [legacy],
     settings: DEFAULT_SETTINGS
@@ -563,6 +564,31 @@ test("compare-and-set active operations change state only when their predicates 
   );
 });
 
+test("persists only supported global routing modes", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({ path: registryPath, now: () => FIXED_NOW });
+
+  assert.equal(registry.setRoutingMode("account_first"), "account_first");
+  assert.equal(registry.getDocument().settings.routingMode, "account_first");
+  assert.equal(
+    new ProviderRegistry({ path: registryPath }).getDocument().settings.routingMode,
+    "account_first"
+  );
+  assert.equal(registry.setRoutingMode("account_first"), "account_first");
+  assert.equal(registry.setRoutingModeIfCurrent("custom_only", "account_first"), false);
+  assert.equal(registry.setRoutingModeIfCurrent("account_first", "custom_only"), true);
+  assert.equal(registry.getDocument().settings.routingMode, "custom_only");
+  assert.equal(registry.setRoutingModeIfCurrent("custom_only", "account_first"), true);
+  assert.throws(
+    () => registry.setRoutingMode("account_only"),
+    assertCrpError("ROUTING_MODE_INVALID", 400)
+  );
+  assert.throws(
+    () => registry.setRoutingModeIfCurrent("invalid", "custom_only"),
+    assertCrpError("ROUTING_MODE_INVALID", 400)
+  );
+});
+
 test("multi-instance initial activation compare-and-set is first-wins", (t) => {
   const { registryPath } = makeTempRegistry(t, "crp-provider-active-first-wins-");
   let staleInstanceRegistryRenames = 0;
@@ -658,21 +684,27 @@ test("reloads the complete persisted document", (t) => {
   assert.deepEqual(reloaded.getActive(), beforeReload.providers[0]);
 });
 
-test("rejects malformed JSON and invalid schema-version-2 documents", (t) => {
+test("rejects malformed JSON, unmigrated schema 2, and invalid schema 3 documents", (t) => {
   const { tempDir } = makeTempRegistry(t, "crp-provider-invalid-");
   const documents = [
     "{ malformed",
     `${JSON.stringify({ schemaVersion: 1, activeProviderId: null, providers: [], settings: DEFAULT_SETTINGS })}\n`,
-    `${JSON.stringify({ schemaVersion: 2, activeProviderId: null, providers: {}, settings: DEFAULT_SETTINGS })}\n`,
-    `${JSON.stringify({ schemaVersion: 2, activeProviderId: "missing", providers: [], settings: DEFAULT_SETTINGS })}\n`,
     `${JSON.stringify({
       schemaVersion: 2,
+      activeProviderId: null,
+      providers: [],
+      settings: Object.fromEntries(Object.entries(DEFAULT_SETTINGS).filter(([key]) => key !== "routingMode"))
+    })}\n`,
+    `${JSON.stringify({ schemaVersion: 3, activeProviderId: null, providers: {}, settings: DEFAULT_SETTINGS })}\n`,
+    `${JSON.stringify({ schemaVersion: 3, activeProviderId: "missing", providers: [], settings: DEFAULT_SETTINGS })}\n`,
+    `${JSON.stringify({
+      schemaVersion: 3,
       activeProviderId: null,
       providers: [],
       settings: { ...DEFAULT_SETTINGS, proxyPort: 15102 }
     })}\n`,
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       activeProviderId: null,
       providers: [{
         ...normalizeProvider(validInput(), { id: "provider-1", now: FIXED_NOW }),
@@ -681,7 +713,7 @@ test("rejects malformed JSON and invalid schema-version-2 documents", (t) => {
       settings: DEFAULT_SETTINGS
     })}\n`,
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       activeProviderId: null,
       providers: [{
         ...normalizeProvider(validInput(), { id: "provider-1", now: FIXED_NOW }),
@@ -691,7 +723,7 @@ test("rejects malformed JSON and invalid schema-version-2 documents", (t) => {
       settings: DEFAULT_SETTINGS
     })}\n`,
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       activeProviderId: null,
       providers: [{
         ...normalizeProvider(validInput(), { id: "provider-1", now: FIXED_NOW }),

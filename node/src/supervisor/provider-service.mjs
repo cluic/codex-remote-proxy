@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { isValidAccountRoutingState } from "../routing/account-routing.mjs";
 import {
   createProviderSourceFingerprint,
   MAX_MODEL_ID_LENGTH,
@@ -10,6 +11,12 @@ import { CrpError } from "../shared/errors.mjs";
 
 const MAX_MODELS_RESPONSE_BYTES = 1_048_576;
 const MODEL_ID_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+const DEFAULT_ACCOUNT_ROUTING_STATE = Object.freeze({
+  authMode: null,
+  quotaStatus: "unknown",
+  blockedUntil: null,
+  updatedAt: null
+});
 
 function serviceError(code, { status = 500, cause, details = {} } = {}) {
   const contracts = {
@@ -144,6 +151,18 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
     PROXY_RESTART_FAILED: [
       "The proxy worker could not be restarted.",
       "Review worker health and try again."
+    ],
+    ROUTING_MODE_UPDATE_FAILED: [
+      "The routing mode could not be updated.",
+      "Review Worker health and try the routing change again."
+    ],
+    ROUTING_MODE_ROLLBACK_DEGRADED: [
+      "The routing mode update failed and the prior state could not be restored safely.",
+      "Stop CRP and repair the routing setting before restarting."
+    ],
+    ROUTING_MODE_COMMITTED_DEGRADED: [
+      "The routing mode was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
     ]
   };
   const [message, action] = contracts[code] ?? [
@@ -211,6 +230,8 @@ export class ProviderService {
       state?.phase === "running" && state?.generation === generation
     ));
     this.paths = options.paths ?? {};
+    this.getAccountRoutingSnapshot = options.getAccountRoutingSnapshot
+      ?? (() => ({ revision: 1, state: DEFAULT_ACCOUNT_ROUTING_STATE }));
     const workerGeneration = workerManager.getPublicState()?.generation;
     this.confirmedGeneration = Number.isSafeInteger(workerGeneration) && workerGeneration >= 0
       ? workerGeneration
@@ -710,6 +731,150 @@ export class ProviderService {
     return this.#runLifecycleOperation(() => this.#startOrRestartProxy("restart"));
   }
 
+  setRoutingMode(mode) {
+    return this.#runExclusive(async () => {
+      const document = this.registry.getDocument();
+      const previousMode = document.settings.routingMode;
+      if (mode === previousMode) {
+        return {
+          routingMode: mode,
+          generation: this.confirmedGeneration,
+          worker: publicWorkerState(this.workerManager.getPublicState())
+        };
+      }
+      const before = this.workerManager.getPublicState();
+      if (before?.phase !== "stopped" && before?.phase !== "running") {
+        throw serviceError("ROUTING_MODE_UPDATE_FAILED", { status: 409 });
+      }
+      const previousGeneration = this.confirmedGeneration;
+      const previousSnapshot = this.confirmedSnapshot
+        ? structuredClone(this.confirmedSnapshot)
+        : null;
+      let generation = previousGeneration;
+      let candidateSnapshot = null;
+      if (before.phase === "running") {
+        const profile = document.providers.find(
+          (provider) => provider.id === document.activeProviderId
+        );
+        if (!profile || !previousSnapshot) {
+          throw serviceError("ROUTING_MODE_UPDATE_FAILED", { status: 409 });
+        }
+        const secret = await this.credentialStore.get(profile.credentialRef);
+        generation += 1;
+        if (!Number.isSafeInteger(generation)) {
+          throw serviceError("ROUTING_MODE_UPDATE_FAILED");
+        }
+        candidateSnapshot = this.#buildSnapshot(
+          profile,
+          secret,
+          generation,
+          mode
+        );
+      }
+
+      let persisted = false;
+      let commitWarning = null;
+      let workerAttempted = false;
+      let completed = false;
+      try {
+        try {
+          persisted = this.registry.setRoutingModeIfCurrent(previousMode, mode);
+          if (!persisted) throw new Error("routing mode changed concurrently");
+        } catch (error) {
+          if (isCommittedError(error)
+            && this.registry.getDocument().settings.routingMode === mode) {
+            persisted = true;
+            commitWarning = error;
+          } else {
+            throw error;
+          }
+        }
+
+        let workerState = before;
+        if (candidateSnapshot) {
+          workerAttempted = true;
+          workerState = await this.workerManager.applySnapshot(candidateSnapshot);
+          if (!isConfirmedWorkerState(workerState, generation)
+            || await this.verifyWorkerHealth(generation, workerState) !== true) {
+            throw new Error("routing mode worker update was not confirmed");
+          }
+        }
+        if (commitWarning) {
+          const committed = serviceError("ROUTING_MODE_COMMITTED_DEGRADED", {
+            cause: commitWarning,
+            details: { committed: true, degraded: true, generation }
+          });
+          await this.#recordSettings("routing-mode", "degraded", committed.code, {
+            mode,
+            generation
+          });
+          if (candidateSnapshot) {
+            this.confirmedGeneration = generation;
+            this.confirmedSnapshot = structuredClone(candidateSnapshot);
+          }
+          completed = true;
+          throw committed;
+        }
+        await this.#recordSettings("routing-mode", "success", null, { mode, generation });
+        if (candidateSnapshot) {
+          this.confirmedGeneration = generation;
+          this.confirmedSnapshot = structuredClone(candidateSnapshot);
+        }
+        return {
+          routingMode: mode,
+          generation: this.confirmedGeneration,
+          worker: publicWorkerState(workerState)
+        };
+      } catch (error) {
+        if (completed && isCommittedError(error)) throw error;
+        let rollbackFailure = null;
+        if (persisted) {
+          try {
+            const restored = this.registry.setRoutingModeIfCurrent(mode, previousMode);
+            if (!restored) throw new Error("routing mode rollback lost compare-and-set");
+          } catch (caught) {
+            rollbackFailure = caught;
+          }
+        }
+        if (workerAttempted) {
+          try {
+            const observedGeneration = this.workerManager.getPublicState()?.generation;
+            const rollbackGeneration = Math.max(
+              generation,
+              previousGeneration,
+              Number.isSafeInteger(observedGeneration) ? observedGeneration : 0
+            ) + 1;
+            if (!Number.isSafeInteger(rollbackGeneration) || !previousSnapshot) {
+              throw new Error("routing mode rollback generation is invalid");
+            }
+            const rollbackSnapshot = structuredClone(previousSnapshot);
+            rollbackSnapshot.generation = rollbackGeneration;
+            const restored = await this.workerManager.applySnapshot(rollbackSnapshot);
+            if (!isConfirmedWorkerState(restored, rollbackGeneration)
+              || await this.verifyWorkerHealth(rollbackGeneration, restored) !== true) {
+              throw new Error("routing mode worker rollback was not confirmed");
+            }
+            this.confirmedGeneration = rollbackGeneration;
+            this.confirmedSnapshot = structuredClone(rollbackSnapshot);
+          } catch (caught) {
+            rollbackFailure ??= caught;
+          }
+        }
+        if (rollbackFailure) {
+          const degraded = serviceError("ROUTING_MODE_ROLLBACK_DEGRADED", {
+            cause: rollbackFailure,
+            details: { committed: false, degraded: true, generation }
+          });
+          await this.#safeRecordSettingsFailure("routing-mode", degraded, { mode, generation });
+          throw degraded;
+        }
+        const failure = serviceError("ROUTING_MODE_UPDATE_FAILED", { cause: error });
+        await this.#safeRecordSettingsFailure("routing-mode", failure, { mode, generation });
+        throw failure;
+      }
+    });
+  }
+
   async getStatus() {
     const document = this.registry.getDocument();
     const activeProfile = document.activeProviderId === null
@@ -901,12 +1066,18 @@ export class ProviderService {
     }
   }
 
-  #buildSnapshot(profile, secret, generation) {
+  #buildSnapshot(profile, secret, generation, routingMode = null) {
     const document = this.registry.getDocument();
+    const accountSnapshot = this.getAccountRoutingSnapshot();
     const runtimeConfigPath = this.paths.runtimeConfigPath;
     const capturePath = this.paths.capturePath;
     if (typeof runtimeConfigPath !== "string" || runtimeConfigPath.length === 0
       || typeof capturePath !== "string" || capturePath.length === 0) {
+      throw serviceError("PROVIDER_ACTIVATION_FAILED");
+    }
+    if (!Number.isSafeInteger(accountSnapshot?.revision)
+      || accountSnapshot.revision <= 0
+      || !isValidAccountRoutingState(accountSnapshot?.state)) {
       throw serviceError("PROVIDER_ACTIVATION_FAILED");
     }
     return {
@@ -937,6 +1108,11 @@ export class ProviderService {
         capture: {
           enabled: document.settings.captureEnabled,
           dbPath: capturePath
+        },
+        routing: {
+          mode: routingMode ?? document.settings.routingMode,
+          accountRevision: accountSnapshot.revision,
+          account: structuredClone(accountSnapshot.state)
         }
       }
     };
@@ -962,6 +1138,28 @@ export class ProviderService {
       errorCode,
       details
     });
+  }
+
+  async #recordSettings(action, result, errorCode, details) {
+    await this.activityStore.append({
+      category: "settings",
+      action,
+      providerId: null,
+      result,
+      errorCode,
+      details
+    });
+  }
+
+  async #safeRecordSettingsFailure(action, error, details = {}) {
+    try {
+      await this.#recordSettings(action, "failed", stableErrorCode(
+        error,
+        "ROUTING_MODE_UPDATE_FAILED"
+      ), details);
+    } catch {
+      // Preserve the settings error when the audit store is unavailable.
+    }
   }
 
   async #safeRecordProxyFailure(action, error, details = {}) {

@@ -62,6 +62,25 @@ const METRIC_MAX_COUNT = 1_000_000_000_000;
 const METRIC_MAX_TOKEN_TOTAL = 9_000_000_000_000_000;
 const METRIC_MAX_LATENCY_MS = 300_000;
 const MAX_SUPERVISOR_PID = 4_294_967_295;
+const ACCOUNT_PHASES = new Set(["idle", "starting", "ready", "unavailable", "closed"]);
+const ACCOUNT_AUTH_MODES = new Set([
+  "apikey",
+  "chatgpt",
+  "chatgptAuthTokens",
+  "headers",
+  "agentIdentity",
+  "personalAccessToken",
+  "bedrockApiKey"
+]);
+const CHATGPT_AUTH_MODES = new Set([
+  "chatgpt",
+  "chatgptAuthTokens",
+  "agentIdentity",
+  "personalAccessToken"
+]);
+const ACCOUNT_QUOTA_STATUSES = new Set(["available", "exhausted", "unknown"]);
+const ROUTING_MODES = new Set(["custom_only", "account_first"]);
+const PUBLIC_TEXT_PATTERN = /^[^\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]{1,128}$/u;
 
 function apiError(code, message, action, status) {
   return new CrpError(code, message, action, { status });
@@ -121,6 +140,15 @@ function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function isIsoTimestamp(value) {
+  if (typeof value !== "string") return false;
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
 }
 
 function exactObject(value, { allowed, required = [] }) {
@@ -298,8 +326,74 @@ function projectSettings(settings) {
     adminHost: typeof settings?.adminHost === "string" ? settings.adminHost : null,
     adminPort: Number.isInteger(settings?.adminPort) ? settings.adminPort : null,
     captureEnabled: settings?.captureEnabled === true,
+    routingMode: ROUTING_MODES.has(settings?.routingMode)
+      ? settings.routingMode
+      : "custom_only",
     credentialBackend: typeof settings?.credentialBackend === "string"
       ? settings.credentialBackend
+      : null
+  };
+}
+
+function projectAccountWindow(window) {
+  if (!isPlainObject(window)
+    || (window.kind !== "primary" && window.kind !== "secondary")
+    || !Number.isSafeInteger(window.usedPercent)
+    || window.usedPercent < 0
+    || window.usedPercent > 100) {
+    return null;
+  }
+  return {
+    kind: window.kind,
+    usedPercent: window.usedPercent,
+    remainingPercent: 100 - window.usedPercent,
+    windowDurationMins: Number.isSafeInteger(window.windowDurationMins)
+      && window.windowDurationMins > 0
+      && window.windowDurationMins <= 10 * 365 * 24 * 60
+      ? window.windowDurationMins
+      : null,
+    resetsAt: Number.isSafeInteger(window.resetsAt)
+      && window.resetsAt >= 0
+      && window.resetsAt <= 32_503_680_000
+      ? window.resetsAt
+      : null
+  };
+}
+
+function projectAccountState(state) {
+  const authMode = ACCOUNT_AUTH_MODES.has(state?.authMode) ? state.authMode : null;
+  const quota = isPlainObject(state?.quota)
+    && ACCOUNT_QUOTA_STATUSES.has(state.quota.status)
+    ? {
+        status: state.quota.status,
+        windows: Array.isArray(state.quota.windows)
+          ? state.quota.windows.map(projectAccountWindow).filter(Boolean).slice(0, 2)
+          : [],
+        rateLimitReachedType: typeof state.quota.rateLimitReachedType === "string"
+          && PUBLIC_TEXT_PATTERN.test(state.quota.rateLimitReachedType)
+          ? state.quota.rateLimitReachedType
+          : null,
+        spendControlReached: typeof state.quota.spendControlReached === "boolean"
+          ? state.quota.spendControlReached
+          : null,
+        updatedAt: isIsoTimestamp(state.quota.updatedAt) ? state.quota.updatedAt : null
+      }
+    : null;
+  return {
+    phase: ACCOUNT_PHASES.has(state?.phase) ? state.phase : "unavailable",
+    authMode,
+    authenticated: authMode === null ? null : CHATGPT_AUTH_MODES.has(authMode),
+    planType: typeof state?.planType === "string" && PUBLIC_TEXT_PATTERN.test(state.planType)
+      ? state.planType
+      : null,
+    quotaSupported: typeof state?.quotaSupported === "boolean"
+      ? state.quotaSupported
+      : null,
+    quota,
+    updatedAt: isIsoTimestamp(state?.updatedAt) ? state.updatedAt : null,
+    errorCode: typeof state?.errorCode === "string"
+      && /^[A-Z][A-Z0-9_]{0,63}$/.test(state.errorCode)
+      ? state.errorCode
       : null
   };
 }
@@ -553,6 +647,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/session`, ["POST"]],
     [`${API_PREFIX}/session/resume`, ["POST"]],
     [`${API_PREFIX}/status`, ["GET"]],
+    [`${API_PREFIX}/account/refresh`, ["POST"]],
     [`${API_PREFIX}/metrics/overview`, ["GET"]],
     [`${API_PREFIX}/providers`, ["GET", "POST"]],
     [`${API_PREFIX}/proxy/start`, ["POST"]],
@@ -615,6 +710,7 @@ export function createAdminServer({
   codexService,
   diagnosticsService,
   metricsService,
+  accountMonitor,
   getSupervisorState = () => ({ pid: process.pid, startedAt: null }),
   requestSupervisorShutdown = null,
   uiDir,
@@ -625,7 +721,7 @@ export function createAdminServer({
 } = {}) {
   if (host !== "127.0.0.1" || !Number.isInteger(port) || port < 0 || port > 65_535
     || !Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1
-    || !auth || !providerService) {
+    || !auth || !providerService || !accountMonitor) {
     throw new TypeError("Admin server options are invalid.");
   }
 
@@ -825,7 +921,15 @@ export function createAdminServer({
       sendJson(response, 200, {
         supervisor: projectSupervisorState(getSupervisorState()),
         ...projectProviderStatus(providerStatus),
-        codex: projectCodexState(codexStatus)
+        codex: projectCodexState(codexStatus),
+        account: projectAccountState(accountMonitor.getState())
+      });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/account/refresh` && request.method === "POST") {
+      await requireEmptyBody(request, maxBodyBytes);
+      sendJson(response, 200, {
+        account: projectAccountState(await accountMonitor.refresh())
       });
       return;
     }
@@ -995,11 +1099,19 @@ export function createAdminServer({
     }
     if (url.pathname === `${API_PREFIX}/settings` && request.method === "PATCH") {
       const patch = exactObject(await readJsonBody(request, maxBodyBytes), {
-        allowed: ["captureEnabled"]
+        allowed: ["captureEnabled", "routingMode"]
       });
-      if (Object.keys(patch).length === 0 || typeof patch.captureEnabled !== "boolean") {
+      if (Object.keys(patch).length !== 1) {
         throw bodyError("API_BODY_INVALID");
       }
+      if (Object.hasOwn(patch, "routingMode")) {
+        if (!ROUTING_MODES.has(patch.routingMode)) throw bodyError("API_BODY_INVALID");
+        sendJson(response, 200, {
+          settings: projectSettings(await settingsService.updateSettings(patch))
+        });
+        return;
+      }
+      if (typeof patch.captureEnabled !== "boolean") throw bodyError("API_BODY_INVALID");
       throw new CrpError(
         "SETTINGS_READ_ONLY",
         "Local settings are read-only in this version.",

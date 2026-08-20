@@ -72,7 +72,14 @@ function makeSettings({
   modelMode = "passthrough",
   modelOverride = null,
   logLevel = "info",
-  captureEnabled = true
+  captureEnabled = true,
+  routingMode = "custom_only",
+  accountState = {
+    authMode: null,
+    quotaStatus: "unknown",
+    blockedUntil: null,
+    updatedAt: null
+  }
 }) {
   return {
     configPath: "/tmp/crp-task5-proxy-config.json",
@@ -99,6 +106,11 @@ function makeSettings({
     capture: {
       enabled: captureEnabled,
       dbPath: "/tmp/crp-task5-traffic.sqlite3"
+    },
+    routing: {
+      mode: routingMode,
+      accountRevision: 1,
+      account: structuredClone(accountState)
     }
   };
 }
@@ -218,6 +230,432 @@ test("buildTargetUrl preserves base query parameters without forwarding fragment
     ).href,
     "https://api.example.test/v1/responses?tenant=one%20two&model=gpt%2F5"
   );
+});
+
+test("custom-only routing strips Codex account credentials before nonstandard provider auth", async (t) => {
+  const observedSignal = createSignal();
+  const metricSignal = createSignal();
+  const metrics = [];
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      observedSignal.resolve({
+        hasAccountAuthorization: Object.hasOwn(req.headers, "authorization"),
+        hasAccountId: Object.hasOwn(req.headers, "chatgpt-account-id"),
+        customAuthMatches: req.headers["x-provider-auth"] === "Bearer custom-token-sentinel"
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: "custom-token-sentinel",
+    authHeader: "x-provider-auth",
+    captureEnabled: false,
+    routingMode: "custom_only"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {},
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+      metricSignal.resolve();
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer account-token-sentinel",
+      "chatgpt-account-id": "account-id-sentinel"
+    },
+    body: JSON.stringify({ model: "account-id-sentinel", input: "hello" })
+  });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  const observed = await withDeadline(observedSignal.promise, "custom request was not observed");
+  await withDeadline(metricSignal.promise, "custom metric was not observed");
+  assert.equal(observed.hasAccountAuthorization, false);
+  assert.equal(observed.hasAccountId, false);
+  assert.equal(observed.customAuthMatches, true);
+  assert.equal(metrics.length, 1);
+  assert.equal(metrics[0].model, null);
+});
+
+test("custom routing strips Codex account credentials when provider authorization passthrough is disabled", async (t) => {
+  const observed = createSignal();
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      observed.resolve({
+        hasAuthorization: Object.hasOwn(req.headers, "authorization"),
+        hasAccountId: Object.hasOwn(req.headers, "chatgpt-account-id")
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    captureEnabled: false,
+    routingMode: "custom_only"
+  });
+  settings.proxy.overrideAuthorization = false;
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer account-token-sentinel",
+      "chatgpt-account-id": "account-id-sentinel"
+    },
+    body: JSON.stringify({ model: "client-account-model" })
+  });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  assert.deepEqual(
+    await withDeadline(observed.promise, "custom request was not observed"),
+    { hasAuthorization: false, hasAccountId: false }
+  );
+});
+
+test("account-first sends eligible Responses traffic to the fixed Codex route", async (t) => {
+  const accountObserved = createSignal();
+  let customRequests = 0;
+  const account = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      accountObserved.resolve({
+        path: req.url,
+        authorizationMatches: req.headers.authorization === "Bearer account-token-sentinel",
+        accountMatches: req.headers["chatgpt-account-id"] === "account-id-sentinel",
+        hasCustomAuth: Object.hasOwn(req.headers, "x-provider-auth"),
+        hasCustomExtra: Object.hasOwn(req.headers, "x-provider-extra"),
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      });
+      res.setHeader("content-type", "application/json");
+      res.setHeader("x-codex-primary-used-percent", "35");
+      res.setHeader("x-codex-primary-window-minutes", "300");
+      res.end(JSON.stringify(completedResponse({
+        usage: { input_tokens: 11, output_tokens: 4 }
+      })));
+    });
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  const custom = http.createServer((_req, res) => {
+    customRequests += 1;
+    res.statusCode = 500;
+    res.end();
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}/v1`,
+    apiKey: "custom-token-sentinel",
+    authHeader: "x-provider-auth",
+    extraHeaders: { "x-provider-extra": "custom-extra-sentinel" },
+    captureEnabled: false,
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings });
+  const metricObserved = createSignal();
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {},
+    routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      local.search = target.search;
+      return local;
+    },
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+      metricObserved.resolve();
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses?stream=false`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer account-token-sentinel",
+      "chatgpt-account-id": "account-id-sentinel",
+      "x-provider-auth": "client-custom-auth-sentinel"
+    },
+    body: JSON.stringify({ model: "client-account-model", input: "hello" })
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "completed");
+  const observed = await withDeadline(accountObserved.promise, "account request was not observed");
+  await withDeadline(metricObserved.promise, "account metric was not observed");
+
+  assert.deepEqual(observed, {
+    path: "/backend-api/codex/responses?stream=false",
+    authorizationMatches: true,
+    accountMatches: true,
+    hasCustomAuth: false,
+    hasCustomExtra: false,
+    body: { model: "client-account-model", input: "hello" }
+  });
+  assert.equal(customRequests, 0);
+  assert.equal(metrics.length, 1);
+  assert.equal(metrics[0].route, "account");
+  assert.equal(metrics[0].model, "client-account-model");
+});
+
+test("account 429 replays once to custom API, rewrites its model, and activates cooldown", async (t) => {
+  let accountRequests = 0;
+  const accountBodies = [];
+  const account = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      accountRequests += 1;
+      accountBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      res.statusCode = 429;
+      res.setHeader("x-codex-primary-used-percent", "100");
+      res.setHeader("x-codex-primary-reset-after-seconds", "60");
+      res.end(JSON.stringify({ error: { type: "rate_limit" } }));
+    });
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+
+  const customObserved = [];
+  const custom = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      customObserved.push({
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+        customAuthMatches: req.headers["x-provider-auth"] === "Bearer custom-token-sentinel",
+        customExtraMatches: req.headers["x-provider-extra"] === "custom-extra-sentinel",
+        hasAccountAuthorization: Object.hasOwn(req.headers, "authorization"),
+        hasAccountId: Object.hasOwn(req.headers, "chatgpt-account-id")
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse({
+        usage: { input_tokens: 9, output_tokens: 3 }
+      })));
+    });
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}/v1`,
+    apiKey: "custom-token-sentinel",
+    authHeader: "x-provider-auth",
+    extraHeaders: { "x-provider-extra": "custom-extra-sentinel" },
+    modelMode: "override",
+    modelOverride: "custom-provider-model",
+    captureEnabled: false,
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 2, settings });
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {},
+    routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      local.search = target.search;
+      return local;
+    },
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const send = (input) => fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer account-token-sentinel",
+      "chatgpt-account-id": "account-id-sentinel"
+    },
+    body: JSON.stringify({ model: "client-account-model", input })
+  });
+  for (const input of ["first", "second"]) {
+    const response = await send(input);
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(accountRequests, 1);
+  assert.deepEqual(accountBodies, [{ model: "client-account-model", input: "first" }]);
+  assert.deepEqual(customObserved, [
+    {
+      body: { model: "custom-provider-model", input: "first" },
+      customAuthMatches: true,
+      customExtraMatches: true,
+      hasAccountAuthorization: false,
+      hasAccountId: false
+    },
+    {
+      body: { model: "custom-provider-model", input: "second" },
+      customAuthMatches: true,
+      customExtraMatches: true,
+      hasAccountAuthorization: false,
+      hasAccountId: false
+    }
+  ]);
+  assert.deepEqual(metrics.map(({ route, model }) => ({ route, model })), [
+    { route: "custom", model: "custom-provider-model" },
+    { route: "custom", model: "custom-provider-model" }
+  ]);
+});
+
+test("account authentication and upstream failures are returned without custom fallback", async (t) => {
+  const statuses = [401, 503];
+  let accountRequests = 0;
+  let customRequests = 0;
+  const account = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = statuses[accountRequests++];
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: { type: "account-upstream" } }));
+    });
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  const custom = http.createServer((_req, res) => {
+    customRequests += 1;
+    res.statusCode = 200;
+    res.end();
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}`,
+    captureEnabled: false,
+    routingMode: "account_first"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 3, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {},
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  for (const expected of statuses) {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer account-token-sentinel",
+        "chatgpt-account-id": "account-id-sentinel"
+      },
+      body: JSON.stringify({ model: "client-account-model" })
+    });
+    assert.equal(response.status, expected);
+    await response.arrayBuffer();
+  }
+  assert.equal(accountRequests, 2);
+  assert.equal(customRequests, 0);
+});
+
+test("account network failures do not switch to the custom API", async (t) => {
+  const unavailable = http.createServer();
+  const unavailablePort = await listen(unavailable);
+  await closeServer(unavailable);
+  let customRequests = 0;
+  const custom = http.createServer((_req, res) => {
+    customRequests += 1;
+    res.statusCode = 200;
+    res.end();
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}`,
+    captureEnabled: false,
+    routingMode: "account_first"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 4, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {},
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${unavailablePort}`);
+      local.pathname = target.pathname;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer account-token-sentinel",
+      "chatgpt-account-id": "account-id-sentinel"
+    },
+    body: JSON.stringify({ model: "client-account-model" })
+  });
+  assert.equal(response.status, 502);
+  await response.arrayBuffer();
+  assert.equal(customRequests, 0);
 });
 
 test("server writes proxied request and response to sqlite", async () => {

@@ -16,6 +16,7 @@ import {
 import { basename, dirname, join } from "node:path";
 
 import { ProviderRegistry } from "../providers/provider-registry.mjs";
+import { validateStoredProvider } from "../providers/provider-schema.mjs";
 import { CrpError } from "../shared/errors.mjs";
 
 const DEFAULT_FILE_OPERATIONS = {
@@ -141,7 +142,7 @@ function scrubDocument(document) {
 
 function emptyRegistryBytes() {
   return Buffer.from(`${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     activeProviderId: null,
     providers: [],
     settings: {
@@ -149,7 +150,8 @@ function emptyRegistryBytes() {
       proxyPort: 15100,
       adminHost: "127.0.0.1",
       adminPort: 15101,
-      captureEnabled: false
+      captureEnabled: false,
+      routingMode: "custom_only"
     }
   }, null, 2)}\n`, "utf8");
 }
@@ -417,17 +419,67 @@ function readSource(path, fileOperations) {
   return { ...source, currentIdentity: source.identity, document: parseJson(source.bytes) };
 }
 
-function assertCurrentRegistry(path, fileOperations) {
+function validateSchema2Registry(document) {
+  const documentFields = new Set(["schemaVersion", "activeProviderId", "providers", "settings"]);
+  const settingsFields = new Set([
+    "proxyHost",
+    "proxyPort",
+    "adminHost",
+    "adminPort",
+    "captureEnabled"
+  ]);
+  if (document.schemaVersion !== 2
+    || Object.keys(document).length !== documentFields.size
+    || Object.keys(document).some((key) => !documentFields.has(key))
+    || !Array.isArray(document.providers)
+    || document.settings === null
+    || typeof document.settings !== "object"
+    || Array.isArray(document.settings)
+    || Object.keys(document.settings).length !== settingsFields.size
+    || Object.keys(document.settings).some((key) => !settingsFields.has(key))
+    || document.settings.proxyHost !== "127.0.0.1"
+    || document.settings.proxyPort !== 15100
+    || document.settings.adminHost !== "127.0.0.1"
+    || document.settings.adminPort !== 15101
+    || document.settings.captureEnabled !== false
+    || (document.activeProviderId !== null && typeof document.activeProviderId !== "string")) {
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  }
+  const ids = new Set();
+  const names = new Set();
+  try {
+    for (const provider of document.providers) {
+      validateStoredProvider(provider);
+      const normalizedName = provider.name.toLowerCase();
+      if (ids.has(provider.id) || names.has(normalizedName)) {
+        throw new Error("duplicate provider");
+      }
+      ids.add(provider.id);
+      names.add(normalizedName);
+    }
+  } catch (error) {
+    throw migrationError("MIGRATION_INPUT_INVALID", error);
+  }
+  if (document.activeProviderId !== null && !ids.has(document.activeProviderId)) {
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  }
+}
+
+function inspectCurrentRegistry(path, fileOperations) {
   const source = readSafeFile(path, fileOperations, { missing: true });
-  if (source === null) return false;
+  if (source === null) return { kind: "missing" };
   const document = parseJson(source.bytes);
-  if (document.schemaVersion !== 2) throw migrationError("MIGRATION_INPUT_INVALID");
+  if (document.schemaVersion === 2) {
+    validateSchema2Registry(document);
+    return { kind: "schema-2", source: { ...source, document } };
+  }
+  if (document.schemaVersion !== 3) throw migrationError("MIGRATION_INPUT_INVALID");
   new ProviderRegistry({ path, fileOperations });
   const after = lstatRegular(path, fileOperations);
   if (!sameIdentity(after.identity, source.identity)) {
     throw migrationError("MIGRATION_INPUT_INVALID");
   }
-  return true;
+  return { kind: "current" };
 }
 
 export async function migrateLegacyConfiguration({
@@ -462,15 +514,55 @@ export async function migrateLegacyConfiguration({
   let credentialRef = null;
   let credentialAttempted = false;
   let registryOwned = null;
+  let upgradedRegistry = null;
   let commitWarning = null;
   const sources = [];
   const scrubbedSources = [];
   let failure;
 
   try {
-    if (assertCurrentRegistry(paths.registryPath, fileOperations)) {
+    const registryInspection = inspectCurrentRegistry(paths.registryPath, fileOperations);
+    if (registryInspection.kind === "current") {
       completed = true;
       return { migrated: false, reason: "already-current" };
+    }
+    if (registryInspection.kind === "schema-2") {
+      const source = registryInspection.source;
+      createBackup(source, fileOperations, createBackupId);
+      const upgradedDocument = {
+        ...source.document,
+        schemaVersion: 3,
+        settings: {
+          ...source.document.settings,
+          routingMode: "custom_only"
+        }
+      };
+      const bytes = Buffer.from(`${JSON.stringify(upgradedDocument, null, 2)}\n`, "utf8");
+      const currentIdentity = replaceFile(
+        paths.registryPath,
+        bytes,
+        source.identity,
+        fileOperations,
+        createLockId
+      );
+      upgradedRegistry = { source, currentIdentity };
+      new ProviderRegistry({ path: paths.registryPath, fileOperations });
+      const verified = readSafeFile(paths.registryPath, fileOperations);
+      if (!sameIdentity(verified.identity, currentIdentity) || !verified.bytes.equals(bytes)) {
+        throw migrationError("MIGRATION_FAILED");
+      }
+      if (activityStore) {
+        await activityStore.append({
+          category: "migration",
+          action: "provider-registry-schema-3",
+          providerId: null,
+          result: "success",
+          errorCode: null,
+          details: { routingMode: "custom_only" }
+        });
+      }
+      completed = true;
+      return { migrated: true, reason: "provider-registry-schema-3" };
     }
 
     const configSource = readSource(legacyConfigPath, fileOperations);
@@ -540,7 +632,7 @@ export async function migrateLegacyConfiguration({
       else throw error;
     }
     const committed = registry.getDocument();
-    if (committed.schemaVersion !== 2
+    if (committed.schemaVersion !== 3
       || committed.activeProviderId !== null
       || committed.providers.length !== 1
       || committed.providers[0].lastTestStatus !== "untested") {
@@ -590,6 +682,19 @@ export async function migrateLegacyConfiguration({
     failure = error;
     let rollbackFailed = error?.code === "MIGRATION_ROLLBACK_DEGRADED"
       || error?.details?.degraded === true;
+    if (upgradedRegistry !== null) {
+      try {
+        upgradedRegistry.source.currentIdentity = replaceFile(
+          paths.registryPath,
+          upgradedRegistry.source.bytes,
+          upgradedRegistry.currentIdentity,
+          fileOperations,
+          createLockId
+        );
+      } catch {
+        rollbackFailed = true;
+      }
+    }
     for (const source of scrubbedSources.reverse()) {
       try {
         source.currentIdentity = replaceFile(
