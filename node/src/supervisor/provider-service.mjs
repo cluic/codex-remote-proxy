@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { isValidAccountRoutingState } from "../routing/account-routing.mjs";
 import {
   createProviderSourceFingerprint,
   MAX_MODEL_ID_LENGTH,
@@ -10,6 +11,12 @@ import { CrpError } from "../shared/errors.mjs";
 
 const MAX_MODELS_RESPONSE_BYTES = 1_048_576;
 const MODEL_ID_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+const DEFAULT_ACCOUNT_ROUTING_STATE = Object.freeze({
+  authMode: null,
+  quotaStatus: "unknown",
+  blockedUntil: null,
+  updatedAt: null
+});
 
 function serviceError(code, { status = 500, cause, details = {} } = {}) {
   const contracts = {
@@ -211,6 +218,8 @@ export class ProviderService {
       state?.phase === "running" && state?.generation === generation
     ));
     this.paths = options.paths ?? {};
+    this.getAccountRoutingSnapshot = options.getAccountRoutingSnapshot
+      ?? (() => ({ revision: 1, state: DEFAULT_ACCOUNT_ROUTING_STATE }));
     const workerGeneration = workerManager.getPublicState()?.generation;
     this.confirmedGeneration = Number.isSafeInteger(workerGeneration) && workerGeneration >= 0
       ? workerGeneration
@@ -903,10 +912,16 @@ export class ProviderService {
 
   #buildSnapshot(profile, secret, generation) {
     const document = this.registry.getDocument();
+    const accountSnapshot = this.getAccountRoutingSnapshot();
     const runtimeConfigPath = this.paths.runtimeConfigPath;
     const capturePath = this.paths.capturePath;
     if (typeof runtimeConfigPath !== "string" || runtimeConfigPath.length === 0
       || typeof capturePath !== "string" || capturePath.length === 0) {
+      throw serviceError("PROVIDER_ACTIVATION_FAILED");
+    }
+    if (!Number.isSafeInteger(accountSnapshot?.revision)
+      || accountSnapshot.revision <= 0
+      || !isValidAccountRoutingState(accountSnapshot?.state)) {
       throw serviceError("PROVIDER_ACTIVATION_FAILED");
     }
     return {
@@ -937,6 +952,11 @@ export class ProviderService {
         capture: {
           enabled: document.settings.captureEnabled,
           dbPath: capturePath
+        },
+        routing: {
+          mode: document.settings.routingMode,
+          accountRevision: accountSnapshot.revision,
+          account: structuredClone(accountSnapshot.state)
         }
       }
     };

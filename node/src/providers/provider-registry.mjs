@@ -21,12 +21,18 @@ import {
   validateStoredProvider
 } from "./provider-schema.mjs";
 
-const DEFAULT_SETTINGS = Object.freeze({
+export const ROUTING_MODES = Object.freeze(["custom_only", "account_first"]);
+const ROUTING_MODE_SET = new Set(ROUTING_MODES);
+const FIXED_SETTINGS = Object.freeze({
   proxyHost: "127.0.0.1",
   proxyPort: 15100,
   adminHost: "127.0.0.1",
   adminPort: 15101,
   captureEnabled: false
+});
+const DEFAULT_SETTINGS = Object.freeze({
+  ...FIXED_SETTINGS,
+  routingMode: "custom_only"
 });
 const DOCUMENT_FIELDS = new Set([
   "schemaVersion",
@@ -79,7 +85,7 @@ function noChange(result) {
 
 function emptyDocument() {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     activeProviderId: null,
     providers: [],
     settings: { ...DEFAULT_SETTINGS }
@@ -122,7 +128,7 @@ function validateDocument(document) {
     if (!validateExactFields(document, DOCUMENT_FIELDS)) {
       throw new Error("invalid document fields");
     }
-    if (document.schemaVersion !== 2) {
+    if (document.schemaVersion !== 3) {
       throw new Error("unsupported schema version");
     }
     if (!Array.isArray(document.providers)) {
@@ -131,10 +137,13 @@ function validateDocument(document) {
     if (!validateExactFields(document.settings, SETTINGS_FIELDS)) {
       throw new Error("invalid settings fields");
     }
-    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+    for (const [key, value] of Object.entries(FIXED_SETTINGS)) {
       if (document.settings[key] !== value) {
         throw new Error("fixed settings changed");
       }
+    }
+    if (!ROUTING_MODE_SET.has(document.settings.routingMode)) {
+      throw new Error("invalid routing mode");
     }
     if (document.activeProviderId !== null && typeof document.activeProviderId !== "string") {
       throw new Error("invalid active provider id");
@@ -637,6 +646,21 @@ export class ProviderRegistry {
       if (document.activeProviderId !== id) return noChange(false);
       document.activeProviderId = null;
       return true;
+    });
+  }
+
+  setRoutingMode(mode) {
+    if (!ROUTING_MODE_SET.has(mode)) {
+      throw inputError(
+        "ROUTING_MODE_INVALID",
+        "The routing mode is invalid.",
+        "Choose custom_only or account_first."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.routingMode === mode) return noChange(mode);
+      document.settings.routingMode = mode;
+      return mode;
     });
   }
 

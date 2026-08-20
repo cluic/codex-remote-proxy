@@ -7,6 +7,7 @@ import {
   validateChildMessage,
   validateParentMessage
 } from "../worker/protocol.mjs";
+import { CHATGPT_METRICS_PROVIDER_ID } from "../routing/account-routing.mjs";
 
 const WORKER_ENTRY_PATH = fileURLToPath(new URL("../worker/worker-entry.mjs", import.meta.url));
 const CRASH_WINDOW_MS = 60_000;
@@ -114,6 +115,8 @@ export class WorkerManager {
   #child = null;
   #epoch = 0;
   #generation = 0;
+  #accountRevision = 0;
+  #accountState = null;
   #workerState = null;
   #restartCount = 0;
   #startedAt = null;
@@ -214,6 +217,35 @@ export class WorkerManager {
       return Promise.reject(managerError("WORKER_NOT_RUNNING"));
     }
     return this.#trackOperation(this.#performApplySnapshot(snapshot));
+  }
+
+  applyAccountState(update) {
+    if (this.#closed) {
+      return Promise.reject(managerError("WORKER_MANAGER_CLOSED"));
+    }
+    let message;
+    try {
+      message = {
+        version: PROTOCOL_VERSION,
+        type: "account-state",
+        requestId: this.#nextRequestId("account-state"),
+        revision: update?.revision,
+        state: update?.state
+      };
+      validateParentMessage(message);
+    } catch {
+      return Promise.reject(managerError("WORKER_SNAPSHOT_INVALID"));
+    }
+    if (this.#operation) {
+      return this.#operation.then(() => this.applyAccountState(update));
+    }
+    if (this.#phase !== "running" || !this.#child) {
+      return Promise.reject(managerError("WORKER_NOT_RUNNING"));
+    }
+    if (message.revision <= this.#accountRevision) {
+      return Promise.resolve(this.getPublicState());
+    }
+    return this.#trackOperation(this.#performApplyAccountState(message));
   }
 
   stop({ drainTimeoutMs = 5_000 } = {}) {
@@ -352,6 +384,8 @@ export class WorkerManager {
       }
       this.#workerState = publicStateCopy(configured.state);
       this.#generation = snapshot.generation;
+      this.#accountRevision = snapshot.settings.routing.accountRevision;
+      this.#accountState = structuredClone(snapshot.settings.routing.account);
       this.#lastSnapshot = structuredClone(snapshot);
       this.#phase = "running";
       this.#startedAt = new Date(this.#clock.now()).toISOString();
@@ -430,9 +464,42 @@ export class WorkerManager {
       || configured.state.listenPort !== this.#port) {
       throw managerError("WORKER_PROTOCOL_INVALID");
     }
+    const snapshotAccountIsCurrent = snapshot.settings.routing.accountRevision >= this.#accountRevision;
     this.#workerState = publicStateCopy(configured.state);
     this.#generation = snapshot.generation;
+    if (snapshotAccountIsCurrent) {
+      this.#accountRevision = snapshot.settings.routing.accountRevision;
+      this.#accountState = structuredClone(snapshot.settings.routing.account);
+    }
     this.#lastSnapshot = structuredClone(snapshot);
+    if (!snapshotAccountIsCurrent) {
+      this.#lastSnapshot.settings.routing.accountRevision = this.#accountRevision;
+      this.#lastSnapshot.settings.routing.account = structuredClone(this.#accountState);
+    }
+    return this.getPublicState();
+  }
+
+  async #performApplyAccountState(message) {
+    const child = this.#child;
+    const epoch = this.#epoch;
+    const applied = await this.#sendAndWait(child, message, {
+      epoch,
+      requestId: message.requestId,
+      type: "account-state-applied",
+      timeoutMs: this.#ackTimeoutMs,
+      timeoutCode: "WORKER_ACK_TIMEOUT"
+    });
+    if (epoch !== this.#epoch
+      || child !== this.#child
+      || applied.revision !== message.revision) {
+      throw managerError("WORKER_PROTOCOL_INVALID");
+    }
+    this.#accountRevision = message.revision;
+    this.#accountState = structuredClone(message.state);
+    if (this.#lastSnapshot?.settings?.routing) {
+      this.#lastSnapshot.settings.routing.accountRevision = message.revision;
+      this.#lastSnapshot.settings.routing.account = structuredClone(message.state);
+    }
     return this.getPublicState();
   }
 
@@ -734,12 +801,14 @@ export class WorkerManager {
   }
 
   #acceptMetric(observation) {
-    const providerId = this.#metricProviders.get(observation.generation);
+    const providerId = observation.route === "account"
+      ? CHATGPT_METRICS_PROVIDER_ID
+      : this.#metricProviders.get(observation.generation);
     if (!providerId) {
       this.#dropMetric();
       return;
     }
-    const { generation: _generation, ...fields } = observation;
+    const { generation: _generation, route: _route, ...fields } = observation;
     try {
       const result = this.#recordMetric({ providerId, ...fields });
       if (result && typeof result.then === "function") {

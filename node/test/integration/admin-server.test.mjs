@@ -1532,6 +1532,11 @@ function supervisorDependencies(t, {
       assert.equal(now(), "2026-07-13T03:00:00.000Z");
       return metrics;
     },
+    accountMonitorFactory: () => ({
+      subscribe: () => () => {},
+      refresh: async () => ({ phase: "ready" }),
+      close: async () => {}
+    }),
     workerManagerFactory: (input) => {
       order.push("worker");
       assert.equal(input.recordMetric({ providerId: "provider-test" }), true);

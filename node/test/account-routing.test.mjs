@@ -1,0 +1,171 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  ACCOUNT_429_FALLBACK_COOLDOWN_MS,
+  account429Cooldown,
+  buildChatGptResponsesTarget,
+  decideUpstreamRoute,
+  isValidAccountRoutingState,
+  parseCodexQuotaHeaders,
+  projectAccountRoutingState
+} from "../src/routing/account-routing.mjs";
+
+const NOW_MS = Date.parse("2026-08-20T00:00:00.000Z");
+const ACCOUNT_HEADERS = [
+  "Authorization", "Bearer opaque-token",
+  "ChatGPT-Account-ID", "account-1"
+];
+const UNKNOWN_STATE = {
+  authMode: null,
+  quotaStatus: "unknown",
+  blockedUntil: null,
+  updatedAt: null
+};
+
+test("maps only canonical Responses request targets to the ChatGPT Codex endpoint", () => {
+  assert.equal(
+    buildChatGptResponsesTarget("/responses?stream=true").href,
+    "https://chatgpt.com/backend-api/codex/responses?stream=true"
+  );
+  assert.equal(buildChatGptResponsesTarget("/v1/responses").pathname, "/backend-api/codex/responses");
+  for (const target of [
+    "responses",
+    "/responses/",
+    "/other/responses",
+    "/models",
+    "https://chatgpt.com/responses"
+  ]) {
+    assert.equal(buildChatGptResponsesTarget(target), null);
+  }
+});
+
+test("routes account-first requests only with an eligible method, path, and unique account auth", () => {
+  assert.equal(decideUpstreamRoute({
+    mode: "account_first",
+    method: "POST",
+    requestUrl: "/responses",
+    rawHeaders: ACCOUNT_HEADERS,
+    accountState: UNKNOWN_STATE,
+    nowMs: NOW_MS
+  }).route, "account");
+
+  const cases = [
+    { mode: "custom_only", method: "POST", requestUrl: "/responses", headers: ACCOUNT_HEADERS },
+    { mode: "account_first", method: "GET", requestUrl: "/responses", headers: ACCOUNT_HEADERS },
+    { mode: "account_first", method: "POST", requestUrl: "/models", headers: ACCOUNT_HEADERS },
+    { mode: "account_first", method: "POST", requestUrl: "/responses", headers: [] },
+    {
+      mode: "account_first",
+      method: "POST",
+      requestUrl: "/responses",
+      headers: [...ACCOUNT_HEADERS, "Authorization", "Bearer duplicate"]
+    }
+  ];
+  for (const candidate of cases) {
+    assert.equal(decideUpstreamRoute({
+      mode: candidate.mode,
+      method: candidate.method,
+      requestUrl: candidate.requestUrl,
+      rawHeaders: candidate.headers,
+      accountState: UNKNOWN_STATE,
+      nowMs: NOW_MS
+    }).route, "custom");
+  }
+});
+
+test("honors authoritative auth and fresh quota state while allowing stale probes", () => {
+  const decide = (accountState) => decideUpstreamRoute({
+    mode: "account_first",
+    method: "POST",
+    requestUrl: "/responses",
+    rawHeaders: ACCOUNT_HEADERS,
+    accountState,
+    nowMs: NOW_MS
+  });
+  assert.equal(decide({ ...UNKNOWN_STATE, authMode: "apikey" }).reason, "not_chatgpt_auth");
+  assert.equal(decide({
+    authMode: "chatgpt",
+    quotaStatus: "exhausted",
+    blockedUntil: null,
+    updatedAt: "2026-08-19T23:55:00.000Z"
+  }).reason, "account_quota_exhausted");
+  assert.equal(decide({
+    authMode: "chatgpt",
+    quotaStatus: "exhausted",
+    blockedUntil: null,
+    updatedAt: "2026-08-19T23:40:00.000Z"
+  }).route, "account");
+  assert.equal(decide({
+    authMode: "chatgpt",
+    quotaStatus: "exhausted",
+    blockedUntil: Math.floor(NOW_MS / 1_000) + 60,
+    updatedAt: "2026-08-19T23:40:00.000Z"
+  }).route, "custom");
+});
+
+test("projects only bounded routing state from the account monitor", () => {
+  const projected = projectAccountRoutingState({
+    authMode: "chatgpt",
+    email: "ignored@example.test",
+    updatedAt: "2026-08-20T00:00:00.000Z",
+    quota: {
+      status: "exhausted",
+      windows: [
+        { usedPercent: 100, resetsAt: 1_800_000_100 },
+        { usedPercent: 100, resetsAt: 1_800_000_000 }
+      ]
+    }
+  });
+  assert.deepEqual(projected, {
+    authMode: "chatgpt",
+    quotaStatus: "exhausted",
+    blockedUntil: 1_800_000_000,
+    updatedAt: "2026-08-20T00:00:00.000Z"
+  });
+  assert.equal(isValidAccountRoutingState(projected), true);
+  assert.equal(JSON.stringify(projected).includes("ignored"), false);
+  assert.equal(isValidAccountRoutingState({ ...projected, blockedUntil: -1 }), false);
+  assert.equal(isValidAccountRoutingState({ ...projected, extra: true }), false);
+});
+
+test("parses bounded Codex windows and derives explicit or generic 429 cooldowns", () => {
+  const quota = parseCodexQuotaHeaders({
+    "x-codex-primary-used-percent": "100",
+    "x-codex-primary-reset-after-seconds": "120",
+    "x-codex-primary-window-minutes": "300",
+    "x-codex-secondary-used-percent": "62",
+    "x-codex-secondary-window-minutes": "10080"
+  }, NOW_MS);
+  assert.equal(quota.status, "exhausted");
+  assert.equal(quota.blockedUntilMs, NOW_MS + 120_000);
+  assert.equal(quota.windows[1].usedPercent, 62);
+  assert.deepEqual(account429Cooldown({
+    "x-codex-primary-used-percent": "100",
+    "x-codex-primary-reset-after-seconds": "120"
+  }, NOW_MS), {
+    untilMs: NOW_MS + 120_000,
+    explicit: true,
+    quota: {
+      status: "exhausted",
+      windows: [{
+        kind: "primary",
+        usedPercent: 100,
+        resetAfterSeconds: 120,
+        windowDurationMins: null
+      }],
+      blockedUntilMs: NOW_MS + 120_000
+    }
+  });
+  assert.equal(
+    account429Cooldown({}, NOW_MS).untilMs,
+    NOW_MS + ACCOUNT_429_FALLBACK_COOLDOWN_MS
+  );
+  assert.equal(account429Cooldown({
+    "x-codex-primary-reset-after-seconds": "45"
+  }, NOW_MS).untilMs, NOW_MS + 45_000);
+  assert.equal(parseCodexQuotaHeaders({
+    "x-codex-primary-used-percent": "101",
+    "x-codex-primary-reset-after-seconds": "999999999"
+  }, NOW_MS), null);
+});

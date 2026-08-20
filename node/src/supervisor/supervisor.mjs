@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { bootstrapCodexConfig, patchCodexConfigText } from "../codex/codex-config.mjs";
 import {
@@ -28,9 +29,11 @@ import {
 import { createCredentialStore } from "../credentials/credential-store.mjs";
 import { ProviderModelCache } from "../providers/provider-model-cache.mjs";
 import { ProviderRegistry } from "../providers/provider-registry.mjs";
+import { projectAccountRoutingState } from "../routing/account-routing.mjs";
 import { CrpError } from "../shared/errors.mjs";
 import { getPaths } from "../shared/paths.mjs";
 import { ActivityStore } from "./activity-store.mjs";
+import { AccountMonitor } from "./account-monitor.mjs";
 import { createAdminServer } from "./admin-server.mjs";
 import { migrateLegacyConfiguration } from "./migration.mjs";
 import { MetricsStore } from "./metrics-store.mjs";
@@ -481,6 +484,7 @@ export async function createSupervisor({
   registryFactory = (options) => new ProviderRegistry(options),
   providerModelCacheFactory = (options) => new ProviderModelCache(options),
   metricsStoreFactory = (options) => new MetricsStore(options),
+  accountMonitorFactory = (options) => new AccountMonitor(options),
   workerManagerFactory = (options) => new WorkerManager(options),
   providerServiceFactory = (options) => new ProviderService(options),
   authFactory = (options) => new SessionAuth(options),
@@ -500,6 +504,10 @@ export async function createSupervisor({
   const settings = registry.getDocument().settings;
   let workerManager;
   let metricsStore;
+  let accountMonitor;
+  let unsubscribeAccountMonitor = null;
+  let accountRoutingRevision = 1;
+  let accountRoutingState = projectAccountRoutingState(null);
   let providerService;
   let auth;
   let codexService;
@@ -513,10 +521,13 @@ export async function createSupervisor({
   const close = () => {
     if (closePromise) return closePromise;
     const attempt = (async () => {
+      unsubscribeAccountMonitor?.();
+      unsubscribeAccountMonitor = null;
       await workerManager.close();
       await adminServer.close();
       await auth.close();
       await metricsStore.close();
+      await accountMonitor?.close?.();
       removeOwnedState(paths.statePath, ownedState, stateFileOperations);
     })();
     closePromise = attempt;
@@ -543,12 +554,31 @@ export async function createSupervisor({
       recordMetric: (observation) => metricsStore.record(observation),
       noteDroppedMetric: () => metricsStore.noteDropped()
     });
+    accountMonitor = accountMonitorFactory({
+      clientVersion: "unknown"
+    });
+    unsubscribeAccountMonitor = accountMonitor.subscribe((state) => {
+      const projected = projectAccountRoutingState(state);
+      if (isDeepStrictEqual(projected, accountRoutingState)) return;
+      accountRoutingRevision += 1;
+      accountRoutingState = projected;
+      void workerManager.applyAccountState({
+        revision: accountRoutingRevision,
+        state: accountRoutingState
+      }).catch(() => {
+        // The latest state remains in the next Worker snapshot when no Worker is running.
+      });
+    });
     providerService = providerServiceFactory({
       registry,
       credentialStore,
       activityStore,
       workerManager,
       modelCache,
+      getAccountRoutingSnapshot: () => ({
+        revision: accountRoutingRevision,
+        state: structuredClone(accountRoutingState)
+      }),
       now,
       paths
     });
@@ -563,6 +593,7 @@ export async function createSupervisor({
       codexService,
       diagnosticsService,
       metricsService: metricsStore,
+      accountMonitor,
       getSupervisorState: () => ({ pid, startedAt }),
       requestSupervisorShutdown: requestShutdown,
       uiDir,
@@ -570,6 +601,8 @@ export async function createSupervisor({
       port: settings.adminPort
     });
   } catch (error) {
+    unsubscribeAccountMonitor?.();
+    try { await accountMonitor?.close?.(); } catch {}
     try { await auth?.close?.(); } catch {}
     try { await workerManager?.close?.(); } catch {}
     try { await metricsStore?.close?.(); } catch {}
@@ -600,6 +633,9 @@ export async function createSupervisor({
             stateFileOperations,
             createStateId
           );
+          void Promise.resolve()
+            .then(() => accountMonitor.refresh())
+            .catch(() => {});
           return { ...address };
         } catch (error) {
           await close().catch(() => {});

@@ -37,6 +37,16 @@ function makeSettings() {
     capture: {
       enabled: false,
       dbPath: "/tmp/crp-worker/traffic.sqlite3"
+    },
+    routing: {
+      mode: "custom_only",
+      accountRevision: 1,
+      account: {
+        authMode: null,
+        quotaStatus: "unknown",
+        blockedUntil: null,
+        updatedAt: null
+      }
     }
   };
 }
@@ -54,7 +64,7 @@ function makeState(overrides = {}) {
   };
 }
 
-test("parent protocol accepts exact configure, drain, shutdown, and status messages", () => {
+test("parent protocol accepts exact configure, account state, drain, shutdown, and status messages", () => {
   assert.equal(PROTOCOL_VERSION, 1);
   const messages = [
     {
@@ -63,6 +73,18 @@ test("parent protocol accepts exact configure, drain, shutdown, and status messa
       requestId: "configure-1",
       generation: 1,
       settings: makeSettings()
+    },
+    {
+      version: 1,
+      type: "account-state",
+      requestId: "account-state-1",
+      revision: 2,
+      state: {
+        authMode: "chatgpt",
+        quotaStatus: "available",
+        blockedUntil: null,
+        updatedAt: "2026-08-20T00:00:00.000Z"
+      }
     },
     { version: 1, type: "drain", requestId: "drain-1" },
     { version: 1, type: "shutdown", requestId: "shutdown-1" },
@@ -122,6 +144,10 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
   const controlModelOverride = makeSettings();
   controlModelOverride.proxy.modelMode = "override";
   controlModelOverride.proxy.modelOverride = "model\ninvalid";
+  const invalidRoutingMode = makeSettings();
+  invalidRoutingMode.routing.mode = "automatic";
+  const invalidAccountState = makeSettings();
+  invalidAccountState.routing.account.authMode = "unknown-mode";
 
   for (const settings of [
     missingServer,
@@ -132,6 +158,8 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
     emptyApiKey,
     invalidExtraHeaders,
     invalidModelMode,
+    invalidRoutingMode,
+    invalidAccountState,
     missingModelOverride,
     blankModelOverride
   ]) {
@@ -276,6 +304,12 @@ test("child protocol accepts exact lifecycle acknowledgements, status, and fatal
     { version: 1, type: "status", requestId: "status-1", state: makeState() },
     {
       version: 1,
+      type: "account-state-applied",
+      requestId: "account-state-1",
+      revision: 2
+    },
+    {
+      version: 1,
       type: "fatal",
       requestId: "configure-1",
       error: {
@@ -297,6 +331,7 @@ test("child protocol accepts only bounded anonymous metric observations", () => 
     requestId: "metric-observation",
     observation: {
       generation: 7,
+      route: "custom",
       result: "success",
       model: "gpt-5-codex",
       inputTokens: 123,
@@ -318,6 +353,7 @@ test("child protocol accepts only bounded anonymous metric observations", () => 
     }
   }).observation, {
     generation: 7,
+    route: "custom",
     result: "networkError",
     model: null,
     inputTokens: null,
@@ -331,6 +367,7 @@ test("child protocol accepts only bounded anonymous metric observations", () => 
     { ...message, requestId: "actual request id" },
     { ...message, requestId: "actual-request-id" },
     { ...message, observation: { ...message.observation, generation: 0 } },
+    { ...message, observation: { ...message.observation, route: "fallback" } },
     { ...message, observation: { ...message.observation, result: "raw-error" } },
     { ...message, observation: { ...message.observation, model: `bad\u0000${sentinel}` } },
     { ...message, observation: { ...message.observation, inputTokens: 100_000_001 } },

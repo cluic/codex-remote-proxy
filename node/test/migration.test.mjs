@@ -95,7 +95,8 @@ test("transactionally migrates legacy config to one untested inactive Default pr
   assert.deepEqual(result, { migrated: true, providerId: "provider-default" });
   assert.equal(credentials.values.get("credential-opaque"), secret);
   const registry = JSON.parse(readFileSync(harness.registryPath, "utf8"));
-  assert.equal(registry.schemaVersion, 2);
+  assert.equal(registry.schemaVersion, 3);
+  assert.equal(registry.settings.routingMode, "custom_only");
   assert.equal(registry.activeProviderId, null);
   assert.equal(registry.providers.length, 1);
   assert.equal(registry.providers[0].name, "Default");
@@ -253,7 +254,7 @@ test("rejects divergent legacy credentials before migration side effects", async
   );
 });
 
-test("does not overwrite an exclusive backup collision and is idempotent after schema 2", async (t) => {
+test("does not overwrite an exclusive backup collision and is idempotent after schema 3", async (t) => {
   const secret = makeSecret();
   const harness = makeHarness(t, {
     upstreamBaseUrl: "https://legacy.example/v1",
@@ -292,6 +293,79 @@ test("does not overwrite an exclusive backup collision and is idempotent after s
   assert.deepEqual(
     readdirSync(harness.globalHome).filter((name) => name.endsWith(".bak")),
     beforeBackups
+  );
+});
+
+test("backs up and atomically upgrades a schema 2 registry to custom-only schema 3", async (t) => {
+  const harness = makeHarness(t, { upstreamBaseUrl: "https://legacy.example/v1" });
+  const schema2 = {
+    schemaVersion: 2,
+    activeProviderId: null,
+    providers: [],
+    settings: {
+      proxyHost: "127.0.0.1",
+      proxyPort: 15100,
+      adminHost: "127.0.0.1",
+      adminPort: 15101,
+      captureEnabled: false
+    }
+  };
+  const originalBytes = Buffer.from(`${JSON.stringify(schema2, null, 2)}\n`, "utf8");
+  writeFileSync(harness.registryPath, originalBytes, { mode: 0o600 });
+  const events = [];
+  const credentials = new MemoryCredentialStore();
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    createBackupId: () => "schema-2",
+    activityStore: { append: async (event) => events.push(event) }
+  });
+
+  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-3" });
+  const upgraded = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  assert.equal(upgraded.schemaVersion, 3);
+  assert.equal(upgraded.settings.routingMode, "custom_only");
+  assert.deepEqual(readFileSync(`${harness.registryPath}.schema-2.bak`), originalBytes);
+  assert.equal(credentials.values.size, 0);
+  assert.equal("apiKey" in JSON.parse(readFileSync(harness.legacyConfigPath, "utf8")), false);
+  assert.deepEqual(events.map(({ action }) => action), ["provider-registry-schema-3"]);
+
+  const second = await migrateLegacyConfiguration({ paths: harness.paths, credentialStore: credentials });
+  assert.deepEqual(second, { migrated: false, reason: "already-current" });
+});
+
+test("restores exact schema 2 bytes when post-upgrade activity recording fails", async (t) => {
+  const harness = makeHarness(t, {});
+  const originalBytes = Buffer.from(`${JSON.stringify({
+    schemaVersion: 2,
+    activeProviderId: null,
+    providers: [],
+    settings: {
+      proxyHost: "127.0.0.1",
+      proxyPort: 15100,
+      adminHost: "127.0.0.1",
+      adminPort: 15101,
+      captureEnabled: false
+    }
+  }, null, 2)}\n`, "utf8");
+  writeFileSync(harness.registryPath, originalBytes, { mode: 0o600 });
+
+  await assert.rejects(
+    () => migrateLegacyConfiguration({
+      paths: harness.paths,
+      credentialStore: new MemoryCredentialStore(),
+      createBackupId: () => "schema-2-rollback",
+      activityStore: { append: async () => { throw new Error("private activity failure"); } }
+    }),
+    (error) => error?.code === "MIGRATION_ROLLBACK_DEGRADED"
+      && error.details.committed === false
+  );
+
+  assert.deepEqual(readFileSync(harness.registryPath), originalBytes);
+  assert.deepEqual(
+    readFileSync(`${harness.registryPath}.schema-2-rollback.bak`),
+    originalBytes
   );
 });
 
@@ -613,7 +687,7 @@ test("release token mismatch restores a canonical blocker before the next transa
   );
 });
 
-test("keeps committed schema 2 and credential when registry lock cleanup degrades", async (t) => {
+test("keeps committed schema 3 and credential when registry lock cleanup degrades", async (t) => {
   const secret = makeSecret();
   const harness = makeHarness(t, {
     upstreamBaseUrl: "https://legacy.example/v1",

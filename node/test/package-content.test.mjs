@@ -21,6 +21,7 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "src/providers/provider-model-cache.mjs",
   "src/providers/provider-registry.mjs",
   "src/providers/provider-schema.mjs",
+  "src/routing/account-routing.mjs",
   "src/server.mjs",
   "src/shared/errors.mjs",
   "src/shared/paths.mjs",
@@ -35,6 +36,7 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "src/supervisor/supervisor-entry.mjs",
   "src/supervisor/supervisor.mjs",
   "src/supervisor/worker-manager.mjs",
+  "src/worker/account-routing-state.mjs",
   "src/worker/protocol.mjs",
   "src/worker/runtime-settings.mjs",
   "src/worker/worker-entry.mjs",
@@ -153,7 +155,7 @@ test("npm pack invocation uses an explicit command interpreter only on Windows",
 
 test("exact package path comparison detects every extra and missing path", () => {
   const reviewed = [...REVIEWED_PACKAGE_PATHS];
-  assert.equal(REVIEWED_PACKAGE_PATHS.size, 35);
+  assert.equal(REVIEWED_PACKAGE_PATHS.size, 37);
   assert.deepEqual(comparePackagePaths(reviewed), { missing: [], unexpected: [] });
 
   const runtimeExtras = [

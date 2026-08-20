@@ -28,7 +28,17 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
         modelMode: "passthrough",
         modelOverride: null
       },
-      capture: { enabled: false, dbPath: "/tmp/crp-worker-manager/traffic.sqlite3" }
+      capture: { enabled: false, dbPath: "/tmp/crp-worker-manager/traffic.sqlite3" },
+      routing: {
+        mode: "custom_only",
+        accountRevision: 1,
+        account: {
+          authMode: null,
+          quotaStatus: "unknown",
+          blockedUntil: null,
+          updatedAt: null
+        }
+      }
     }
   };
 }
@@ -137,6 +147,14 @@ class FakeChild extends EventEmitter {
           generation: message.generation,
           listenPort: message.settings.server.port
         }));
+      }
+      if (message.type === "account-state" && this.script.accountState !== false) {
+        this.emit("message", {
+          version: 1,
+          type: "account-state-applied",
+          requestId: message.requestId,
+          revision: message.revision
+        });
       }
       if (message.type === "drain" && this.script.drain !== false) {
         this.emit("message", childMessage("drained", message.requestId, {
@@ -373,6 +391,7 @@ test("metric observations retain request-generation provider attribution across 
     requestId: "metric-observation",
     observation: {
       generation,
+      route: "custom",
       result,
       model,
       inputTokens: result === "success" ? 12 : null,
@@ -412,6 +431,55 @@ test("metric observations retain request-generation provider attribution across 
   assert.equal(JSON.stringify(harness.manager.getPublicState()).includes("provider-a"), false);
 });
 
+test("account route metrics use the built-in account attribution", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot(1, 15100, "provider-a")), harness.clock);
+
+  harness.children[0].emit("message", {
+    version: 1,
+    type: "metric",
+    requestId: "metric-observation",
+    observation: {
+      generation: 1,
+      route: "account",
+      result: "success",
+      model: "gpt-5-codex",
+      inputTokens: 12,
+      outputTokens: 3,
+      durationBin: 4,
+      responseStartBin: 2
+    }
+  });
+  await Promise.resolve();
+
+  assert.equal(harness.metrics.length, 1);
+  assert.equal(harness.metrics[0].providerId, "crp-chatgpt-account");
+});
+
+test("account routing state updates are acknowledged and stale revisions are skipped", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot()), harness.clock);
+  const update = {
+    revision: 2,
+    state: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  };
+
+  await settle(harness.manager.applyAccountState(update), harness.clock);
+  await settle(harness.manager.applyAccountState(update), harness.clock);
+
+  assert.equal(
+    harness.children[0].sent.filter((message) => message.type === "account-state").length,
+    1
+  );
+});
+
 test("metric callback failures are dropped without changing worker lifecycle state", async (t) => {
   let dropped = 0;
   const harness = createHarness([], {
@@ -431,6 +499,7 @@ test("metric callback failures are dropped without changing worker lifecycle sta
     requestId: "metric-observation",
     observation: {
       generation: 1,
+      route: "custom",
       result: "success",
       model: null,
       inputTokens: null,

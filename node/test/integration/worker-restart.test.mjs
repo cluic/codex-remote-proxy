@@ -57,7 +57,17 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
         modelMode: "passthrough",
         modelOverride: null
       },
-      capture: { enabled: false, dbPath: join(dir, "traffic.sqlite3") }
+      capture: { enabled: false, dbPath: join(dir, "traffic.sqlite3") },
+      routing: {
+        mode: "custom_only",
+        accountRevision: 1,
+        account: {
+          authMode: null,
+          quotaStatus: "unknown",
+          blockedUntil: null,
+          updatedAt: null
+        }
+      }
     }
   };
 }

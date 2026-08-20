@@ -931,6 +931,16 @@ test("legacy controlled model overrides remain startable after initial selection
   await service.startProxy();
   assert.equal(workerManager.calls.at(-1)[0], "start");
   assert.equal(workerManager.calls.at(-1)[1].settings.proxy.modelOverride, "legacy\tmodel");
+  assert.deepEqual(workerManager.calls.at(-1)[1].settings.routing, {
+    mode: "custom_only",
+    accountRevision: 1,
+    account: {
+      authMode: null,
+      quotaStatus: "unknown",
+      blockedUntil: null,
+      updatedAt: null
+    }
+  });
 
   await service.restartProxy();
   assert.equal(workerManager.calls.at(-1)[0], "restart");
