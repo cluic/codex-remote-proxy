@@ -12,6 +12,7 @@ const AUTH_MODES = new Set([
   "apikey",
   "chatgpt",
   "chatgptAuthTokens",
+  "headers",
   "agentIdentity",
   "personalAccessToken",
   "bedrockApiKey"
@@ -30,7 +31,7 @@ const ACCOUNT_TYPE_TO_AUTH_MODE = new Map([
   ["personalAccessToken", "personalAccessToken"],
   ["amazonBedrock", "bedrockApiKey"]
 ]);
-const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+const UNSAFE_TEXT_PATTERN = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u;
 const DEFAULT_CLOCK = Object.freeze({
   setTimeout: (callback, delay) => setTimeout(callback, delay),
   clearTimeout: (timer) => clearTimeout(timer)
@@ -48,7 +49,7 @@ function boundedText(value, maximum = MAX_TEXT_CODE_POINTS) {
     || value.length > maximum * 2
     || [...value].length > maximum
     || value.trim() !== value
-    || CONTROL_CHARACTER_PATTERN.test(value)) {
+    || UNSAFE_TEXT_PATTERN.test(value)) {
     return null;
   }
   return value;
@@ -127,9 +128,23 @@ export function normalizeAccountRateLimits(result, updatedAt) {
     || selected.rateLimitReachedType === undefined
     ? null
     : boundedText(selected.rateLimitReachedType, 64);
-  const spendControlReached = typeof selected.spendControlReached === "boolean"
+  let spendControlReached = typeof selected.spendControlReached === "boolean"
     ? selected.spendControlReached
     : null;
+  let spendControlResetsAt = null;
+  if (isPlainObject(selected.individualLimit)) {
+    const remainingPercent = boundedInteger(
+      selected.individualLimit.remainingPercent,
+      0,
+      100
+    );
+    if (remainingPercent !== null) {
+      spendControlReached = remainingPercent === 0;
+      spendControlResetsAt = spendControlReached
+        ? boundedInteger(selected.individualLimit.resetsAt, 0, MAX_UNIX_SECONDS)
+        : null;
+    }
+  }
   const exhausted = reachedType !== null
     || spendControlReached === true
     || windows.some((window) => window.usedPercent >= 100);
@@ -139,6 +154,7 @@ export function normalizeAccountRateLimits(result, updatedAt) {
     windows,
     rateLimitReachedType: reachedType,
     spendControlReached,
+    spendControlResetsAt,
     updatedAt
   };
 }
@@ -150,6 +166,9 @@ function mergeRollingQuota(current, incoming) {
   const mergedWindows = [...windows.values()];
   const rateLimitReachedType = incoming.rateLimitReachedType ?? current.rateLimitReachedType;
   const spendControlReached = incoming.spendControlReached ?? current.spendControlReached;
+  const spendControlResetsAt = spendControlReached === false
+    ? null
+    : (incoming.spendControlResetsAt ?? current.spendControlResetsAt ?? null);
   const exhausted = rateLimitReachedType !== null
     || spendControlReached === true
     || mergedWindows.some((window) => window.usedPercent >= 100);
@@ -159,6 +178,7 @@ function mergeRollingQuota(current, incoming) {
     windows: mergedWindows,
     rateLimitReachedType,
     spendControlReached,
+    spendControlResetsAt,
     updatedAt: incoming.updatedAt
   };
 }
@@ -303,6 +323,7 @@ export class AccountMonitor {
       if (!child?.stdin || !child?.stdout || !child?.stderr) {
         throw requestError("ACCOUNT_MONITOR_PROTOCOL_ERROR");
       }
+      this.#stdoutBuffer = Buffer.alloc(0);
       this.#child = child;
       this.#attachChild(child);
       child.stderr.resume?.();
@@ -318,14 +339,16 @@ export class AccountMonitor {
       return this.getState();
     } catch (error) {
       if (this.#child === child) this.#child = null;
-      try { child?.kill?.("SIGTERM"); } catch {}
+      this.#retireChild(child);
       this.#rejectPending(error);
-      this.#setState({
-        ...initialState(),
-        phase: "unavailable",
-        updatedAt: this.#now(),
-        errorCode: publicErrorCode(error)
-      });
+      if (!this.#closed) {
+        this.#setState({
+          ...initialState(),
+          phase: "unavailable",
+          updatedAt: this.#now(),
+          errorCode: publicErrorCode(error)
+        });
+      }
       throw error;
     }
   }
@@ -333,7 +356,9 @@ export class AccountMonitor {
   async #performRefresh() {
     try {
       await this.start();
+      if (this.#closed) return this.getState();
       const accountResult = await this.#request("account/read", { refreshToken: false });
+      if (this.#closed) return this.getState();
       const account = normalizeAccount(accountResult?.account);
       let quota = null;
       let quotaSupported = null;
@@ -341,6 +366,7 @@ export class AccountMonitor {
       if (account.chatgptBacked) {
         try {
           const quotaResult = await this.#request("account/rateLimits/read");
+          if (this.#closed) return this.getState();
           quota = normalizeAccountRateLimits(quotaResult, this.#now());
           quotaSupported = true;
         } catch (error) {
@@ -350,6 +376,7 @@ export class AccountMonitor {
             : "ACCOUNT_QUOTA_UNAVAILABLE";
         }
       }
+      if (this.#closed) return this.getState();
       this.#setState({
         phase: "ready",
         authMode: account.authMode,
@@ -360,13 +387,20 @@ export class AccountMonitor {
         errorCode
       });
     } catch (error) {
-      this.#setState({
-        ...this.#state,
-        phase: "unavailable",
-        quota: null,
-        updatedAt: this.#now(),
-        errorCode: publicErrorCode(error)
-      });
+      if (!this.#closed) {
+        const child = this.#child;
+        this.#child = null;
+        this.#stdoutBuffer = Buffer.alloc(0);
+        this.#retireChild(child);
+        this.#rejectPending(error);
+        this.#setState({
+          ...this.#state,
+          phase: "unavailable",
+          quota: null,
+          updatedAt: this.#now(),
+          errorCode: publicErrorCode(error)
+        });
+      }
     } finally {
       this.#schedulePoll();
     }
@@ -374,10 +408,16 @@ export class AccountMonitor {
   }
 
   #attachChild(child) {
-    child.stdout.on("data", (chunk) => this.#acceptStdout(chunk));
-    child.stdout.once("error", () => this.#failProtocol());
-    child.once("error", (error) => this.#handleChildExit(error));
-    child.once("exit", () => this.#handleChildExit(requestError("ACCOUNT_MONITOR_UNAVAILABLE")));
+    child.stdout.on("data", (chunk) => {
+      if (child === this.#child) this.#acceptStdout(chunk);
+    });
+    child.stdout.once("error", () => this.#failProtocol(child));
+    child.stdin.once("error", (error) => this.#handleChildExit(child, error));
+    child.once("error", (error) => this.#handleChildExit(child, error));
+    child.once("exit", () => this.#handleChildExit(
+      child,
+      requestError("ACCOUNT_MONITOR_UNAVAILABLE")
+    ));
   }
 
   #acceptStdout(chunk) {
@@ -486,7 +526,8 @@ export class AccountMonitor {
     this.#child.stdin.write(`${JSON.stringify({ method, params })}\n`);
   }
 
-  #failProtocol() {
+  #failProtocol(child = this.#child) {
+    if (child !== this.#child) return;
     const error = requestError("ACCOUNT_MONITOR_PROTOCOL_ERROR");
     this.#rejectPending(error);
     this.#setState({
@@ -496,11 +537,11 @@ export class AccountMonitor {
       updatedAt: this.#now(),
       errorCode: error.code
     });
-    try { this.#child?.kill?.("SIGTERM"); } catch {}
+    try { child?.kill?.("SIGTERM"); } catch {}
   }
 
-  #handleChildExit(error) {
-    if (this.#closed) return;
+  #handleChildExit(child, error) {
+    if (this.#closed || child !== this.#child) return;
     const existingErrorCode = this.#state.phase === "unavailable"
       ? this.#state.errorCode
       : null;
@@ -522,6 +563,28 @@ export class AccountMonitor {
       pending.reject(error);
     }
     this.#pending.clear();
+  }
+
+  #retireChild(child) {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    let timer = null;
+    const clear = () => {
+      if (timer !== null) this.#clock.clearTimeout(timer);
+      timer = null;
+    };
+    child.once("exit", clear);
+    timer = this.#clock.setTimeout(() => {
+      timer = null;
+      if (child.exitCode === null && child.signalCode === null) {
+        try { child.kill("SIGKILL"); } catch {}
+      }
+    }, CLOSE_TIMEOUT_MS);
+    timer?.unref?.();
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      clear();
+    }
   }
 
   #setState(next) {

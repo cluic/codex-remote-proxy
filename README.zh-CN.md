@@ -6,7 +6,7 @@ Codex Remote Proxy（CRP）让 Codex 保持 ChatGPT 登录态，同时把模型�
 
 [English](./README.md)
 
-> 发布状态：npm 当前版本是 `0.4.0`，已经包含 Supervisor 和 `crp ui`。`0.4.0` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布；普通更新使用 patch 版本。
+> 发布状态：npm 当前版本是 `0.4.1`，已经包含 Supervisor 和 `crp ui`。`0.4.1` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布；普通更新使用 patch 版本。
 
 ## 安装
 
@@ -46,6 +46,10 @@ npx @cluic/codex-remote-proxy ui
 - 查看已脱敏的控制面 Activity 和只读系统事实；
 - 生成只包含创建状态、生成时间和已脱敏事件数量的内存诊断摘要。
 
+System 页面还会展示本机 Codex 的 ChatGPT 鉴权模式、订阅类型，以及归一化后的 5 小时/7 天额度窗口。账号快照每五分钟自动刷新，也可以手动刷新；数据通过 Codex 私有 app-server 协议读取。如果该实验性接口不可用或发生变化，CRP 会显示账号状态不可用/未知，自定义 Provider 路由仍可正常工作。
+
+路由默认保持 `custom_only`。在 System 中开启 `account_first` 后，运行中的 Worker 会热更新，无需重启。只有 `POST /responses` 和 `POST /v1/responses` 可以使用 ChatGPT 账号：Codex 必须已登录 ChatGPT、账号身份唯一且额度可用，否则直接使用当前自定义 Provider。账号上游首次明确返回限流时，同一请求只会向自定义 Provider 回放一次；鉴权失败、其他上游失败和网络错误会原样暴露，不会静默消耗自定义 API key。可回放请求体上限为 8 MiB。
+
 侧边栏会显示不可操作的 `转发记录 / 即将上线` 占位项。本 MVP 不提供转发记录路由、请求/响应查看器、Capture 控件或模拟流量数据；总览 Metrics 是独立于可选 Capture 的匿名聚合状态。24 小时和 7 天序列使用固定 UTC 小时桶。只有成功的 Responses 终态事件或已完成 JSON 响应才计为成功；如果存在丢弃的指标更新，界面会把成功率标记为不可用，而不是展示看似精确的百分比。Provider 和模型分布始终保留明确的合并余量。
 
 提供商切换只影响新请求。已经在处理中的请求继续使用其开始时捕获的提供商快照，包括模型策略。`passthrough` 模式保留客户端模型；`override` 模式只替换 JSON 顶层 `model` 值。显式 activation 路由同时也是生产切换操作：Worker 运行时应用新快照，Worker 停止时会启动它。首次选中有意不同：兼容性测试成功后，Setup、CLI 和普通 Providers 页面都会在尚无当前 Provider 时通过 first-wins compare-and-set 选中候选，Worker 保持停止。
@@ -84,7 +88,7 @@ CRP 内部的 provider add/test/activate/热切换绝不会触发该修复。按
 
 如果原生后端无法构造或后续失败，公开启动与凭据操作会直接失败。当前 UI、CLI 和 Admin API 都没有文件存储授权或选择控件。底层私有文件适配器只允许受信任的依赖注入使用；公开 startup consent 属于未来 L3 工作，原生操作绝不会重放到该适配器。
 
-界面不会读回已保存的密钥。编辑时密钥输入框始终为空，完整密钥不会出现在 API 读取结果、活动记录、诊断、状态文件或日志中。
+界面不会读回已保存的密钥。编辑时密钥输入框始终为空，完整密钥不会出现在 API 读取结果、活动记录、诊断、状态文件或日志中。ChatGPT access token、邮箱和 account ID 同样不会进入公开 status/settings 响应、Activity、Metrics、Capture 或日志。所有发往自定义 Provider 的请求都会移除账号鉴权头，自定义 API key 和额外请求头也绝不会发送到 ChatGPT。
 
 ## 本地浏览器安全
 
@@ -141,20 +145,20 @@ CLI 发起的兼容性测试（包括 `provider add --model`）只会在当前�
 
 ## 从 0.2.2 升级
 
-`0.3` 系列会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 2。
+当前版本会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 3。已有且有效的 schema-2 registry 会原子升级，并写入 `routingMode: "custom_only"`，因此单纯升级不会把流量改到 ChatGPT 账号。
 
 1. 停止旧的托管代理。
 2. 私下备份 `~/.codex-remote-proxy/` 和 `~/.codex/config.toml`；所有备份都应视为包含敏感信息。
 3. 运行 `crp ui`。
 4. 检查迁移得到的 `Default` 提供商，运行兼容性测试，并且只在测试通过后激活。
 
-如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建未激活且未测试的 schema-2 提供商，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。
+如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建 `custom_only` 模式、未激活且未测试的 schema-3 provider registry，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。schema-2 升级也会保留字节完全一致的备份；验证或发布失败时恢复原始字节。
 
 如果多个旧配置源包含不同凭据，迁移会在创建备份、访问凭据存储、写入 registry 或修改任一源文件之前返回 `MIGRATION_INPUT_INVALID`。CRP 不会自动选择其中一个凭据；该冲突只能在经过操作员审查的真实 HOME 迁移中解决。
 
 如果事务在提交前失败，CRP 会尝试恢复原始字节，并且只删除能够证明属于本次事务的 registry 与凭据状态；外部替换的文件不会被删除。出现 `MIGRATION_COMMITTED_DEGRADED`、`MIGRATION_COMMITTED_LOCK_DEGRADED` 或 `MIGRATION_ROLLBACK_DEGRADED`，表示最终状态不确定或需要修复：停止 CRP，不要连续重试，保留备份，并在修改文件前查看 Activity 中已脱敏的错误码。处于降级状态时，CRP 不会擅自用备份自动覆盖当前状态。
 
-回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-2 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
+回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-3 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
 
 ## 开发验证
 

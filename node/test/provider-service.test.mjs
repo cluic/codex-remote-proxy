@@ -1570,3 +1570,76 @@ test("proxy start and restart reject without an active provider while stop remai
   assert.equal((await service.stopProxy()).phase, "stopped");
   assert.deepEqual(credentials.operations, []);
 });
+
+test("routing mode persists without starting a stopped Worker", async (t) => {
+  const { service, registry, workerManager, activity } = makeHarness(t);
+
+  const result = await service.setRoutingMode("account_first");
+
+  assert.equal(result.routingMode, "account_first");
+  assert.equal(result.worker.phase, "stopped");
+  assert.equal(registry.getDocument().settings.routingMode, "account_first");
+  assert.deepEqual(workerManager.calls, []);
+  assert.deepEqual(
+    activity.events.map(({ category, action, result: eventResult }) => ({
+      category,
+      action,
+      result: eventResult
+    })),
+    [{ category: "settings", action: "routing-mode", result: "success" }]
+  );
+});
+
+test("routing mode hot-applies an increasing Worker generation", async (t) => {
+  const { service, registry, workerManager } = makeHarness(t);
+  const provider = await service.createProvider(providerInput(), makeSecret("routing-hot"));
+  registry.markTest(provider.id, { status: "passed" });
+  registry.setActive(provider.id);
+  await service.startProxy();
+  workerManager.calls.length = 0;
+
+  const result = await service.setRoutingMode("account_first");
+
+  assert.equal(result.routingMode, "account_first");
+  assert.equal(result.generation, 2);
+  assert.deepEqual(workerManager.calls.map(([operation]) => operation), ["applySnapshot"]);
+  assert.equal(workerManager.calls[0][1].settings.routing.mode, "account_first");
+  assert.equal(workerManager.calls[0][1].generation, 2);
+  assert.equal(registry.getDocument().settings.routingMode, "account_first");
+});
+
+test("routing mode restores persisted and Worker state after an uncertain apply failure", async (t) => {
+  const { service, registry, workerManager } = makeHarness(t);
+  const provider = await service.createProvider(providerInput(), makeSecret("routing-rollback"));
+  registry.markTest(provider.id, { status: "passed" });
+  registry.setActive(provider.id);
+  await service.startProxy();
+  workerManager.calls.length = 0;
+  const apply = workerManager.applySnapshot.bind(workerManager);
+  let attempts = 0;
+  workerManager.applySnapshot = async (snapshot) => {
+    attempts += 1;
+    const state = await apply(snapshot);
+    if (attempts === 1) throw new Error("candidate acknowledgement lost");
+    return state;
+  };
+
+  await assert.rejects(
+    () => service.setRoutingMode("account_first"),
+    (error) => error?.code === "ROUTING_MODE_UPDATE_FAILED"
+  );
+
+  assert.equal(registry.getDocument().settings.routingMode, "custom_only");
+  assert.equal(workerManager.generation, 3);
+  assert.deepEqual(
+    workerManager.calls.map(([operation, snapshot]) => [
+      operation,
+      snapshot.settings.routing.mode,
+      snapshot.generation
+    ]),
+    [
+      ["applySnapshot", "account_first", 2],
+      ["applySnapshot", "custom_only", 3]
+    ]
+  );
+});

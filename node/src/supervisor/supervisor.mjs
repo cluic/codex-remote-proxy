@@ -354,13 +354,19 @@ function createCodexService({
   };
 }
 
-function createSettingsService({ registry, credentialStore }) {
+function createSettingsService({ registry, credentialStore, providerService }) {
   return {
     getSettings() {
       return {
         ...registry.getDocument().settings,
         credentialBackend: credentialStore.backend ?? null
       };
+    },
+    async updateSettings(patch) {
+      if (Object.hasOwn(patch, "routingMode")) {
+        await providerService.setRoutingMode(patch.routingMode);
+      }
+      return this.getSettings();
     }
   };
 }
@@ -583,7 +589,7 @@ export async function createSupervisor({
       paths
     });
     auth = authFactory({ controlTokenPath: paths.controlTokenPath });
-    settingsService = createSettingsService({ registry, credentialStore });
+    settingsService = createSettingsService({ registry, credentialStore, providerService });
     diagnosticsService = createDiagnosticsService({ activityStore, now });
     adminServer = adminServerFactory({
       auth,

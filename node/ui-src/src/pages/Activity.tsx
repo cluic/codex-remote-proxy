@@ -24,7 +24,8 @@ function actionKey(action: string | null): TranslationKey | null {
     start: "activity.start",
     stop: "activity.stop",
     restart: "activity.restart",
-    "legacy-config": "activity.legacy-config"
+    "legacy-config": "activity.legacy-config",
+    "routing-mode": "activity.routing-mode"
   };
   return action ? keys[action] ?? null : null;
 }
@@ -47,6 +48,7 @@ function categoryLabel(category: string | null, t: Translator): string {
   if (category === "provider") return t("activity.categoryProvider");
   if (category === "proxy") return t("activity.categoryProxy");
   if (category === "migration") return t("activity.categoryMigration");
+  if (category === "settings") return t("activity.categorySettings");
   return t("common.unknown");
 }
 

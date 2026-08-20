@@ -157,7 +157,28 @@ function createServices() {
         adminHost: "127.0.0.1",
         adminPort: null,
         captureEnabled: false,
+        routingMode: "custom_only",
         credentialBackend: "injected"
+      })
+    },
+    accountMonitor: {
+      getState: () => ({
+        phase: "ready",
+        authMode: "apikey",
+        planType: null,
+        quotaSupported: null,
+        quota: null,
+        updatedAt: STARTED_AT,
+        errorCode: null
+      }),
+      refresh: async () => ({
+        phase: "ready",
+        authMode: "apikey",
+        planType: null,
+        quotaSupported: null,
+        quota: null,
+        updatedAt: STARTED_AT,
+        errorCode: null
       })
     },
     codexService: {

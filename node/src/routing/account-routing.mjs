@@ -15,7 +15,7 @@ const CHATGPT_AUTH_MODES = new Set([
   "agentIdentity",
   "personalAccessToken"
 ]);
-const NON_CHATGPT_AUTH_MODES = new Set(["apikey", "bedrockApiKey"]);
+const NON_CHATGPT_AUTH_MODES = new Set(["apikey", "headers", "bedrockApiKey"]);
 const ROUTING_MODES = new Set(["custom_only", "account_first"]);
 const QUOTA_STATUSES = new Set(["available", "exhausted", "unknown"]);
 
@@ -92,6 +92,10 @@ export function projectAccountRoutingState(monitorState) {
       .map((window) => safeUnixSeconds(window.resetsAt))
       .filter((value) => value !== null)
     : [];
+  if (quotaStatus === "exhausted" && monitorState?.quota?.spendControlReached === true) {
+    const spendControlResetsAt = safeUnixSeconds(monitorState.quota.spendControlResetsAt);
+    if (spendControlResetsAt !== null) exhaustedResets.push(spendControlResetsAt);
+  }
   return {
     authMode,
     quotaStatus,

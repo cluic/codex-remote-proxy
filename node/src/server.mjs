@@ -1156,7 +1156,7 @@ function rewriteTopLevelModel(buffer, modelOverride) {
     : { tooLarge: true };
 }
 
-function safeMetricModel(value, settings) {
+function safeMetricModel(value, settings, protectedValues = protectedHeaderValues(settings)) {
   if (typeof value !== "string" || value.length === 0
     || value.length > METRIC_MAX_MODEL_CODE_POINTS * 2
     || [...value].length > METRIC_MAX_MODEL_CODE_POINTS
@@ -1164,7 +1164,7 @@ function safeMetricModel(value, settings) {
     || METRIC_TEXT_CONTROL_PATTERN.test(value)) {
     return null;
   }
-  return containsRecoverableProtectedValue(value, protectedHeaderValues(settings)) ? null : value;
+  return containsRecoverableProtectedValue(value, protectedValues) ? null : value;
 }
 
 function normalizeMetricUsage(value) {
@@ -1480,7 +1480,7 @@ export function createServer(settings, {
       ? buildAccountUpstreamHeaders(req, requestSettings, targetUrl)
       : buildUpstreamHeaders(req, requestSettings, targetUrl, {
           stripContentHeaders: false,
-          stripAccountHeaders: requestSettings.routing?.mode === "account_first"
+          stripAccountHeaders: true
         });
     let captureContext = null;
     let captureSaved = false;
@@ -1488,7 +1488,7 @@ export function createServer(settings, {
     let terminal = false;
     let requestEnded = false;
     let requestModel = overrideModel && !initialAccountRoute
-      ? safeMetricModel(overrideModel, requestSettings)
+      ? safeMetricModel(overrideModel, requestSettings, requestProtectedValues)
       : null;
     let requestInspectionFinished = Boolean(overrideModel && !initialAccountRoute);
     let upstreamRequest = null;
@@ -1537,7 +1537,7 @@ export function createServer(settings, {
       if (requestModelInspector) {
         const inspection = requestModelInspector.end();
         requestModel = inspection.complete && !inspection.invalid
-          ? safeMetricModel(inspection.strings.model, requestSettings)
+          ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
           : null;
       } else if (encodedRequestMetric && !encodedRequestMetric.truncated) {
         const decoded = decodeBoundedBody(
@@ -1550,7 +1550,7 @@ export function createServer(settings, {
           inspector.write(decoded);
           const inspection = inspector.end();
           requestModel = inspection.complete && !inspection.invalid
-            ? safeMetricModel(inspection.strings.model, requestSettings)
+            ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
             : null;
         }
       }
@@ -1591,7 +1591,7 @@ export function createServer(settings, {
       transport = targetUrl.protocol === "https:" ? https : http;
       forwardedHeaders = buildUpstreamHeaders(req, requestSettings, targetUrl, {
         stripContentHeaders: false,
-        stripAccountHeaders: requestSettings.routing?.mode === "account_first"
+        stripAccountHeaders: true
       });
       upstreamResponse = null;
       responseState = null;
@@ -1684,7 +1684,7 @@ export function createServer(settings, {
         requestCapture = createBoundedCollector(CAPTURE_BODY_MAX_BYTES);
         requestCapture.append(forwardedBody);
       }
-      requestModel = safeMetricModel(overrideModel, requestSettings);
+      requestModel = safeMetricModel(overrideModel, requestSettings, requestProtectedValues);
       requestInspectionFinished = true;
       return forwardedBody;
     }

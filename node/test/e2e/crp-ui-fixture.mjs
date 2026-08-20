@@ -321,6 +321,37 @@ function createServices({ upstream }) {
     nextWorkerPid: 4201,
     testFailureCode: null,
     nextMutationError: null,
+    routingMode: "custom_only",
+    account: {
+      phase: "ready",
+      authMode: "chatgpt",
+      planType: "plus",
+      quotaSupported: true,
+      quota: {
+        status: "available",
+        windows: [
+          {
+            kind: "primary",
+            usedPercent: 35,
+            remainingPercent: 65,
+            windowDurationMins: 300,
+            resetsAt: Math.floor(Date.parse("2026-07-13T13:00:00.000Z") / 1_000)
+          },
+          {
+            kind: "secondary",
+            usedPercent: 62,
+            remainingPercent: 38,
+            windowDurationMins: 10_080,
+            resetsAt: Math.floor(Date.parse("2026-07-19T08:00:00.000Z") / 1_000)
+          }
+        ],
+        rateLimitReachedType: null,
+        spendControlReached: false,
+        updatedAt: STARTED_AT
+      },
+      updatedAt: STARTED_AT,
+      errorCode: null
+    },
     codex: {
       configured: false,
       modelProvider: null,
@@ -722,8 +753,34 @@ function createServices({ upstream }) {
           adminHost: "127.0.0.1",
           adminPort: 15101,
           captureEnabled: false,
+          routingMode: state.routingMode,
           credentialBackend: "native"
         };
+      },
+      async updateSettings(patch) {
+        rejectNextMutation("updateSettings");
+        assert.deepEqual(Object.keys(patch), ["routingMode"]);
+        assert.ok(patch.routingMode === "custom_only" || patch.routingMode === "account_first");
+        state.routingMode = patch.routingMode;
+        if (state.worker.phase === "running") {
+          state.generation += 1;
+          state.worker.generation = state.generation;
+          if (state.worker.state) state.worker.state.generation = state.generation;
+        }
+        calls.push({ operation: "updateRoutingMode", mode: state.routingMode });
+        addActivity("settings", "routing-mode", null);
+        return await this.getSettings();
+      }
+    },
+    accountMonitor: {
+      getState() {
+        return structuredClone(state.account);
+      },
+      async refresh() {
+        state.account.updatedAt = "2026-07-13T08:55:00.000Z";
+        if (state.account.quota) state.account.quota.updatedAt = state.account.updatedAt;
+        calls.push({ operation: "refreshAccount" });
+        return structuredClone(state.account);
       }
     },
     codexService: {
@@ -1119,6 +1176,9 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       },
       setUpstreamResponsePayload(payload) {
         resources.upstream.setResponsePayload(payload);
+      },
+      setAccount(account) {
+        services.state.account = structuredClone(account);
       },
       async rotateBrowserSession(page) {
         return await page.evaluate(async (token) => {

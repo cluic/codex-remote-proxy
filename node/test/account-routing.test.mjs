@@ -84,6 +84,7 @@ test("honors authoritative auth and fresh quota state while allowing stale probe
     nowMs: NOW_MS
   });
   assert.equal(decide({ ...UNKNOWN_STATE, authMode: "apikey" }).reason, "not_chatgpt_auth");
+  assert.equal(decide({ ...UNKNOWN_STATE, authMode: "headers" }).reason, "not_chatgpt_auth");
   assert.equal(decide({
     authMode: "chatgpt",
     quotaStatus: "exhausted",
@@ -127,6 +128,17 @@ test("projects only bounded routing state from the account monitor", () => {
   assert.equal(JSON.stringify(projected).includes("ignored"), false);
   assert.equal(isValidAccountRoutingState({ ...projected, blockedUntil: -1 }), false);
   assert.equal(isValidAccountRoutingState({ ...projected, extra: true }), false);
+
+  assert.equal(projectAccountRoutingState({
+    authMode: "chatgpt",
+    updatedAt: "2026-08-20T00:00:00.000Z",
+    quota: {
+      status: "exhausted",
+      windows: [],
+      spendControlReached: true,
+      spendControlResetsAt: 1_800_000_300
+    }
+  }).blockedUntil, 1_800_000_300);
 });
 
 test("parses bounded Codex windows and derives explicit or generic 429 cooldowns", () => {

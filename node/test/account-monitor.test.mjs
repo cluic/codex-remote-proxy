@@ -116,6 +116,7 @@ test("reads ChatGPT auth and canonical Codex limits without exposing account fie
       ],
       rateLimitReachedType: null,
       spendControlReached: null,
+      spendControlResetsAt: null,
       updatedAt: NOW
     },
     updatedAt: NOW,
@@ -196,8 +197,33 @@ test("normalizes exhausted limits and rejects unsafe numeric fields", () => {
     }],
     rateLimitReachedType: null,
     spendControlReached: false,
+    spendControlResetsAt: null,
     updatedAt: NOW
   });
+});
+
+test("normalizes the current individual spend-control limit without exposing amounts", () => {
+  const normalized = normalizeAccountRateLimits({
+    rateLimits: {
+      limitId: "codex",
+      individualLimit: {
+        limit: "private-limit",
+        used: "private-used",
+        remainingPercent: 0,
+        resetsAt: 1_800_000_300
+      }
+    }
+  }, NOW);
+  assert.deepEqual(normalized, {
+    status: "exhausted",
+    limitId: "codex",
+    windows: [],
+    rateLimitReachedType: null,
+    spendControlReached: true,
+    spendControlResetsAt: 1_800_000_300,
+    updatedAt: NOW
+  });
+  assert.equal(JSON.stringify(normalized).includes("private"), false);
 });
 
 test("accepts bounded rolling notifications and publishes defensive snapshots", async (t) => {
@@ -265,6 +291,14 @@ test("projects account update notifications without private fields", async (t) =
   assert.equal(state.authMode, "chatgptAuthTokens");
   assert.equal(state.planType, "business");
   assert.equal(JSON.stringify(state).includes("ignored"), false);
+
+  child.stdout.write(`${JSON.stringify({
+    method: "account/updated",
+    params: { authMode: "headers", planType: null }
+  })}\n`);
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(monitor.getState().authMode, "headers");
+  assert.equal(monitor.getState().planType, null);
 });
 
 test("coalesces concurrent refreshes into one account query", async (t) => {
@@ -302,4 +336,73 @@ test("fails closed on unavailable or oversized app-server output", async (t) => 
   child.stdout.write("0123456789");
   await starting;
   assert.equal(monitor.getState().errorCode, "ACCOUNT_MONITOR_PROTOCOL_ERROR");
+});
+
+test("isolates replaced app-server events and contains stdin failures", async (t) => {
+  const first = fakeAppServer(() => {});
+  first.kill = (signal) => {
+    first.signalCode = signal;
+    return true;
+  };
+  const second = fakeAppServer((message, child) => {
+    if (message.method === "initialize") respond(child, message.id, {});
+  });
+  const children = [first, second];
+  const monitor = new AccountMonitor({
+    spawnImpl: () => children.shift(),
+    now: () => NOW,
+    autoPoll: false,
+    requestTimeoutMs: 500,
+    maxLineBytes: 128
+  });
+  t.after(() => monitor.close());
+
+  const failedStart = monitor.start().catch(() => null);
+  first.stdout.write("x".repeat(129));
+  await failedStart;
+  assert.equal(monitor.getState().phase, "unavailable");
+
+  await monitor.start();
+  assert.equal(monitor.getState().phase, "ready");
+  first.emit("exit", null, "SIGTERM");
+  first.stdout.write("not-json\n");
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(monitor.getState().phase, "ready");
+
+  second.stdin.emit("error", new Error("private pipe failure"));
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(monitor.getState().phase, "unavailable");
+  assert.equal(monitor.getState().errorCode, "ACCOUNT_MONITOR_UNAVAILABLE");
+  assert.equal(JSON.stringify(monitor.getState()).includes("private"), false);
+});
+
+test("retires a timed-out child and keeps close as the terminal state", async () => {
+  const timedOutChild = fakeAppServer((message, child) => {
+    if (message.method === "initialize") respond(child, message.id, {});
+  });
+  const timedOutMonitor = new AccountMonitor({
+    spawnImpl: () => timedOutChild,
+    now: () => NOW,
+    autoPoll: false,
+    requestTimeoutMs: 10
+  });
+  const unavailable = await timedOutMonitor.refresh();
+  assert.equal(unavailable.phase, "unavailable");
+  assert.equal(timedOutChild.signalCode, "SIGTERM");
+  await timedOutMonitor.close();
+
+  const closingChild = fakeAppServer((message, child) => {
+    if (message.method === "initialize") respond(child, message.id, {});
+  });
+  const closingMonitor = new AccountMonitor({
+    spawnImpl: () => closingChild,
+    now: () => NOW,
+    autoPoll: false,
+    requestTimeoutMs: 500
+  });
+  const refreshing = closingMonitor.refresh();
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  await closingMonitor.close();
+  await refreshing;
+  assert.equal(closingMonitor.getState().phase, "closed");
 });

@@ -575,8 +575,16 @@ test("persists only supported global routing modes", (t) => {
     "account_first"
   );
   assert.equal(registry.setRoutingMode("account_first"), "account_first");
+  assert.equal(registry.setRoutingModeIfCurrent("custom_only", "account_first"), false);
+  assert.equal(registry.setRoutingModeIfCurrent("account_first", "custom_only"), true);
+  assert.equal(registry.getDocument().settings.routingMode, "custom_only");
+  assert.equal(registry.setRoutingModeIfCurrent("custom_only", "account_first"), true);
   assert.throws(
     () => registry.setRoutingMode("account_only"),
+    assertCrpError("ROUTING_MODE_INVALID", 400)
+  );
+  assert.throws(
+    () => registry.setRoutingModeIfCurrent("invalid", "custom_only"),
     assertCrpError("ROUTING_MODE_INVALID", 400)
   );
 });

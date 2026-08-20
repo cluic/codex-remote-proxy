@@ -64,6 +64,31 @@ export interface SupervisorShutdownAcceptance {
   startedAt: string;
 }
 
+export interface AccountQuotaWindow {
+  kind: "primary" | "secondary";
+  usedPercent: number;
+  remainingPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+}
+
+export interface AccountStatus {
+  phase: "idle" | "starting" | "ready" | "unavailable" | "closed";
+  authMode: "apikey" | "chatgpt" | "chatgptAuthTokens" | "headers" | "agentIdentity" | "personalAccessToken" | "bedrockApiKey" | null;
+  authenticated: boolean | null;
+  planType: string | null;
+  quotaSupported: boolean | null;
+  quota: {
+    status: "available" | "exhausted" | "unknown";
+    windows: AccountQuotaWindow[];
+    rateLimitReachedType: string | null;
+    spendControlReached: boolean | null;
+    updatedAt: string | null;
+  } | null;
+  updatedAt: string | null;
+  errorCode: string | null;
+}
+
 export interface StatusResponse {
   supervisor: { pid: number | null; startedAt: string | null };
   activeProviderId: string | null;
@@ -76,6 +101,7 @@ export interface StatusResponse {
     modelProvider: string | null;
     proxyUrl: string | null;
   };
+  account: AccountStatus;
 }
 
 export interface Settings {
@@ -84,6 +110,7 @@ export interface Settings {
   adminHost: string | null;
   adminPort: number | null;
   captureEnabled: boolean;
+  routingMode: "custom_only" | "account_first";
   credentialBackend: string | null;
 }
 

@@ -88,7 +88,7 @@ V8.1 release-preparation rerun on 2026-07-17:
   `~/.codex-remote-proxy`, while the earlier `crpdev` wrapper is confirmed to
   be intentionally isolated through its injected temporary paths.
 
-Publication of changes after `0.4.0` remains blocked on deliberate working-tree staging,
+Publication of changes after `0.4.1` remains blocked on deliberate working-tree staging,
 copied-real-history rehearsal, remote platform evidence, and final L3 approval.
 
 Current release-preparation adjustments include a shipped MIT License and a
@@ -118,13 +118,13 @@ Treat upgrade and rollback as L3 operations. Before using a real home directory:
 
 1. stop the old proxy;
 2. privately back up the entire CRP home and Codex configuration;
-3. verify that the first supervisor start retains byte-exact legacy backups, creates schema-2 registry state, and scrubs legacy secret fields only after commit;
+3. verify that the first supervisor start retains byte-exact legacy backups, creates schema-3 `custom_only` registry state, and scrubs legacy secret fields only after commit; independently verify byte-exact rollback of the schema-2-to-3 upgrade;
 4. test and activate the migrated inactive `Default` provider;
 5. inspect Activity for committed or rollback-degraded migration codes before any retry.
 
 Before exercising M2D/V7 history repair, fully stop Codex and use a private copy of a representative history corpus. Verify storage growth, the 300-second bootstrap budget, interruption after each durable phase, forward retry, fixed marker/lock recovery, and byte/logical backup restoration before authorizing any real-home run.
 
-Rollback to `0.2.2` requires the supervisor to be stopped and the complete pre-upgrade backup to be restored as one unit. Do not mix the schema-2 registry with restored flat files. Do not publish until migration and rollback evidence has passed real-platform expert review.
+Rollback to `0.2.2` requires the supervisor to be stopped and the complete pre-upgrade backup to be restored as one unit. Do not mix the schema-3 registry with restored flat files. Do not publish until migration and rollback evidence has passed real-platform expert review.
 
 ## Release Pull Request and Publish
 

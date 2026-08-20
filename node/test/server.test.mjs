@@ -232,6 +232,65 @@ test("buildTargetUrl preserves base query parameters without forwarding fragment
   );
 });
 
+test("custom-only routing strips Codex account credentials before nonstandard provider auth", async (t) => {
+  const observedSignal = createSignal();
+  const metricSignal = createSignal();
+  const metrics = [];
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      observedSignal.resolve({
+        hasAccountAuthorization: Object.hasOwn(req.headers, "authorization"),
+        hasAccountId: Object.hasOwn(req.headers, "chatgpt-account-id"),
+        customAuthMatches: req.headers["x-provider-auth"] === "Bearer custom-token-sentinel"
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    apiKey: "custom-token-sentinel",
+    authHeader: "x-provider-auth",
+    captureEnabled: false,
+    routingMode: "custom_only"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {},
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+      metricSignal.resolve();
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer account-token-sentinel",
+      "chatgpt-account-id": "account-id-sentinel"
+    },
+    body: JSON.stringify({ model: "account-id-sentinel", input: "hello" })
+  });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  const observed = await withDeadline(observedSignal.promise, "custom request was not observed");
+  await withDeadline(metricSignal.promise, "custom metric was not observed");
+  assert.equal(observed.hasAccountAuthorization, false);
+  assert.equal(observed.hasAccountId, false);
+  assert.equal(observed.customAuthMatches, true);
+  assert.equal(metrics.length, 1);
+  assert.equal(metrics[0].model, null);
+});
+
 test("account-first sends eligible Responses traffic to the fixed Codex route", async (t) => {
   const accountObserved = createSignal();
   let customRequests = 0;

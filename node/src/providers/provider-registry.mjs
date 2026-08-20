@@ -664,6 +664,22 @@ export class ProviderRegistry {
     });
   }
 
+  setRoutingModeIfCurrent(expectedMode, mode) {
+    if (!ROUTING_MODE_SET.has(expectedMode) || !ROUTING_MODE_SET.has(mode)) {
+      throw inputError(
+        "ROUTING_MODE_INVALID",
+        "The routing mode is invalid.",
+        "Choose custom_only or account_first."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.routingMode !== expectedMode) return noChange(false);
+      if (expectedMode === mode) return noChange(true);
+      document.settings.routingMode = mode;
+      return true;
+    });
+  }
+
   getActive() {
     const document = this.#refresh();
     if (document.activeProviderId === null) {

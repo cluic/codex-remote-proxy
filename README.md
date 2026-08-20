@@ -6,7 +6,7 @@ Codex Remote Proxy (CRP) keeps Codex signed in with ChatGPT while routing model 
 
 [简体中文](./README.zh-CN.md)
 
-> Release status: npm `0.4.0` is the current release and includes the Supervisor and `crp ui`. Changes after `0.4.0` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
+> Release status: npm `0.4.1` is the current release and includes the Supervisor and `crp ui`. Changes after `0.4.1` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
 
 ## Install
 
@@ -46,6 +46,10 @@ The local UI supports the complete daily workflow:
 - review sanitized control-plane Activity and read-only System facts;
 - generate an in-memory diagnostic summary containing only creation state, generation time, and sanitized event count.
 
+System also shows the local Codex ChatGPT authentication mode, plan, and normalized 5-hour/7-day quota windows. It refreshes the account snapshot every five minutes and on demand through the private Codex app-server protocol. If that experimental interface is unavailable or changes, CRP reports an unavailable/unknown account state and keeps custom-provider routing operational.
+
+Routing defaults to `custom_only`. The System toggle can hot-apply `account_first` without restarting a running Worker. In that mode, only `POST /responses` and `POST /v1/responses` are eligible for the ChatGPT account path. CRP uses the account only when Codex reports a signed-in ChatGPT session, a unique account identity, and available quota; otherwise it uses the selected custom provider. A first account response that explicitly reports rate limiting is replayed once through the custom provider. Authentication failures, other upstream failures, and network errors stay visible and do not silently consume the custom API key. Replayable request bodies are bounded to 8 MiB.
+
 `Forwarding Records` is visible as a disabled `Coming soon` navigation item. This MVP has no forwarding-record route, request/response viewer, Capture control, or mock traffic data. Overview Metrics is anonymous aggregate state and remains independent from optional Capture. Its 24-hour and 7-day series use fixed UTC hourly buckets. A request counts as successful only after a successful Responses terminal event or completed JSON response; if metric updates were dropped, the UI marks success rates unavailable instead of presenting a precise percentage. Provider and model distributions always retain an explicit grouped remainder.
 
 Provider activation affects new requests. Requests already in flight keep the provider snapshot, including its model policy, with which they started. In `passthrough` mode CRP preserves the client model; in `override` mode it replaces only the top-level JSON `model` value with the Provider's configured model. The explicit activation route is also the production switch operation: it applies a new snapshot to a running Worker and starts a stopped Worker. Initial selection is deliberately different: after a successful compatibility test, Setup, CLI, and the ordinary Providers page all use a first-wins compare-and-set when no Provider is active, while the Worker remains stopped.
@@ -84,7 +88,7 @@ The public Supervisor requires the native operating-system credential store thro
 
 If native storage cannot be constructed or later fails, public startup and credential operations fail closed. The current UI, CLI, and Admin API have no file-storage consent or selection control. A lower-level private file adapter remains available only through trusted dependency injection; exposing a startup consent path is future L3 work and no native operation is replayed into that adapter.
 
-The UI never reads a saved key back. Secret fields are blank on edit, and complete keys are excluded from API reads, activity, diagnostics, state files, and logs.
+The UI never reads a saved key back. Secret fields are blank on edit, and complete keys are excluded from API reads, activity, diagnostics, state files, and logs. ChatGPT access tokens, email addresses, and account identifiers are likewise excluded from public status/settings responses, Activity, Metrics, Capture, and logs. Account authorization headers are removed from every custom-provider request, and custom credentials or extra headers are never sent to ChatGPT.
 
 ## Local Browser Security
 
@@ -141,20 +145,20 @@ CLI-triggered compatibility tests, including `provider add --model`, request ini
 
 ## Upgrading From 0.2.2
 
-The `0.3` series migrates the pre-supervisor flat configuration to provider-registry schema 2 on first supervisor startup.
+Current releases migrate the pre-supervisor flat configuration to provider-registry schema 3 on first supervisor startup. An existing valid schema-2 registry is upgraded atomically with `routingMode: "custom_only"`, so upgrading alone never redirects traffic through a ChatGPT account.
 
 1. Stop the old managed proxy.
 2. Make a private backup of `~/.codex-remote-proxy/` and `~/.codex/config.toml`. Treat every backup as secret-bearing.
 3. Run `crp ui`.
 4. Review the migrated provider named `Default`, run its compatibility test, and activate it only after the test passes.
 
-Migration reads the legacy `config.json` and runtime `node/proxy-config.json` when present. It creates collision-safe, byte-exact private backups, stores the credential through the required native backend, creates an inactive and untested schema-2 provider, validates the committed registry, and only then scrubs secret fields from the legacy files. Backups are retained.
+Migration reads the legacy `config.json` and runtime `node/proxy-config.json` when present. It creates collision-safe, byte-exact private backups, stores the credential through the required native backend, creates an inactive and untested schema-3 provider registry in `custom_only` mode, validates the committed registry, and only then scrubs secret fields from the legacy files. Backups are retained. Schema-2 upgrade also retains a byte-exact backup and restores the original bytes if validation or publication fails.
 
 If the legacy sources contain different credentials, migration returns `MIGRATION_INPUT_INVALID` before creating backups, accessing credential storage, writing the registry, or changing either source. CRP never chooses one credential automatically; resolve the conflict only through an operator-reviewed real-home migration.
 
 If a transaction fails before commit, CRP attempts to restore the original bytes and remove only registry and credential state that the transaction can prove it owns. It never deletes a foreign replacement. A `MIGRATION_COMMITTED_DEGRADED`, `MIGRATION_COMMITTED_LOCK_DEGRADED`, or `MIGRATION_ROLLBACK_DEGRADED` result means the final state is uncertain or needs repair: stop CRP, do not repeatedly retry, preserve the backups, and review the sanitized Activity error code before changing files. Automatic restoration from a backup is intentionally not attempted in a degraded state.
 
-Rollback to `0.2.2` is not a schema downgrade. Stop CRP first and restore the complete private pre-upgrade backup as one unit; do not copy a secret back into only one legacy file or mix schema-2 registry state with flat configuration. Real-home migration and rollback remain L3 operations and require platform-specific review.
+Rollback to `0.2.2` is not a schema downgrade. Stop CRP first and restore the complete private pre-upgrade backup as one unit; do not copy a secret back into only one legacy file or mix schema-3 registry state with flat configuration. Real-home migration and rollback remain L3 operations and require platform-specific review.
 
 ## Development
 

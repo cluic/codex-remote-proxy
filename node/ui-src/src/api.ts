@@ -1,5 +1,6 @@
 import type {
   ActivityPageData,
+  AccountStatus,
   BootstrapResult,
   DiagnosticResult,
   MetricsOverview,
@@ -180,6 +181,22 @@ export class CrpApi {
 
   async getSettings(signal?: AbortSignal): Promise<Settings> {
     const payload = await this.get<{ settings: Settings }>("/api/v1/settings", signal);
+    return payload.settings;
+  }
+
+  async refreshAccount(): Promise<AccountStatus> {
+    const payload = await this.mutate<{ account: AccountStatus }>("/api/v1/account/refresh", {
+      method: "POST",
+      emptyBody: true
+    });
+    return payload.account;
+  }
+
+  async updateRoutingMode(routingMode: Settings["routingMode"]): Promise<Settings> {
+    const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
+      method: "PATCH",
+      body: { routingMode }
+    });
     return payload.settings;
   }
 

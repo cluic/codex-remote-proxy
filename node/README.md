@@ -2,7 +2,7 @@
 
 `@cluic/codex-remote-proxy` keeps Codex signed in with ChatGPT while routing model requests through a selected OpenAI-compatible provider.
 
-> Release status: npm `0.4.0` is current and includes the Supervisor and `crp ui`. Changes after `0.4.0` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
+> Release status: npm `0.4.1` is current and includes the Supervisor and `crp ui`. Changes after `0.4.1` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
 
 ## Requirements and Install
 
@@ -26,6 +26,10 @@ The current development source is a responsive React + TypeScript SPA under `ui-
 ## Product Behavior
 
 The UI can create, test, switch, update, and delete named providers; start, stop, and restart the proxy worker; inspect anonymous 24-hour/7-day aggregate Metrics; review sanitized Activity; inspect read-only System facts; and generate in-memory diagnostic summary metadata. A provider must pass an OpenAI Responses compatibility test before explicit activation. Provider cards expose the legal switch action directly. Explicit activation applies a snapshot to a running Worker and starts a stopped Worker; first-provider compare-and-set selection from Setup, CLI, or the ordinary Providers page never starts or reconfigures it. The active provider cannot be updated or deleted, even while the worker is stopped; switch to another provider first.
+
+System projects the Codex account authentication mode, plan, and normalized 5-hour/7-day quota windows from the private app-server protocol, with five-minute and manual refresh. It never projects a ChatGPT token, email, or account ID. Routing defaults to `custom_only`; `account_first` hot-applies to a running Worker and is limited to the two Responses POST paths. A signed-in account with a unique identity and available quota is tried first. Explicit account rate limiting replays once through the custom Provider, while authentication, other upstream, and network failures remain visible. Replay buffering is capped at 8 MiB. Account headers are stripped from every custom request, and custom credentials/extra headers never cross into the account request.
+
+The authenticated Admin contract exposes the sanitized account projection through `GET /api/v1/status`, forces a fresh snapshot through `POST /api/v1/account/refresh`, and accepts exactly `{ "routingMode": "custom_only" | "account_first" }` at `PATCH /api/v1/settings`. Both mutations retain the existing same-origin session and CSRF requirements.
 
 `Forwarding Records` is a disabled coming-soon navigation item only. It has no route, traffic request, Capture control, payload viewer, or mock records. Overview Metrics is anonymous aggregation independent from optional Capture. It uses fixed UTC hourly buckets, classifies Responses success from semantic terminal state, marks rates unavailable after dropped metric updates, and retains explicit grouped remainders for Provider and model distributions.
 
@@ -103,13 +107,13 @@ CLI tests and ordinary Web Providers-page tests request `activateIfNone` so the 
 
 Before first startup, stop the old proxy and privately back up the whole CRP home plus Codex configuration. Backups may contain credentials.
 
-The first supervisor startup transactionally reads legacy `config.json` and `node/proxy-config.json` when present, writes collision-safe byte-exact private backups, stores the secret through the required native adapter, creates schema-2 `providers.json` with one inactive and untested `Default` profile, validates the registry, and only then scrubs legacy secret fields. The user must test and activate `Default`; migration does not assume compatibility.
+The first supervisor startup transactionally reads legacy `config.json` and `node/proxy-config.json` when present, writes collision-safe byte-exact private backups, stores the secret through the required native adapter, creates schema-3 `providers.json` in `custom_only` mode with one inactive and untested `Default` profile, validates the registry, and only then scrubs legacy secret fields. The user must test and activate `Default`; migration does not assume compatibility. A valid schema-2 registry is independently backed up and upgraded atomically to schema 3 with `custom_only`; publication failure restores its exact original bytes.
 
 Different credentials in the legacy sources produce `MIGRATION_INPUT_INVALID` before backups, credential operations, registry writes, or source mutation. CRP does not choose one source automatically; resolving a real-home conflict remains an operator-reviewed L3 migration action.
 
 On an ordinary pre-commit failure, CRP attempts reverse-order restoration and removes only transaction-owned registry/credential state. Foreign replacements and all backups are preserved. Committed or rollback-degraded migration codes require CRP to remain stopped while an operator reviews Activity and the private backups; repeated retry or partial manual copying can make an uncertain state worse.
 
-Returning to `0.2.2` requires stopping CRP and restoring the complete pre-upgrade backup as a unit. Schema 2 is not automatically downgraded. Real-home migration, native stores, and rollback are L3 platform operations.
+Returning to `0.2.2` requires stopping CRP and restoring the complete pre-upgrade backup as a unit. Schema 3 is not automatically downgraded. Real-home migration, native stores, and rollback are L3 platform operations.
 
 ## Development and Release Gates
 
@@ -141,7 +145,7 @@ node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs tes
 npm pack --dry-run --json --ignore-scripts
 ```
 
-The current package-content test requires the exact reviewed 34-file allowlist, including the MIT License, provider-model cache, Codex history-repair, Metrics store, and exactly three generated UI assets. It rejects UI development source, runtime state, credentials, tests, Changesets, logs, databases, and generated output outside the reviewed UI files. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
+The current package-content test requires the exact reviewed 37-file allowlist, including the MIT License, provider-model cache, Codex history-repair, Metrics store, account monitor/routing modules, and exactly three generated UI assets. It rejects UI development source, runtime state, credentials, tests, Changesets, logs, databases, and generated output outside the reviewed UI files. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
 
 The serial `core-chain` group uses the production CLI/Admin/registry/provider/WorkerManager/forked-worker path and proves switching, in-flight snapshots, restart, shutdown, cleanup, and secret scans. Its injected memory credential adapter and loopback upstreams do not satisfy the separate real native-keyring/external-provider gate.
 

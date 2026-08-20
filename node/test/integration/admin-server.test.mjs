@@ -196,6 +196,7 @@ function createServices() {
         adminHost: "127.0.0.1",
         adminPort: 15101,
         captureEnabled: false,
+        routingMode: "custom_only",
         credentialBackend: "native",
         apiKey: SECRET
       };
@@ -324,6 +325,41 @@ function createServices() {
       };
     }
   };
+  const accountState = {
+    phase: "ready",
+    authMode: "chatgpt",
+    planType: "plus",
+    quotaSupported: true,
+    quota: {
+      status: "available",
+      windows: [{
+        kind: "primary",
+        usedPercent: 35,
+        remainingPercent: 65,
+        windowDurationMins: 300,
+        resetsAt: 1_800_000_000,
+        apiKey: SECRET
+      }],
+      rateLimitReachedType: null,
+      spendControlReached: false,
+      updatedAt: "2026-07-13T00:00:00.000Z",
+      email: SECRET
+    },
+    updatedAt: "2026-07-13T00:00:00.000Z",
+    errorCode: null,
+    email: SECRET,
+    accessToken: SECRET
+  };
+  const accountMonitor = {
+    getState() {
+      calls.push(["getAccountState"]);
+      return structuredClone(accountState);
+    },
+    async refresh() {
+      calls.push(["refreshAccount"]);
+      return structuredClone(accountState);
+    }
+  };
   return {
     calls,
     providerService,
@@ -331,7 +367,8 @@ function createServices() {
     settingsService,
     codexService,
     diagnosticsService,
-    metricsService
+    metricsService,
+    accountMonitor
   };
 }
 
@@ -912,7 +949,9 @@ test("routes every approved Admin API operation through injected services", asyn
     ["POST", "/api/v1/proxy/restart", undefined, 200],
     ["GET", "/api/v1/activity?limit=3&offset=2", undefined, 200],
     ["GET", "/api/v1/settings", undefined, 200],
+    ["PATCH", "/api/v1/settings", { routingMode: "account_first" }, 200],
     ["PATCH", "/api/v1/settings", { captureEnabled: true }, 409, "SETTINGS_READ_ONLY"],
+    ["POST", "/api/v1/account/refresh", undefined, 200],
     ["POST", "/api/v1/codex/bootstrap", undefined, 200],
     ["POST", "/api/v1/diagnostics/export", undefined, 200],
     ["DELETE", "/api/v1/providers/provider-2", undefined, 200]
@@ -938,7 +977,63 @@ test("routes every approved Admin API operation through injected services", asyn
   assert.ok(harness.calls.some((call) => call[0] === "bootstrap"));
   assert.ok(harness.calls.some((call) => call[0] === "diagnostics"));
   assert.ok(harness.calls.some((call) => call[0] === "metrics" && call[1] === "7d"));
-  assert.equal(harness.calls.some((call) => call[0] === "updateSettings"), false);
+  assert.ok(harness.calls.some((call) => (
+    call[0] === "updateSettings" && call[1].routingMode === "account_first"
+  )));
+  assert.ok(harness.calls.some((call) => call[0] === "refreshAccount"));
+});
+
+test("status and refresh expose only bounded account and quota fields", async (t) => {
+  const harness = await createHarness(t);
+  const status = await harness.request("/api/v1/status", { headers: bearer(harness) });
+  const refreshed = await harness.request("/api/v1/account/refresh", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+
+  for (const result of [status, refreshed]) {
+    assert.equal(result.response.status, 200, result.text);
+    assertNoSensitiveResponse(result);
+    assert.deepEqual(result.json.account, {
+      phase: "ready",
+      authMode: "chatgpt",
+      authenticated: true,
+      planType: "plus",
+      quotaSupported: true,
+      quota: {
+        status: "available",
+        windows: [{
+          kind: "primary",
+          usedPercent: 35,
+          remainingPercent: 65,
+          windowDurationMins: 300,
+          resetsAt: 1_800_000_000
+        }],
+        rateLimitReachedType: null,
+        spendControlReached: false,
+        updatedAt: "2026-07-13T00:00:00.000Z"
+      },
+      updatedAt: "2026-07-13T00:00:00.000Z",
+      errorCode: null
+    });
+    for (const forbidden of ["email", "accessToken", "apiKey"]) {
+      assert.equal(result.text.includes(forbidden), false);
+    }
+  }
+
+  harness.accountMonitor.getState = () => ({
+    phase: "ready",
+    authMode: "headers",
+    planType: null,
+    quotaSupported: null,
+    quota: null,
+    updatedAt: "2026-07-13T00:00:00.000Z",
+    errorCode: null
+  });
+  const headerAuth = await harness.request("/api/v1/status", { headers: bearer(harness) });
+  assert.equal(headerAuth.response.status, 200, headerAuth.text);
+  assert.equal(headerAuth.json.account.authMode, "headers");
+  assert.equal(headerAuth.json.account.authenticated, false);
 });
 
 test("metrics overview is authenticated read-only, bounded, and positively projected", async (t) => {
@@ -1398,6 +1493,10 @@ test("returns stable sanitized errors and strict route, method, and path failure
     assert.equal(result.json.error.code, code);
     assertNoSensitiveResponse(result);
   }
+  const accountWrongMethod = await harness.request("/api/v1/account/refresh", { headers });
+  assert.equal(accountWrongMethod.response.status, 405, accountWrongMethod.text);
+  assert.equal(accountWrongMethod.response.headers.get("allow"), "POST");
+  assert.equal(accountWrongMethod.json.error.code, "API_METHOD_NOT_ALLOWED");
   assertNoSensitiveResponse(conflict);
 });
 
