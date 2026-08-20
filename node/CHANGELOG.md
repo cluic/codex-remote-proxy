@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.2
+
+### Patch Changes
+
+- 067be9f: Add privacy-bounded Codex account and quota monitoring, an opt-in account-first Responses route with strict rate-limit fallback, transactional schema-3 routing settings, and bilingual management controls.
+
 ## 0.4.1
 
 ### Patch Changes
