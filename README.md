@@ -6,7 +6,7 @@ Codex Remote Proxy (CRP) keeps Codex signed in with ChatGPT while routing model 
 
 [简体中文](./README.zh-CN.md)
 
-> Release status: npm `0.4.2` is the current release. Changes after `0.4.2` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
+> Release status: npm `0.4.3` is the current release. Changes after `0.4.3` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
 
 ## Install
 
@@ -40,11 +40,13 @@ The local UI supports the complete daily workflow:
 - enter a credential through a write-only field;
 - test OpenAI Responses API compatibility;
 - assign each provider a priority weight and choose the preferred provider used to break equal-weight ties;
+- create reusable exact model-mapping groups and assign one to each provider, with no selection meaning passthrough;
 - cool providers after retryable `429`, selected `5xx`, timeouts, resets, or clear network failures, and replay a bounded Responses request only when the upstream connection was never established;
 - replace a credential on a non-preferred provider or delete a non-preferred provider;
 - start, stop, restart, and inspect the proxy worker;
 - inspect ChatGPT account/routing state plus anonymous 24-hour or 7-day request, result, observed-Token, model, Provider, and bounded-latency Metrics on the compact Overview;
-- review metadata-only Forwarding Records and control optional Capture from that page;
+- review metadata-only Forwarding Records, observed Token counts, and client-aborted requests, and control optional Capture from that page;
+- review localized, sanitized Activity labels for provider, routing, Capture, migration, and model-mapping operations;
 - configure user-level start at login, routing, Codex integration, runtime facts, and diagnostics from the compact System page;
 - generate an in-memory diagnostic summary containing only creation state, generation time, and sanitized event count.
 
@@ -54,11 +56,13 @@ Routing defaults to `custom_only`. The Overview and System toggles can hot-apply
 
 System can enable start at login without administrator privileges. CRP writes one marked, user-owned macOS LaunchAgent, Linux systemd user unit, or Windows Startup command that runs the installed CLI with the same `CRP_HOME`. The setting takes effect on the next sign-in; if the Node or package installation path later changes, System reports the managed item as stale so it can be repaired or disabled explicitly. Disabling rewrites only the identity-checked managed inode to an inert configuration; it does not race-prone delete the reserved path or Linux wants link. A foreign regular file, link, or unsafe artifact at the reserved path is reported as a conflict and is never overwritten, deleted, or used as permission to change the shared startup directory mode.
 
-`Forwarding Records` is a complete metadata-only route backed by the local Capture database. It supports outcome filters, bounded search, keyset pagination, a detail panel, summary counts, and a Capture on/off control. New Capture rows persist the final route, provider ID, and provider name, so historical attribution survives later provider edits or deletion; legacy rows retain URL-based best-effort inference. The API exposes timing, route/provider, model-request path, byte counts, status, IDs, and sanitized error metadata, but never selects or returns request/response bodies or authorization headers. Overview Metrics remains an independent anonymous aggregate. Its 24-hour and 7-day series use fixed UTC hourly buckets, semantic Responses completion, explicit unavailable rates after dropped observations, and grouped Provider/model remainders.
+`Forwarding Records` is a complete metadata-only route backed by the local Capture database. It supports outcome filters (including client-aborted requests), bounded search, keyset pagination, a detail panel, summary counts, and a Capture on/off control. New Capture rows persist the final route, provider ID/name, and input/output Token counts when Responses usage is observed; unavailable historical or upstream usage is shown as unobserved rather than zero. A downstream close after an observed `response.completed` remains successful, while a true pre-completion close is classified as aborted instead of a provider error. Legacy rows retain URL-based best-effort attribution. The API exposes timing, route/provider, model-request path, byte counts, status, IDs, Tokens, and sanitized error metadata, but never selects or returns request/response bodies or authorization headers. Overview Metrics remains an independent anonymous aggregate. Its 24-hour and 7-day series use fixed UTC hourly buckets, semantic Responses completion, explicit unavailable rates after dropped observations, and grouped Provider/model remainders.
 
 Changing the preferred provider or a priority weight affects new requests. Requests already in flight keep the complete provider snapshot, including model policy, with which they started. In `passthrough` mode CRP preserves the client model; in `override` mode it replaces only the top-level JSON `model` value with that candidate's configured model. Explicit preference changes hot-apply a new weighted snapshot to a running Worker and start a stopped Worker; weight changes use a dedicated hot-apply route without changing the preferred provider. An eligible provider cannot be edited or deleted while the Worker is running, which prevents the runtime pool from retaining removed profiles or old credentials. A failed live compatibility probe is reported but does not invalidate that running snapshot. Initial selection remains a first-wins compare-and-set while the Worker is stopped.
 
-Proxy pass-through streams request and response bytes with backpressure and does not auto-decompress request bodies. Model override performs a bounded 8 MiB JSON transformation, preserves gzip, deflate, Brotli, and native zstd encoding when possible, and removes stale body-integrity/signature headers after a rewrite. On Node versions without native zstd compression, a verified single-frame zstd override is forwarded as identity after rewriting; zstd frames that cannot be safely inspected remain byte-exact pass-through for non-override traffic. Client cancellation stops the corresponding upstream work.
+Model-mapping groups use exact, case-sensitive source names. A provider can select one reusable group or leave the field empty for passthrough; mapping and the legacy single-model override are mutually exclusive. Mapping is resolved per custom-provider candidate, so a failover candidate applies its own group to the original client model instead of inheriting the failed provider's result. Unmatched models pass through unchanged, and the ChatGPT account route is not rewritten. Groups assigned to a running eligible pool must be edited only after stopping the Worker, and groups still assigned to any provider cannot be deleted.
+
+Proxy pass-through streams request and response bytes with backpressure and does not auto-decompress request bodies. Model override and exact mapping perform the same bounded 8 MiB JSON transformation, preserve gzip, deflate, Brotli, and native zstd encoding when possible, and remove stale body-integrity/signature headers after a rewrite. On Node versions without native zstd compression, a verified single-frame zstd rewrite is forwarded as identity; zstd frames that cannot be safely inspected remain byte-exact passthrough when no rewrite applies. Client cancellation stops the corresponding upstream work.
 
 Optional Capture stores at most 1 MiB for each request and response body internally while retaining the total observed byte count. The Forwarding Records API deliberately projects metadata only. When configured protected values exist, truncated bodies, declared or detected compressed bodies, and bodies containing literal or recoverably encoded protected values are stored as `empty-truncated`; fully screened text/binary records still use explicit UTF-8/base64 encoding. Configured API keys and extra-header values are removed from captured headers, bodies, URL/ID metadata, and debug logs. Buffered Metrics body inspection is independently bounded to 8 MiB, SSE inspection is incremental with bounded events, and neither path enables Capture.
 
@@ -129,7 +133,7 @@ Every human CLI path supports English and Simplified Chinese. English is the def
 
 This project is licensed under the [MIT License](./LICENSE).
 
-Without `--json`, `provider list` renders a count plus each provider's active marker, name, ID, base URL without query/hash, test state, model mode/override, and credential-configured state. `status` renders Supervisor PID/start time, Worker phase/PID/generation/listening/in-flight state, active provider, Codex state, fixed `OpenAI` identity, and the `15100` proxy URL instead of a generic sentence. Dynamic terminal text is length-bounded and escapes control, escape, and bidirectional-control characters; credential references, extra headers, and complete keys are never rendered.
+Without `--json`, `provider list` renders a count plus each provider's active marker, name, ID, base URL without query/hash, test state, model mode/override or mapping-group ID, and credential-configured state. `status` renders Supervisor PID/start time, Worker phase/PID/generation/listening/in-flight state, active provider, Codex state, fixed `OpenAI` identity, and the `15100` proxy URL instead of a generic sentence. Dynamic terminal text is length-bounded and escapes control, escape, and bidirectional-control characters; credential references, extra headers, and complete keys are never rendered.
 
 Root help presents aligned command descriptions plus consistent usage, options, and examples. Exact `-h`/`--help` is available for every supported first-level command, the `provider` group, and each provider action; help is resolved locally without starting or discovering the Supervisor. Help flags are parsed only at their exact argv positions, so trailing or misplaced input remains a validation error instead of being silently ignored.
 
@@ -149,20 +153,20 @@ CLI-triggered compatibility tests, including `provider add --model`, request ini
 
 ## Upgrading From 0.2.2
 
-Current releases migrate the pre-supervisor flat configuration to provider-registry schema 4 on first supervisor startup. Existing valid schema-2 and schema-3 registries are backed up and upgraded atomically; every existing provider receives the neutral default weight `100`, and existing routing/Capture settings are preserved. Schema inspection and replacement hold both the migration lock and the normal ProviderRegistry writer lock, and backup/publication directory entries are fsynced before success is reported.
+Current releases migrate the pre-supervisor flat configuration to provider-registry schema 5 on first supervisor startup. Existing valid schema-2, schema-3, and schema-4 registries are backed up and upgraded atomically. Schema-2/schema-3 providers receive the neutral default weight `100`; schema-4 weights are preserved; all existing providers start with no mapping group and the new group collection starts empty. Existing routing/Capture settings are preserved. Schema inspection and replacement hold both the migration lock and the normal ProviderRegistry writer lock, and backup/publication directory entries are fsynced before success is reported.
 
 1. Stop the old managed proxy.
 2. Make a private backup of `~/.codex-remote-proxy/` and `~/.codex/config.toml`. Treat every backup as secret-bearing.
 3. Run `crp ui`.
 4. Review the migrated provider named `Default`, run its compatibility test, and activate it only after the test passes.
 
-Migration reads the legacy `config.json` and runtime `node/proxy-config.json` when present. It creates collision-safe, byte-exact private backups, stores the credential through the required native backend, creates an inactive and untested schema-4 provider registry in `custom_only` mode with weight `100`, validates the committed registry, and only then scrubs secret fields from the legacy files. Backups are retained. Schema-2/schema-3 upgrades also retain byte-exact backups and restore the original bytes if validation or publication fails.
+Migration reads the legacy `config.json` and runtime `node/proxy-config.json` when present. It creates collision-safe, byte-exact private backups, stores the credential through the required native backend, creates an inactive and untested schema-5 provider registry in `custom_only` mode with weight `100` and no mapping groups, validates the committed registry, and only then scrubs secret fields from the legacy files. Backups are retained. Schema-2/schema-3/schema-4 upgrades also retain byte-exact backups and restore the original bytes if validation or publication fails.
 
 If the legacy sources contain different credentials, migration returns `MIGRATION_INPUT_INVALID` before creating backups, accessing credential storage, writing the registry, or changing either source. CRP never chooses one credential automatically; resolve the conflict only through an operator-reviewed real-home migration.
 
 If a transaction fails before commit, CRP attempts to restore the original bytes and remove only registry and credential state that the transaction can prove it owns. It never deletes a foreign replacement. A `MIGRATION_COMMITTED_DEGRADED`, `MIGRATION_COMMITTED_LOCK_DEGRADED`, or `MIGRATION_ROLLBACK_DEGRADED` result means the final state is uncertain or needs repair: stop CRP, do not repeatedly retry, preserve the backups, and review the sanitized Activity error code before changing files. Automatic restoration from a backup is intentionally not attempted in a degraded state.
 
-Rollback to `0.2.2` is not a schema downgrade. Stop CRP first and restore the complete private pre-upgrade backup as one unit; do not copy a secret back into only one legacy file or mix schema-4 registry state with flat configuration. Real-home migration and rollback remain L3 operations and require platform-specific review.
+Rollback to `0.2.2` is not a schema downgrade. Stop CRP first and restore the complete private pre-upgrade backup as one unit; do not copy a secret back into only one legacy file or mix schema-5 registry state with flat configuration. Real-home migration and rollback remain L3 operations and require platform-specific review.
 
 ## Development
 

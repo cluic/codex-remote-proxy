@@ -180,6 +180,7 @@ test("completes a clean English install with the exact safe request order", asyn
       extraHeaders: {},
       modelMode: "passthrough",
       modelOverride: null,
+      modelMappingGroupId: null,
       weight: 100
     }
   });

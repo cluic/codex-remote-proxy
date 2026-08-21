@@ -464,7 +464,8 @@ test("duplicates a provider configuration without copying credentials or state",
       authScheme: "",
       extraHeaders: { "x-region": "cn" },
       modelMode: "override",
-      modelOverride: "beta-model"
+      modelOverride: "beta-model",
+      modelMappingGroupId: null
     },
     credentialLength: duplicateSecret.length
   });
@@ -481,6 +482,7 @@ test("paginates sanitized Activity and exposes diagnostics on System", async ({ 
   await openCrp(page, crp);
   await navigate(page, "Activity");
   await expect(page.locator(".activity-event")).toHaveCount(50);
+  await expect(page.getByText("Unknown", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Previous" })).toBeDisabled();
   await page.getByRole("button", { name: "Next" }).dblclick();
   await expect(page.locator(".activity-event")).toHaveCount(50);
@@ -596,11 +598,11 @@ test("keeps every V8 page unclipped in both locales at desktop, tablet, and mobi
   const matrices = [
     {
       locale: "en",
-      pages: [["Overview", "Overview"], ["Providers", "Providers"], ["Activity", "Activity"], ["System", "System"]]
+      pages: [["Overview", "Overview"], ["Providers", "Providers"], ["Model Mappings", "Model Mappings"], ["Activity", "Activity"], ["System", "System"]]
     },
     {
       locale: "zh-CN",
-      pages: [["概览", "概览"], ["提供商", "提供商"], ["活动", "活动"], ["系统", "系统"]]
+      pages: [["概览", "概览"], ["提供商", "提供商"], ["模型映射", "模型映射"], ["活动", "活动"], ["系统", "系统"]]
     }
   ];
   for (const viewport of [
@@ -629,6 +631,10 @@ test("keeps every V8 page unclipped in both locales at desktop, tablet, and mobi
         await test.step(`${viewport.width}x${viewport.height} ${matrix.locale} ${heading}`, async () => {
           await navigate(page, navigation, mobile);
           await expect(page.getByRole("heading", { name: heading, level: 1 })).toBeVisible();
+          if (heading === "Activity" || heading === "活动") {
+            await expect(page.getByText(heading === "Activity" ? "Unknown" : "未知", { exact: true }))
+              .toHaveCount(0);
+          }
           await assertLayoutIntegrity(page);
         });
       }

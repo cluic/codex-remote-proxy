@@ -192,7 +192,8 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
     overrideAuthorization: true,
     requestIdHeader: "x-client-request-id",
     modelMode: "passthrough",
-    modelOverride: null
+    modelOverride: null,
+    modelMappings: []
   };
   return {
     configPath,

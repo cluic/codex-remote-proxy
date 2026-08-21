@@ -15,7 +15,8 @@ const INPUT_FIELDS = new Set([
   "extraHeaders",
   "weight",
   "modelMode",
-  "modelOverride"
+  "modelOverride",
+  "modelMappingGroupId"
 ]);
 const PROFILE_FIELDS = new Set([
   "id",
@@ -215,12 +216,29 @@ function normalizeModelPolicy(modeValue, overrideValue, { allowControlCharacters
   return { modelMode, modelOverride };
 }
 
+function normalizeModelMappingGroupId(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string"
+    || value.length === 0
+    || value.length > 128
+    || value.trim() !== value
+    || CONTROL_CHARACTER_PATTERN.test(value)
+    || /[\\/]/.test(value)) {
+    inputError("modelMappingGroupId", "must be a normalized mapping group id or null");
+  }
+  return value;
+}
+
 function normalizeInput(input, options) {
   if (!isPlainObject(input)) {
     inputError("provider", "must be an object");
   }
   assertExactFields(input, INPUT_FIELDS, "provider");
   const modelPolicy = normalizeModelPolicy(input.modelMode, input.modelOverride, options);
+  const modelMappingGroupId = normalizeModelMappingGroupId(input.modelMappingGroupId);
+  if (modelPolicy.modelMode === "override" && modelMappingGroupId !== null) {
+    inputError("modelMappingGroupId", "cannot be combined with override mode");
+  }
   return {
     name: normalizeRequiredString(input.name, "name"),
     baseUrl: normalizeBaseUrl(input.baseUrl),
@@ -229,6 +247,7 @@ function normalizeInput(input, options) {
     authScheme: normalizeAuthScheme(input.authScheme),
     extraHeaders: normalizeExtraHeaders(input.extraHeaders),
     weight: normalizeWeight(input.weight),
+    modelMappingGroupId,
     ...modelPolicy
   };
 }
@@ -292,7 +311,8 @@ export function validateStoredProvider(profile) {
     extraHeaders: profile.extraHeaders,
     weight: profile.weight,
     modelMode: profile.modelMode,
-    modelOverride: profile.modelOverride
+    modelOverride: profile.modelOverride,
+    modelMappingGroupId: profile.modelMappingGroupId
   }, { allowControlCharacters: true });
   assertStoredValue(
     typeof profile.id === "string" && profile.id.trim() === profile.id && profile.id.length > 0,
@@ -358,6 +378,7 @@ export function toPublicProvider(profile, credentialConfigured) {
     weight: profile.weight,
     modelMode: profile.modelMode,
     modelOverride: profile.modelOverride,
+    modelMappingGroupId: profile.modelMappingGroupId,
     lastTestAt: profile.lastTestAt,
     lastTestStatus: profile.lastTestStatus,
     lastTestCode: profile.lastTestCode,

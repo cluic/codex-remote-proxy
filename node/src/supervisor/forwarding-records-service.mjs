@@ -8,7 +8,8 @@ const MAX_SEARCH_CODE_POINTS = 100;
 const MAX_URL_CODE_POINTS = 2_048;
 const MAX_ID_CODE_POINTS = 256;
 const MAX_ERROR_CODE_POINTS = 512;
-const OUTCOMES = new Set(["all", "success", "rejected", "error"]);
+const MAX_TOKEN_COUNT = 100_000_000;
+const OUTCOMES = new Set(["all", "success", "rejected", "aborted", "error"]);
 
 function serviceError(cause) {
   return new CrpError(
@@ -28,9 +29,10 @@ function boundedText(value, maximumCodePoints) {
     : `${points.slice(0, maximumCodePoints - 1).join("")}…`;
 }
 
-function safeInteger(value, { minimum = 0 } = {}) {
+function safeInteger(value, { minimum = 0, maximum = Number.MAX_SAFE_INTEGER } = {}) {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
-  return Number.isSafeInteger(number) && number >= minimum ? number : null;
+  return Number.isSafeInteger(number) && number >= minimum && number <= maximum ? number : null;
 }
 
 function normalizeProviderBase(provider) {
@@ -77,6 +79,7 @@ function resolveProvider(targetUrl, providers) {
 }
 
 function rowOutcome(row) {
+  if (row.error_type === "proxy_client_abort") return "aborted";
   if (row.error_type !== null) return "error";
   const status = safeInteger(row.response_status);
   if (status !== null && status >= 200 && status <= 299) return "success";
@@ -114,6 +117,8 @@ function projectRow(row, providers) {
     responseBytes: safeInteger(row.response_body_bytes) ?? 0,
     stream: row.is_stream === 1,
     upstreamRequestId: boundedText(row.upstream_request_id, MAX_ID_CODE_POINTS),
+    inputTokens: safeInteger(row.input_tokens, { maximum: MAX_TOKEN_COUNT }),
+    outputTokens: safeInteger(row.output_tokens, { maximum: MAX_TOKEN_COUNT }),
     errorType: boundedText(row.error_type, MAX_ID_CODE_POINTS),
     errorMessage: boundedText(row.error_message, MAX_ERROR_CODE_POINTS),
     outcome,
@@ -142,8 +147,11 @@ function outcomeSql(outcome) {
   if (outcome === "rejected") {
     return "error_type IS NULL AND response_status BETWEEN 400 AND 499";
   }
+  if (outcome === "aborted") {
+    return "error_type = 'proxy_client_abort'";
+  }
   if (outcome === "error") {
-    return "(error_type IS NOT NULL OR response_status IS NULL OR response_status >= 500 OR response_status < 200 OR response_status BETWEEN 300 AND 399)";
+    return "((error_type IS NULL OR error_type != 'proxy_client_abort') AND (error_type IS NOT NULL OR response_status IS NULL OR response_status >= 500 OR response_status < 200 OR response_status BETWEEN 300 AND 399))";
   }
   return null;
 }
@@ -180,7 +188,7 @@ function emptyResult(storageState = "missing") {
     storageState,
     records: [],
     page: { limit: 50, nextBefore: null },
-    summary: { total: 0, success: 0, rejected: 0, error: 0 }
+    summary: { total: 0, success: 0, rejected: 0, aborted: 0, error: 0 }
   };
 }
 
@@ -228,17 +236,22 @@ export class ForwardingRecordsService {
       );
       const hasProviderColumns = ["provider_id", "provider_name", "route"]
         .every((column) => columns.has(column));
+      const hasTokenColumns = ["input_tokens", "output_tokens"]
+        .every((column) => columns.has(column));
       const where = buildWhere(options, { providerColumns: hasProviderColumns });
       const providerColumns = hasProviderColumns
         ? "provider_id, provider_name, route,"
         : "NULL AS provider_id, NULL AS provider_name, NULL AS route,";
+      const tokenColumns = hasTokenColumns
+        ? "input_tokens, output_tokens,"
+        : "NULL AS input_tokens, NULL AS output_tokens,";
       const rows = database.prepare(`
         SELECT
           id, started_at, completed_at, duration_ms,
           request_id, session_id, thread_id, method,
           incoming_url, target_url, ${providerColumns} request_body_bytes,
           response_status, response_body_bytes, is_stream,
-          upstream_request_id, error_type, error_message
+          upstream_request_id, ${tokenColumns} error_type, error_message
         FROM http_transactions
         ${where.sql}
         ORDER BY id DESC
@@ -252,7 +265,8 @@ export class ForwardingRecordsService {
           COUNT(*) AS total,
           SUM(CASE WHEN error_type IS NULL AND response_status BETWEEN 200 AND 299 THEN 1 ELSE 0 END) AS success,
           SUM(CASE WHEN error_type IS NULL AND response_status BETWEEN 400 AND 499 THEN 1 ELSE 0 END) AS rejected,
-          SUM(CASE WHEN error_type IS NOT NULL OR response_status IS NULL OR response_status >= 500 OR response_status < 200 OR response_status BETWEEN 300 AND 399 THEN 1 ELSE 0 END) AS error
+          SUM(CASE WHEN error_type = 'proxy_client_abort' THEN 1 ELSE 0 END) AS aborted,
+          SUM(CASE WHEN (error_type IS NULL OR error_type != 'proxy_client_abort') AND (error_type IS NOT NULL OR response_status IS NULL OR response_status >= 500 OR response_status < 200 OR response_status BETWEEN 300 AND 399) THEN 1 ELSE 0 END) AS error
         FROM http_transactions
       `).get();
       return {
@@ -266,6 +280,7 @@ export class ForwardingRecordsService {
           total: safeInteger(summary?.total) ?? 0,
           success: safeInteger(summary?.success) ?? 0,
           rejected: safeInteger(summary?.rejected) ?? 0,
+          aborted: safeInteger(summary?.aborted) ?? 0,
           error: safeInteger(summary?.error) ?? 0
         }
       };

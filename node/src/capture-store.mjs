@@ -10,6 +10,7 @@ export { DEFAULT_CAPTURE_DB_PATH };
 const WATCH_INTERVAL_MS = 500;
 const WATCH_DEBOUNCE_MS = 100;
 const REDACTED_VALUE = "[REDACTED]";
+const MAX_CAPTURE_TOKENS = 100_000_000;
 const HEADER_REDACTION_NAMES = new Set([
   "authorization",
   "proxy-authorization",
@@ -200,6 +201,8 @@ function createInsertStatement(db) {
       response_body_bytes,
       is_stream,
       upstream_request_id,
+      input_tokens,
+      output_tokens,
       error_type,
       error_message
     ) VALUES (
@@ -226,6 +229,8 @@ function createInsertStatement(db) {
       @response_body_bytes,
       @is_stream,
       @upstream_request_id,
+      @input_tokens,
+      @output_tokens,
       @error_type,
       @error_message
     )
@@ -261,6 +266,8 @@ function initializeDatabase(db) {
       response_body_bytes INTEGER NOT NULL,
       is_stream INTEGER NOT NULL,
       upstream_request_id TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
       error_type TEXT,
       error_message TEXT
     );
@@ -271,7 +278,9 @@ function initializeDatabase(db) {
   for (const [name, type] of [
     ["provider_id", "TEXT"],
     ["provider_name", "TEXT"],
-    ["route", "TEXT"]
+    ["route", "TEXT"],
+    ["input_tokens", "INTEGER"],
+    ["output_tokens", "INTEGER"]
   ]) {
     if (!columns.has(name)) db.exec(`ALTER TABLE http_transactions ADD COLUMN ${name} ${type}`);
   }
@@ -284,7 +293,7 @@ function initializeDatabase(db) {
       ON http_transactions (thread_id);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_response_status
       ON http_transactions (response_status);
-    PRAGMA user_version = 2;
+    PRAGMA user_version = 3;
   `);
 }
 
@@ -544,6 +553,16 @@ export class CaptureManager {
         totalBytes: record.responseBodyBytes,
         truncated: record.responseBodyTruncated === true
       });
+      const inputTokens = Number.isSafeInteger(record.inputTokens)
+        && record.inputTokens >= 0
+        && record.inputTokens <= MAX_CAPTURE_TOKENS
+        ? record.inputTokens
+        : null;
+      const outputTokens = Number.isSafeInteger(record.outputTokens)
+        && record.outputTokens >= 0
+        && record.outputTokens <= MAX_CAPTURE_TOKENS
+        ? record.outputTokens
+        : null;
       this.insertStatement.run({
         started_at: record.startedAt,
         completed_at: record.completedAt,
@@ -568,6 +587,8 @@ export class CaptureManager {
         response_body_bytes: responseBody.bytes,
         is_stream: record.isStream ? 1 : 0,
         upstream_request_id: record.upstreamRequestId ?? null,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
         error_type: record.errorType ?? null,
         error_message: record.errorMessage ?? null
       });

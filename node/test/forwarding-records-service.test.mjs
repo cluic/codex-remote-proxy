@@ -130,7 +130,7 @@ test("returns a stable empty page when Capture has not created its database", (t
     storageState: "missing",
     records: [],
     page: { limit: 25, nextBefore: null },
-    summary: { total: 0, success: 0, rejected: 0, error: 0 }
+    summary: { total: 0, success: 0, rejected: 0, aborted: 0, error: 0 }
   });
 });
 
@@ -148,7 +148,7 @@ test("lists bounded metadata with keyset paging, filtering, and provider project
 
   const first = service.list({ limit: 2 });
   assert.equal(first.storageState, "ready");
-  assert.deepEqual(first.summary, { total: 3, success: 1, rejected: 1, error: 1 });
+  assert.deepEqual(first.summary, { total: 3, success: 1, rejected: 1, aborted: 0, error: 1 });
   assert.deepEqual(first.records.map((record) => record.id), [3, 2]);
   assert.equal(first.page.nextBefore, 2);
   assert.deepEqual(first.records[0], {
@@ -167,6 +167,8 @@ test("lists bounded metadata with keyset paging, filtering, and provider project
     responseBytes: 2,
     stream: false,
     upstreamRequestId: null,
+    inputTokens: null,
+    outputTokens: null,
     errorType: "proxy_upstream_error",
     errorMessage: "connection refused",
     outcome: "error",
@@ -189,6 +191,45 @@ test("lists bounded metadata with keyset paging, filtering, and provider project
   assert.deepEqual(rejected.records.map((record) => record.id), [2]);
   const searched = service.list({ search: "network-error" });
   assert.deepEqual(searched.records.map((record) => record.id), [3]);
+});
+
+test("projects token counts and separates client aborts from forwarding errors", (t) => {
+  const directory = makeTempDir(t);
+  const path = join(directory, "traffic.sqlite3");
+  createDatabase(path);
+  const database = new DatabaseSync(path);
+  database.exec(`
+    ALTER TABLE http_transactions ADD COLUMN input_tokens INTEGER;
+    ALTER TABLE http_transactions ADD COLUMN output_tokens INTEGER;
+    UPDATE http_transactions
+      SET input_tokens = 31,
+          output_tokens = 12
+      WHERE id = 1;
+    UPDATE http_transactions
+      SET response_status = 200,
+          error_type = 'proxy_client_abort',
+          error_message = 'Client closed connection'
+      WHERE id = 3;
+  `);
+  database.close();
+  const service = new ForwardingRecordsService({ path });
+
+  const page = service.list({ limit: 10 });
+  assert.deepEqual(page.summary, {
+    total: 3,
+    success: 1,
+    rejected: 1,
+    aborted: 1,
+    error: 0
+  });
+  const success = page.records.find(({ id }) => id === 1);
+  assert.equal(success.inputTokens, 31);
+  assert.equal(success.outputTokens, 12);
+  assert.deepEqual(
+    service.list({ outcome: "aborted" }).records.map(({ id, outcome }) => ({ id, outcome })),
+    [{ id: 3, outcome: "aborted" }]
+  );
+  assert.deepEqual(service.list({ outcome: "error" }).records, []);
 });
 
 test("prefers persisted final provider attribution over the current provider catalog", (t) => {

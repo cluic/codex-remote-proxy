@@ -92,9 +92,10 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
   });
 
   assert.deepEqual(registry.getDocument(), {
-    schemaVersion: 4,
+    schemaVersion: 5,
     activeProviderId: null,
     providers: [],
+    modelMappingGroups: [],
     settings: DEFAULT_SETTINGS
   });
 
@@ -110,6 +111,7 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
     weight: 100,
     modelMode: "passthrough",
     modelOverride: null,
+    modelMappingGroupId: null,
     lastTestAt: null,
     lastTestStatus: "untested",
     lastTestCode: null,
@@ -431,12 +433,100 @@ test("validates passthrough and override model modes", () => {
       weight: 100,
       modelMode: "passthrough",
       modelOverride: null,
+      modelMappingGroupId: null,
       lastTestAt: null,
       lastTestStatus: "untested",
       lastTestCode: null,
       createdAt: FIXED_NOW,
       updatedAt: FIXED_NOW
     }
+  );
+});
+
+test("creates reusable exact model mappings and enforces provider references", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({
+    path: registryPath,
+    createId: makeIds("mapping-openrouter", "provider-1"),
+    now: makeClock(FIXED_NOW, FIXED_NOW, LATER_NOW)
+  });
+  const createdGroup = registry.createModelMappingGroup({
+    name: "OpenRouter",
+    rules: [
+      { sourceModel: "gpt-5", targetModel: "openai/gpt-5" },
+      { sourceModel: "gpt-5-mini", targetModel: "openai/gpt-5-mini" }
+    ]
+  });
+  assert.equal(createdGroup.id, "mapping-openrouter");
+  assert.deepEqual(registry.listModelMappingGroups(), [createdGroup]);
+
+  const provider = registry.create(validInput({
+    modelMappingGroupId: createdGroup.id
+  }));
+  assert.equal(provider.modelMappingGroupId, createdGroup.id);
+  assert.throws(
+    () => registry.deleteModelMappingGroup(createdGroup.id),
+    assertCrpError("MODEL_MAPPING_IN_USE", 409)
+  );
+  assert.throws(
+    () => registry.create(validInput({
+      name: "Missing mapping",
+      credentialRef: "provider-missing",
+      modelMappingGroupId: "missing"
+    })),
+    assertCrpError("MODEL_MAPPING_NOT_FOUND", 404)
+  );
+
+  const updated = registry.updateModelMappingGroup(createdGroup.id, {
+    name: "OpenRouter exact",
+    rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5-2026" }]
+  });
+  assert.equal(updated.createdAt, FIXED_NOW);
+  assert.equal(updated.updatedAt, LATER_NOW);
+  assert.deepEqual(updated.rules, [
+    { sourceModel: "gpt-5", targetModel: "openai/gpt-5-2026" }
+  ]);
+
+  registry.update(provider.id, { modelMappingGroupId: null });
+  assert.equal(registry.deleteModelMappingGroup(createdGroup.id).id, createdGroup.id);
+  assert.deepEqual(registry.listModelMappingGroups(), []);
+});
+
+test("rejects ambiguous or unsafe model mapping groups", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({
+    path: registryPath,
+    createId: makeIds("mapping-1", "mapping-2"),
+    now: () => FIXED_NOW
+  });
+  assert.throws(
+    () => registry.createModelMappingGroup({
+      name: "Duplicate sources",
+      rules: [
+        { sourceModel: "gpt-5", targetModel: "target-a" },
+        { sourceModel: "gpt-5", targetModel: "target-b" }
+      ]
+    }),
+    assertCrpError("MODEL_MAPPING_INPUT_INVALID", 400)
+  );
+  registry.createModelMappingGroup({
+    name: "Safe group",
+    rules: [{ sourceModel: "gpt-5", targetModel: "target-a" }]
+  });
+  assert.throws(
+    () => registry.createModelMappingGroup({
+      name: "safe GROUP",
+      rules: [{ sourceModel: "gpt-4.1", targetModel: "target-b" }]
+    }),
+    assertCrpError("MODEL_MAPPING_NAME_CONFLICT", 409)
+  );
+  assert.throws(
+    () => validateProviderInput(validInput({
+      modelMode: "override",
+      modelOverride: "fixed",
+      modelMappingGroupId: "mapping-1"
+    })),
+    assertCrpError("PROVIDER_INPUT_INVALID", 400)
   );
 });
 
@@ -448,9 +538,10 @@ test("loads a legacy controlled model override and allows replacing it safely", 
   }), { id: "provider-legacy", now: FIXED_NOW });
   legacy.modelOverride = "legacy\tmodel";
   writeFileSync(registryPath, `${JSON.stringify({
-    schemaVersion: 4,
+    schemaVersion: 5,
     activeProviderId: null,
     providers: [legacy],
+    modelMappingGroups: [],
     settings: DEFAULT_SETTINGS
   })}\n`, { mode: 0o600 });
 
@@ -1185,6 +1276,7 @@ test("toPublicProvider returns an exact allowlisted shape with a boolean credent
     "weight",
     "modelMode",
     "modelOverride",
+    "modelMappingGroupId",
     "lastTestAt",
     "lastTestStatus",
     "lastTestCode",

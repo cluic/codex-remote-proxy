@@ -18,6 +18,7 @@ import {
 } from "./i18n";
 import { ActivityPage } from "./pages/Activity";
 import { ForwardingRecordsPage } from "./pages/ForwardingRecords";
+import { ModelMappingsPage } from "./pages/ModelMappings";
 import { OverviewPage } from "./pages/Overview";
 import { ProvidersPage } from "./pages/Providers";
 import { SetupPage } from "./pages/Setup";
@@ -33,6 +34,8 @@ import type {
   MetricsOverview,
   MetricsWindow,
   ModelCatalog,
+  ModelMappingGroup,
+  ModelMappingGroupInput,
   Provider,
   ProviderInput,
   Route,
@@ -47,6 +50,7 @@ const emptyActivity: ActivityPageData = {
 
 function routeFromPath(pathname: string): Route {
   if (pathname === "/providers") return "providers";
+  if (pathname === "/model-mappings") return "model-mappings";
   if (pathname === "/forwarding") return "forwarding";
   if (pathname === "/activity") return "activity";
   if (pathname === "/system") return "system";
@@ -127,14 +131,15 @@ export function App() {
     const controller = new AbortController();
     loadControllerRef.current = controller;
     try {
-      const [status, providers, settings, nextActivity] = await Promise.all([
+      const [status, providers, modelMappingGroups, settings, nextActivity] = await Promise.all([
         api.getStatus(controller.signal),
         api.listProviders(controller.signal),
+        api.listModelMappingGroups(controller.signal),
         api.getSettings(controller.signal),
         api.getActivity(0, controller.signal)
       ]);
       if (controller.signal.aborted || sequence !== loadSequenceRef.current) return null;
-      const nextWorkspace = { status, providers, settings };
+      const nextWorkspace = { status, providers, modelMappingGroups, settings };
       setWorkspace(nextWorkspace);
       setActivity(nextActivity);
       setLoadError(null);
@@ -351,6 +356,35 @@ export function App() {
       `provider-delete-${id}`,
       async () => { await api.deleteProvider(id); return true; },
       "notice.providerDeleted"
+    ) === true
+  ), [api, executeMutation]);
+
+  const createModelMappingGroup = useCallback(async (
+    input: ModelMappingGroupInput
+  ): Promise<ModelMappingGroup | null> => (
+    await executeMutation(
+      "model-mapping-create",
+      () => api.createModelMappingGroup(input),
+      "notice.modelMappingCreated"
+    )
+  ), [api, executeMutation]);
+
+  const updateModelMappingGroup = useCallback(async (
+    id: string,
+    input: ModelMappingGroupInput
+  ): Promise<ModelMappingGroup | null> => (
+    await executeMutation(
+      `model-mapping-update-${id}`,
+      () => api.updateModelMappingGroup(id, input),
+      "notice.modelMappingUpdated"
+    )
+  ), [api, executeMutation]);
+
+  const deleteModelMappingGroup = useCallback(async (id: string): Promise<boolean> => (
+    await executeMutation(
+      `model-mapping-delete-${id}`,
+      async () => { await api.deleteModelMappingGroup(id); return true; },
+      "notice.modelMappingDeleted"
     ) === true
   ), [api, executeMutation]);
 
@@ -643,11 +677,27 @@ export function App() {
         <ProvidersPage
           locale={locale}
           {...sharedProviderProps}
+          modelMappingGroups={workspace.modelMappingGroups}
           workerRunning={workspace.status.worker?.phase === "running"
             && workspace.status.worker.state?.listening === true}
           onUpdate={updateProvider}
           onWeight={updateProviderWeight}
           onDelete={deleteProvider}
+        />
+      ) : null}
+      {route === "model-mappings" ? (
+        <ModelMappingsPage
+          locale={locale}
+          t={t}
+          groups={workspace.modelMappingGroups}
+          providers={workspace.providers}
+          readOnly={readOnly}
+          workerRunning={workspace.status.worker?.phase === "running"
+            && workspace.status.worker.state?.listening === true}
+          pending={pending}
+          onCreate={createModelMappingGroup}
+          onUpdate={updateModelMappingGroup}
+          onDelete={deleteModelMappingGroup}
         />
       ) : null}
       {route === "forwarding" ? (

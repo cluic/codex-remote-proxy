@@ -20,12 +20,21 @@ function actionKey(action: string | null): TranslationKey | null {
     delete: "activity.delete",
     test: "activity.test",
     models: "activity.models",
+    weight: "activity.weight",
     activate: "activity.activate",
     start: "activity.start",
     stop: "activity.stop",
     restart: "activity.restart",
+    capture: "activity.capture",
+    autostart: "activity.autostart",
     "legacy-config": "activity.legacy-config",
-    "routing-mode": "activity.routing-mode"
+    "routing-mode": "activity.routing-mode",
+    "provider-registry-schema-3": "activity.provider-registry-schema-3",
+    "provider-registry-schema-4": "activity.provider-registry-schema-4",
+    "provider-registry-schema-5": "activity.provider-registry-schema-5",
+    "model-mapping-create": "activity.model-mapping-create",
+    "model-mapping-update": "activity.model-mapping-update",
+    "model-mapping-delete": "activity.model-mapping-delete"
   };
   return action ? keys[action] ?? null : null;
 }
@@ -49,7 +58,7 @@ function categoryLabel(category: string | null, t: Translator): string {
   if (category === "proxy") return t("activity.categoryProxy");
   if (category === "migration") return t("activity.categoryMigration");
   if (category === "settings") return t("activity.categorySettings");
-  return t("common.unknown");
+  return category ?? t("common.unknown");
 }
 
 function safeDetail(value: unknown): string {
@@ -81,7 +90,7 @@ export function ActivityPage({ locale, t, data, providers, loading, onPage }: Ac
           <div className="activity-list">
             {data.events.map((event, index) => {
               const key = actionKey(event.action);
-              const action = key ? t(key) : t("common.unknown");
+              const action = key ? t(key) : event.action ?? t("common.unknown");
               const provider = event.providerId ? providerNames.get(event.providerId) : null;
               return (
                 <details className="activity-event" key={`${event.timestamp ?? "event"}-${index}`}>

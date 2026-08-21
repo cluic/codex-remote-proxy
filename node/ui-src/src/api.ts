@@ -8,6 +8,8 @@ import type {
   MetricsOverview,
   MetricsWindow,
   ModelCatalog,
+  ModelMappingGroup,
+  ModelMappingGroupInput,
   Provider,
   ProviderInput,
   ProviderTestResult,
@@ -179,6 +181,41 @@ export class CrpApi {
   async listProviders(signal?: AbortSignal): Promise<Provider[]> {
     const payload = await this.get<{ providers: Provider[] }>("/api/v1/providers", signal);
     return payload.providers;
+  }
+
+  async listModelMappingGroups(signal?: AbortSignal): Promise<ModelMappingGroup[]> {
+    const payload = await this.get<{ modelMappingGroups: ModelMappingGroup[] }>(
+      "/api/v1/model-mappings",
+      signal
+    );
+    return payload.modelMappingGroups;
+  }
+
+  async createModelMappingGroup(input: ModelMappingGroupInput): Promise<ModelMappingGroup> {
+    const payload = await this.mutate<{ modelMappingGroup: ModelMappingGroup }>(
+      "/api/v1/model-mappings",
+      { method: "POST", body: { mappingGroup: input } }
+    );
+    return payload.modelMappingGroup;
+  }
+
+  async updateModelMappingGroup(
+    id: string,
+    input: ModelMappingGroupInput
+  ): Promise<ModelMappingGroup> {
+    const payload = await this.mutate<{ modelMappingGroup: ModelMappingGroup }>(
+      this.modelMappingPath(id),
+      { method: "PATCH", body: { mappingGroup: input } }
+    );
+    return payload.modelMappingGroup;
+  }
+
+  async deleteModelMappingGroup(id: string): Promise<ModelMappingGroup> {
+    const payload = await this.mutate<{ modelMappingGroup: ModelMappingGroup }>(
+      this.modelMappingPath(id),
+      { method: "DELETE", emptyBody: true }
+    );
+    return payload.modelMappingGroup;
   }
 
   async getSettings(signal?: AbortSignal): Promise<Settings> {
@@ -365,6 +402,10 @@ export class CrpApi {
 
   private providerPath(id: string): string {
     return `/api/v1/providers/${encodeURIComponent(id)}`;
+  }
+
+  private modelMappingPath(id: string): string {
+    return `/api/v1/model-mappings/${encodeURIComponent(id)}`;
   }
 
   private async get<T>(path: string, signal?: AbortSignal): Promise<T> {

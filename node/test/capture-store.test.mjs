@@ -176,7 +176,9 @@ test("capture manager writes a complete request/response record", async () => {
     },
     responseBody: Buffer.from("event: ok\ndata: {}\n\n", "utf8"),
     isStream: true,
-    upstreamRequestId: "upstream-1"
+    upstreamRequestId: "upstream-1",
+    inputTokens: 23,
+    outputTokens: 7
   });
 
   const db = new DatabaseSync(dbPath);
@@ -192,13 +194,15 @@ test("capture manager writes a complete request/response record", async () => {
   assert.equal(rows[0].provider_id, "provider-original");
   assert.equal(rows[0].provider_name, "Original provider");
   assert.equal(rows[0].route, "custom");
+  assert.equal(rows[0].input_tokens, 23);
+  assert.equal(rows[0].output_tokens, 7);
   assert.match(rows[0].request_headers_json, /REDACTED/);
   assert.match(rows[0].response_body, /event: ok/);
 
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("capture manager upgrades schema 1 and persists final provider attribution", (t) => {
+test("capture manager upgrades schema 1 and persists provider attribution plus token columns", (t) => {
   const dir = makeTempDir("crp-capture-schema-1");
   mkdirSync(dir, { recursive: true });
   const runtimeConfigPath = join(dir, "proxy-config.json");
@@ -271,8 +275,10 @@ test("capture manager upgrades schema 1 and persists final provider attribution"
   const version = upgraded.prepare("PRAGMA user_version").get().user_version;
   const row = upgraded.prepare("SELECT provider_id, provider_name, route FROM http_transactions").get();
   upgraded.close();
-  assert.equal(version, 2);
+  assert.equal(version, 3);
   assert.ok(columns.includes("provider_id"));
+  assert.ok(columns.includes("input_tokens"));
+  assert.ok(columns.includes("output_tokens"));
   assert.equal(row.provider_id, "provider-stable");
   assert.equal(row.provider_name, "Stable provider");
   assert.equal(row.route, "custom");

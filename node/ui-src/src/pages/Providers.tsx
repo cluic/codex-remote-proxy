@@ -38,12 +38,19 @@ import {
   TextareaField
 } from "../components/Primitives";
 import { formatDate, formatNumber, type Translator } from "../i18n";
-import type { Locale, ModelCatalog, Provider, ProviderInput } from "../types";
+import type {
+  Locale,
+  ModelCatalog,
+  ModelMappingGroup,
+  Provider,
+  ProviderInput
+} from "../types";
 
 type ProvidersProps = {
   locale: Locale;
   t: Translator;
   providers: Provider[];
+  modelMappingGroups: ModelMappingGroup[];
   activeProviderId: string | null;
   workerRunning: boolean;
   readOnly: boolean;
@@ -73,7 +80,15 @@ function testLabel(provider: Provider, t: Translator): string {
   return t("common.untested");
 }
 
-function modelPolicy(provider: Provider, t: Translator): string {
+function modelPolicy(
+  provider: Provider,
+  modelMappingGroups: ModelMappingGroup[],
+  t: Translator
+): string {
+  if (provider.modelMappingGroupId !== null) {
+    const group = modelMappingGroups.find(({ id }) => id === provider.modelMappingGroupId);
+    return t("providers.modelModeMapping", { name: group?.name ?? provider.modelMappingGroupId });
+  }
   return provider.modelMode === "override"
     ? t("providers.modelModeOverride", { model: provider.modelOverride ?? "-" })
     : t("providers.modelModePassthrough");
@@ -123,7 +138,8 @@ function validateProviderInput(
       extraHeaders,
       weight: values.weight,
       modelMode: values.modelMode,
-      modelOverride: values.modelMode === "override" ? values.modelOverride?.trim() || null : null
+      modelOverride: values.modelMode === "override" ? values.modelOverride?.trim() || null : null,
+      modelMappingGroupId: values.modelMode === "override" ? null : values.modelMappingGroupId
     }
   };
 }
@@ -143,6 +159,7 @@ function ProviderForm({
   provider,
   purpose,
   initialName,
+  modelMappingGroups,
   pending,
   t,
   onSubmit
@@ -150,6 +167,7 @@ function ProviderForm({
   provider?: Provider;
   purpose: FormPurpose;
   initialName?: string;
+  modelMappingGroups: ModelMappingGroup[];
   pending: boolean;
   t: Translator;
   onSubmit: (input: ProviderInput, secret?: string) => Promise<boolean>;
@@ -165,6 +183,7 @@ function ProviderForm({
   const [extraHeadersText, setExtraHeadersText] = useState(JSON.stringify(provider?.extraHeaders ?? {}, null, 2));
   const [modelMode, setModelMode] = useState<"passthrough" | "override">(provider?.modelMode ?? "passthrough");
   const [modelOverride, setModelOverride] = useState(provider?.modelOverride ?? "");
+  const [modelMappingGroupId, setModelMappingGroupId] = useState(provider?.modelMappingGroupId ?? "");
   const [formError, setFormError] = useState<string | null>(null);
   const credentialRef = useRef<HTMLInputElement>(null);
 
@@ -180,7 +199,8 @@ function ProviderForm({
       extraHeadersText,
       weight,
       modelMode,
-      modelOverride
+      modelOverride,
+      modelMappingGroupId: modelMappingGroupId || null
     }, t);
     if (!validation.input || !editing && secret.length === 0) {
       setFormError(validation.error ?? t("providers.invalidForm"));
@@ -214,6 +234,22 @@ function ProviderForm({
           spellCheck={false}
           required
         />
+        <SelectField
+          id="provider-model-mapping"
+          name="modelMappingGroupId"
+          label={t("providers.modelMappingGroup")}
+          help={t("providers.modelMappingHelp")}
+          value={modelMappingGroupId}
+          onChange={(event) => {
+            setModelMappingGroupId(event.target.value);
+            if (event.target.value) setModelMode("passthrough");
+          }}
+        >
+          <option value="">{t("providers.modelMappingNone")}</option>
+          {modelMappingGroups.map((group) => (
+            <option key={group.id} value={group.id}>{group.name}</option>
+          ))}
+        </SelectField>
         <Field
           id="provider-weight"
           name="weight"
@@ -279,7 +315,11 @@ function ProviderForm({
             name="modelMode"
             label={t("providers.modelMode")}
             value={modelMode}
-            onChange={(event) => setModelMode(event.target.value as "passthrough" | "override")}
+            onChange={(event) => {
+              const next = event.target.value as "passthrough" | "override";
+              setModelMode(next);
+              if (next === "override") setModelMappingGroupId("");
+            }}
           >
             <option value="passthrough">{t("providers.passthrough")}</option>
             <option value="override">{t("providers.override")}</option>
@@ -306,6 +346,7 @@ export function ProvidersPage({
   locale,
   t,
   providers,
+  modelMappingGroups,
   activeProviderId,
   workerRunning,
   readOnly,
@@ -442,7 +483,7 @@ export function ProvidersPage({
                 <dl className="provider-card-facts">
                   <div><dt>{t("providers.testStatus")}</dt><dd><StatusBadge tone={testTone(provider.lastTestStatus)}>{testLabel(provider, t)}</StatusBadge></dd></div>
                   <div><dt>{t("providers.lastTest")}</dt><dd>{provider.lastTestAt ? formatDate(locale, provider.lastTestAt) : t("common.none")}</dd></div>
-                  <div><dt>{t("providers.modelPolicy")}</dt><dd>{modelPolicy(provider, t)}</dd></div>
+                  <div><dt>{t("providers.modelPolicy")}</dt><dd>{modelPolicy(provider, modelMappingGroups, t)}</dd></div>
                   <div><dt>{t("providers.credential")}</dt><dd>{provider.credentialConfigured ? t("common.configured") : t("common.notConfigured")}</dd></div>
                   <div className="provider-weight-fact">
                     <dt>{t("providers.weight")}</dt>
@@ -543,6 +584,7 @@ export function ProvidersPage({
         {mode === "create" ? (
           <ProviderForm
             purpose="create"
+            modelMappingGroups={modelMappingGroups}
             pending={pending !== null}
             t={t}
             onSubmit={async (input, secret) => {
@@ -576,6 +618,7 @@ export function ProvidersPage({
             provider={selected}
             purpose="duplicate"
             initialName={duplicateName(selected)}
+            modelMappingGroups={modelMappingGroups}
             pending={pending !== null}
             t={t}
             onSubmit={async (input, secret) => {
@@ -608,6 +651,7 @@ export function ProvidersPage({
           <ProviderForm
             provider={selected}
             purpose="edit"
+            modelMappingGroups={modelMappingGroups}
             pending={pending !== null}
             t={t}
             onSubmit={async (input, secret) => {
@@ -675,7 +719,7 @@ export function ProvidersPage({
             ) : null}
             <DefinitionList rows={[
               { label: t("providers.testStatus"), value: <StatusBadge tone={testTone(selected.lastTestStatus)}>{testLabel(selected, t)}</StatusBadge> },
-              { label: t("providers.modelPolicy"), value: modelPolicy(selected, t) },
+              { label: t("providers.modelPolicy"), value: modelPolicy(selected, modelMappingGroups, t) },
               { label: t("providers.credential"), value: selected.credentialConfigured ? t("common.configured") : t("common.notConfigured") },
               { label: t("providers.authMethod"), value: <code>{selected.authScheme ? `${selected.authScheme} / ${selected.authHeader}` : selected.authHeader}</code> },
               { label: t("providers.extraHeaderCount"), value: formatNumber(locale, Object.keys(selected.extraHeaders).length) },

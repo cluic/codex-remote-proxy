@@ -64,8 +64,10 @@ const PROXY_FIELDS = new Set([
   "overrideAuthorization",
   "requestIdHeader",
   "modelMode",
-  "modelOverride"
+  "modelOverride",
+  "modelMappings"
 ]);
+const MODEL_MAPPING_RULE_FIELDS = new Set(["sourceModel", "targetModel"]);
 const CAPTURE_FIELDS = new Set(["enabled", "dbPath"]);
 const ROUTING_FIELDS = new Set(["mode", "accountRevision", "account"]);
 const ROUTING_MODES = new Set(["custom_only", "account_first"]);
@@ -184,7 +186,31 @@ function isValidModelPolicy(proxy) {
       || proxy.modelOverride.trim() !== proxy.modelOverride)) {
     return false;
   }
-  return proxy.modelMode !== "override" || proxy.modelOverride !== null;
+  if (!Array.isArray(proxy.modelMappings)
+    || proxy.modelMappings.length > 50) {
+    return false;
+  }
+  const sources = new Set();
+  for (const rule of proxy.modelMappings) {
+    if (!isPlainObject(rule)
+      || !hasExactFields(rule, MODEL_MAPPING_RULE_FIELDS)
+      || !isNonEmptyString(rule.sourceModel)
+      || [...rule.sourceModel].length > 256
+      || Buffer.byteLength(rule.sourceModel, "utf8") > 512
+      || rule.sourceModel.trim() !== rule.sourceModel
+      || METRIC_TEXT_CONTROL_PATTERN.test(rule.sourceModel)
+      || !isNonEmptyString(rule.targetModel)
+      || [...rule.targetModel].length > 256
+      || Buffer.byteLength(rule.targetModel, "utf8") > 512
+      || rule.targetModel.trim() !== rule.targetModel
+      || METRIC_TEXT_CONTROL_PATTERN.test(rule.targetModel)
+      || sources.has(rule.sourceModel)) {
+      return false;
+    }
+    sources.add(rule.sourceModel);
+  }
+  return (proxy.modelMode !== "override" || proxy.modelOverride !== null)
+    && (proxy.modelMode !== "override" || proxy.modelMappings.length === 0);
 }
 
 function isValidProviderCandidate(provider) {

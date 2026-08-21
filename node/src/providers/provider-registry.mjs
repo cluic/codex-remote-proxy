@@ -24,7 +24,21 @@ import {
 } from "./provider-schema.mjs";
 
 export const ROUTING_MODES = Object.freeze(["custom_only", "account_first"]);
+export const MAX_MODEL_MAPPING_GROUPS = 50;
+export const MAX_MODEL_MAPPING_RULES = 50;
 const ROUTING_MODE_SET = new Set(ROUTING_MODES);
+const MAX_MAPPING_NAME_CODE_POINTS = 100;
+const MAX_MODEL_ID_CODE_POINTS = 256;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
+const MODEL_MAPPING_INPUT_FIELDS = new Set(["name", "rules"]);
+const MODEL_MAPPING_GROUP_FIELDS = new Set([
+  "id",
+  "name",
+  "rules",
+  "createdAt",
+  "updatedAt"
+]);
+const MODEL_MAPPING_RULE_FIELDS = new Set(["sourceModel", "targetModel"]);
 const FIXED_SETTINGS = Object.freeze({
   proxyHost: "127.0.0.1",
   proxyPort: 15100,
@@ -40,6 +54,7 @@ const DOCUMENT_FIELDS = new Set([
   "schemaVersion",
   "activeProviderId",
   "providers",
+  "modelMappingGroups",
   "settings"
 ]);
 const SETTINGS_FIELDS = new Set(Object.keys(DEFAULT_SETTINGS));
@@ -51,7 +66,8 @@ const EDITABLE_FIELDS = new Set([
   "extraHeaders",
   "weight",
   "modelMode",
-  "modelOverride"
+  "modelOverride",
+  "modelMappingGroupId"
 ]);
 const IMMUTABLE_FIELDS = new Set(["id", "createdAt", "credentialRef"]);
 const TEST_INVALIDATING_FIELDS = [
@@ -60,7 +76,8 @@ const TEST_INVALIDATING_FIELDS = [
   "authScheme",
   "extraHeaders",
   "modelMode",
-  "modelOverride"
+  "modelOverride",
+  "modelMappingGroupId"
 ];
 const TEST_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const LOCK_CLEANUP_ATTEMPTS = 2;
@@ -88,9 +105,10 @@ function noChange(result) {
 
 function emptyDocument() {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     activeProviderId: null,
     providers: [],
+    modelMappingGroups: [],
     settings: { ...DEFAULT_SETTINGS }
   };
 }
@@ -120,6 +138,121 @@ function normalizedName(name) {
   return name.toLowerCase();
 }
 
+function isIsoTimestamp(value) {
+  if (typeof value !== "string") return false;
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeMappingText(value, maximumCodePoints) {
+  if (typeof value !== "string"
+    || value.length === 0
+    || value.trim() !== value
+    || [...value].length > maximumCodePoints
+    || Buffer.byteLength(value, "utf8") > maximumCodePoints * 2
+    || CONTROL_CHARACTER_PATTERN.test(value)) {
+    throw inputError(
+      "MODEL_MAPPING_INPUT_INVALID",
+      "Model mapping settings are invalid.",
+      "Review the mapping group and try again.",
+      400
+    );
+  }
+  return value;
+}
+
+function normalizeMappingRules(value) {
+  if (!Array.isArray(value)
+    || value.length < 1
+    || value.length > MAX_MODEL_MAPPING_RULES) {
+    throw inputError(
+      "MODEL_MAPPING_INPUT_INVALID",
+      "Model mapping settings are invalid.",
+      `Add between 1 and ${MAX_MODEL_MAPPING_RULES} exact model rules.`,
+      400
+    );
+  }
+  const sources = new Set();
+  return value.map((rule) => {
+    if (!validateExactFields(rule, MODEL_MAPPING_RULE_FIELDS)) {
+      throw inputError(
+        "MODEL_MAPPING_INPUT_INVALID",
+        "Model mapping settings are invalid.",
+        "Each rule must contain one source model and one target model.",
+        400
+      );
+    }
+    const sourceModel = normalizeMappingText(
+      rule.sourceModel,
+      MAX_MODEL_ID_CODE_POINTS
+    );
+    const targetModel = normalizeMappingText(
+      rule.targetModel,
+      MAX_MODEL_ID_CODE_POINTS
+    );
+    if (sources.has(sourceModel)) {
+      throw inputError(
+        "MODEL_MAPPING_INPUT_INVALID",
+        "Model mapping settings are invalid.",
+        "Use each source model only once per mapping group.",
+        400
+      );
+    }
+    sources.add(sourceModel);
+    return { sourceModel, targetModel };
+  });
+}
+
+function normalizeMappingInput(input) {
+  if (!validateExactFields(input, MODEL_MAPPING_INPUT_FIELDS)) {
+    throw inputError(
+      "MODEL_MAPPING_INPUT_INVALID",
+      "Model mapping settings are invalid.",
+      "Submit only a group name and exact model rules.",
+      400
+    );
+  }
+  return {
+    name: normalizeMappingText(input.name, MAX_MAPPING_NAME_CODE_POINTS),
+    rules: normalizeMappingRules(input.rules)
+  };
+}
+
+function normalizeMappingGroup(input, { id, now, createdAt = now }) {
+  const normalized = normalizeMappingInput(input);
+  const groupId = normalizeMappingText(id, 128);
+  if (/[\\/]/.test(groupId) || !isIsoTimestamp(now) || !isIsoTimestamp(createdAt)) {
+    throw inputError(
+      "MODEL_MAPPING_INPUT_INVALID",
+      "Model mapping settings are invalid.",
+      "Retry the mapping group operation.",
+      400
+    );
+  }
+  return { id: groupId, ...normalized, createdAt, updatedAt: now };
+}
+
+function validateStoredMappingGroup(group) {
+  if (!validateExactFields(group, MODEL_MAPPING_GROUP_FIELDS)
+    || !isIsoTimestamp(group.createdAt)
+    || !isIsoTimestamp(group.updatedAt)
+    || group.updatedAt < group.createdAt) {
+    throw new Error("invalid model mapping group");
+  }
+  const normalized = normalizeMappingGroup({ name: group.name, rules: group.rules }, {
+    id: group.id,
+    now: group.updatedAt,
+    createdAt: group.createdAt
+  });
+  if (!isDeepStrictEqual(normalized, group)) {
+    throw new Error("model mapping group is not normalized");
+  }
+  return true;
+}
+
 function validateExactFields(value, fields) {
   return isPlainObject(value)
     && Object.keys(value).length === fields.size
@@ -131,11 +264,15 @@ function validateDocument(document) {
     if (!validateExactFields(document, DOCUMENT_FIELDS)) {
       throw new Error("invalid document fields");
     }
-    if (document.schemaVersion !== 4) {
+    if (document.schemaVersion !== 5) {
       throw new Error("unsupported schema version");
     }
     if (!Array.isArray(document.providers)) {
       throw new Error("providers must be an array");
+    }
+    if (!Array.isArray(document.modelMappingGroups)
+      || document.modelMappingGroups.length > MAX_MODEL_MAPPING_GROUPS) {
+      throw new Error("model mapping groups must be a bounded array");
     }
     if (!validateExactFields(document.settings, SETTINGS_FIELDS)) {
       throw new Error("invalid settings fields");
@@ -155,6 +292,17 @@ function validateDocument(document) {
       throw new Error("invalid active provider id");
     }
 
+    const mappingIds = new Set();
+    const mappingNames = new Set();
+    for (const group of document.modelMappingGroups) {
+      validateStoredMappingGroup(group);
+      if (mappingIds.has(group.id)) throw new Error("duplicate model mapping group id");
+      const nameKey = normalizedName(group.name);
+      if (mappingNames.has(nameKey)) throw new Error("duplicate model mapping group name");
+      mappingIds.add(group.id);
+      mappingNames.add(nameKey);
+    }
+
     const ids = new Set();
     const names = new Set();
     for (const profile of document.providers) {
@@ -168,6 +316,10 @@ function validateDocument(document) {
       }
       ids.add(profile.id);
       names.add(nameKey);
+      if (profile.modelMappingGroupId !== null
+        && !mappingIds.has(profile.modelMappingGroupId)) {
+        throw new Error("provider model mapping group does not exist");
+      }
     }
     if (document.activeProviderId !== null && !ids.has(document.activeProviderId)) {
       throw new Error("active provider does not exist");
@@ -197,6 +349,15 @@ function providerNotFound() {
     "PROVIDER_NOT_FOUND",
     "The provider does not exist.",
     "Refresh the provider list and try again.",
+    404
+  );
+}
+
+function modelMappingNotFound() {
+  return inputError(
+    "MODEL_MAPPING_NOT_FOUND",
+    "The model mapping group does not exist.",
+    "Refresh model mappings and try again.",
     404
   );
 }
@@ -297,6 +458,10 @@ export class ProviderRegistry {
 
   #findIndex(document, id) {
     return document.providers.findIndex((profile) => profile.id === id);
+  }
+
+  #findMappingIndex(document, id) {
+    return document.modelMappingGroups.findIndex((group) => group.id === id);
   }
 
   #refresh() {
@@ -410,6 +575,18 @@ export class ProviderRegistry {
     return index;
   }
 
+  #getMappingIndex(document, id) {
+    const index = this.#findMappingIndex(document, id);
+    if (index === -1) throw modelMappingNotFound();
+    return index;
+  }
+
+  #assertMappingGroupExists(document, id) {
+    if (id !== null && this.#findMappingIndex(document, id) === -1) {
+      throw modelMappingNotFound();
+    }
+  }
+
   #assertUniqueName(document, name, excludedId = null) {
     const nameKey = normalizedName(name);
     if (document.providers.some((profile) => (
@@ -419,6 +596,20 @@ export class ProviderRegistry {
         "PROVIDER_NAME_CONFLICT",
         "A provider with this name already exists.",
         "Choose a different provider name.",
+        409
+      );
+    }
+  }
+
+  #assertUniqueMappingName(document, name, excludedId = null) {
+    const nameKey = normalizedName(name);
+    if (document.modelMappingGroups.some((group) => (
+      group.id !== excludedId && normalizedName(group.name) === nameKey
+    ))) {
+      throw inputError(
+        "MODEL_MAPPING_NAME_CONFLICT",
+        "A model mapping group with this name already exists.",
+        "Choose a different mapping group name.",
         409
       );
     }
@@ -520,6 +711,7 @@ export class ProviderRegistry {
         );
       }
       this.#assertUniqueName(document, profile.name);
+      this.#assertMappingGroupExists(document, profile.modelMappingGroupId);
       document.providers.push(profile);
       return profile;
     });
@@ -541,9 +733,11 @@ export class ProviderRegistry {
         extraHeaders: current.extraHeaders,
         modelMode: current.modelMode,
         modelOverride: current.modelOverride,
+        modelMappingGroupId: current.modelMappingGroupId,
         ...patch
       }, { id: current.id, now: timestamp });
       this.#assertUniqueName(document, normalized.name, id);
+      this.#assertMappingGroupExists(document, normalized.modelMappingGroupId);
       const invalidatesTest = TEST_INVALIDATING_FIELDS.some((field) => (
         !isDeepStrictEqual(current[field], normalized[field])
       ));
@@ -558,6 +752,75 @@ export class ProviderRegistry {
       };
       document.providers[index] = updated;
       return updated;
+    });
+  }
+
+  listModelMappingGroups() {
+    return clone(this.#refresh().modelMappingGroups);
+  }
+
+  getModelMappingGroup(id) {
+    const document = this.#refresh();
+    return clone(document.modelMappingGroups[this.#getMappingIndex(document, id)]);
+  }
+
+  createModelMappingGroup(input) {
+    const id = this.createId();
+    const timestamp = this.now();
+    const group = normalizeMappingGroup(input, { id, now: timestamp });
+    return this.#commit((document) => {
+      if (document.modelMappingGroups.length >= MAX_MODEL_MAPPING_GROUPS) {
+        throw inputError(
+          "MODEL_MAPPING_LIMIT_REACHED",
+          "The model mapping group limit was reached.",
+          `Keep at most ${MAX_MODEL_MAPPING_GROUPS} mapping groups.`,
+          409
+        );
+      }
+      if (this.#findMappingIndex(document, group.id) !== -1) {
+        throw inputError(
+          "MODEL_MAPPING_ID_CONFLICT",
+          "A model mapping identity conflict occurred.",
+          "Retry creating the mapping group.",
+          409
+        );
+      }
+      this.#assertUniqueMappingName(document, group.name);
+      document.modelMappingGroups.push(group);
+      return group;
+    });
+  }
+
+  updateModelMappingGroup(id, input) {
+    const normalized = normalizeMappingInput(input);
+    const timestamp = this.now();
+    return this.#commit((document) => {
+      const index = this.#getMappingIndex(document, id);
+      const current = document.modelMappingGroups[index];
+      this.#assertUniqueMappingName(document, normalized.name, id);
+      const updated = normalizeMappingGroup(normalized, {
+        id: current.id,
+        now: timestamp,
+        createdAt: current.createdAt
+      });
+      document.modelMappingGroups[index] = updated;
+      return updated;
+    });
+  }
+
+  deleteModelMappingGroup(id) {
+    return this.#commit((document) => {
+      const index = this.#getMappingIndex(document, id);
+      if (document.providers.some((provider) => provider.modelMappingGroupId === id)) {
+        throw inputError(
+          "MODEL_MAPPING_IN_USE",
+          "The model mapping group is still assigned to a provider.",
+          "Remove the mapping group from every provider before deleting it.",
+          409
+        );
+      }
+      const [deleted] = document.modelMappingGroups.splice(index, 1);
+      return deleted;
     });
   }
 
