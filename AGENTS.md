@@ -36,6 +36,7 @@
 - Shell search patterns containing backticks must be single-quoted so command substitution cannot occur.
 - Automatic first-provider selection must use compare-and-set and must not start or reconfigure the Worker.
 - Partial-commit tests must encode deterministic resource order in fixture names instead of relying on filesystem traversal order.
+- Replacement-race tests must retain the displaced inode so immediate filesystem inode reuse cannot erase the simulated identity change.
 - Public numeric summaries must enforce explicit lower and upper bounds; safe-integer checks alone are insufficient.
 - Parallel-write coordination paths must exactly match the files assigned to each agent before writing begins.
 - Production recovery adapters must inject every inspection and execution method required by the lower-level recovery contract.
