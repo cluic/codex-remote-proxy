@@ -186,6 +186,9 @@ function createInsertStatement(db) {
       method,
       incoming_url,
       target_url,
+      provider_id,
+      provider_name,
+      route,
       request_headers_json,
       request_body,
       request_body_encoding,
@@ -209,6 +212,9 @@ function createInsertStatement(db) {
       @method,
       @incoming_url,
       @target_url,
+      @provider_id,
+      @provider_name,
+      @route,
       @request_headers_json,
       @request_body,
       @request_body_encoding,
@@ -229,7 +235,6 @@ function createInsertStatement(db) {
 function initializeDatabase(db) {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
-  db.exec("PRAGMA user_version = 1");
   db.exec(`
     CREATE TABLE IF NOT EXISTS http_transactions (
       id INTEGER PRIMARY KEY,
@@ -242,6 +247,9 @@ function initializeDatabase(db) {
       method TEXT,
       incoming_url TEXT,
       target_url TEXT,
+      provider_id TEXT,
+      provider_name TEXT,
+      route TEXT,
       request_headers_json TEXT NOT NULL,
       request_body TEXT NOT NULL,
       request_body_encoding TEXT NOT NULL,
@@ -256,6 +264,18 @@ function initializeDatabase(db) {
       error_type TEXT,
       error_message TEXT
     );
+  `);
+  const columns = new Set(
+    db.prepare("PRAGMA table_info(http_transactions)").all().map((column) => column.name)
+  );
+  for (const [name, type] of [
+    ["provider_id", "TEXT"],
+    ["provider_name", "TEXT"],
+    ["route", "TEXT"]
+  ]) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE http_transactions ADD COLUMN ${name} ${type}`);
+  }
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_http_transactions_started_at
       ON http_transactions (started_at);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_request_id
@@ -264,6 +284,7 @@ function initializeDatabase(db) {
       ON http_transactions (thread_id);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_response_status
       ON http_transactions (response_status);
+    PRAGMA user_version = 2;
   `);
 }
 
@@ -528,11 +549,14 @@ export class CaptureManager {
         completed_at: record.completedAt,
         duration_ms: record.durationMs,
         request_id: record.requestId,
-        session_id: record.sessionId,
-        thread_id: record.threadId,
+        session_id: record.sessionId ?? null,
+        thread_id: record.threadId ?? null,
         method: record.method,
         incoming_url: record.incomingUrl,
         target_url: record.targetUrl,
+        provider_id: record.providerId ?? null,
+        provider_name: record.providerName ?? null,
+        route: record.route ?? null,
         request_headers_json: JSON.stringify(redactHeaders(record.requestHeaders)),
         request_body: requestBody.body,
         request_body_encoding: requestBody.encoding,

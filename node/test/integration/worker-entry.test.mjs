@@ -179,6 +179,21 @@ function spawnWorker(t) {
 }
 
 function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integration-secret" }) {
+  const upstream = {
+    baseUrl,
+    apiKey,
+    timeoutMs: 5000,
+    verifySsl: true,
+    authHeader: "x-provider-auth",
+    authScheme: "Bearer",
+    extraHeaders: {}
+  };
+  const proxy = {
+    overrideAuthorization: true,
+    requestIdHeader: "x-client-request-id",
+    modelMode: "passthrough",
+    modelOverride: null
+  };
   return {
     configPath,
     server: {
@@ -186,21 +201,9 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
       port,
       logLevel: "info"
     },
-    upstream: {
-      baseUrl,
-      apiKey,
-      timeoutMs: 5000,
-      verifySsl: true,
-      authHeader: "x-provider-auth",
-      authScheme: "Bearer",
-      extraHeaders: {}
-    },
-    proxy: {
-      overrideAuthorization: true,
-      requestIdHeader: "x-client-request-id",
-      modelMode: "passthrough",
-      modelOverride: null
-    },
+    providers: [{ id: "provider-1", name: "Primary", weight: 100, upstream, proxy }],
+    upstream,
+    proxy,
     capture: {
       enabled: false,
       dbPath: join(configPath, "..", "traffic.sqlite3")

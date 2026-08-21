@@ -18,6 +18,9 @@ const resultKeys: MetricsResultKey[] = [
   "clientAbort"
 ];
 
+const overviewResultKeys = ["success", "upstreamRejected", "error"] as const;
+type OverviewResultKey = typeof overviewResultKeys[number];
+
 const emptyResults = (): MetricsResults => ({
   success: 0,
   upstreamRejected: 0,
@@ -61,20 +64,30 @@ function resultLabels(t: Translator): Record<MetricsResultKey, string> {
   };
 }
 
+function overviewResults(results: MetricsResults): Record<OverviewResultKey, number> {
+  return {
+    success: results.success,
+    upstreamRejected: results.upstreamRejected,
+    error: results.upstreamError + results.timeout + results.networkError + results.clientAbort
+  };
+}
+
 export const ResultsChart = memo(function ResultsChart({
   series,
   locale,
-  t
+  t,
+  showLegend = true
 }: {
   series: MetricsSeriesPoint[];
   locale: Locale;
   t: Translator;
+  showLegend?: boolean;
 }) {
   const labels = resultLabels(t);
   const points = groupSeries(series);
   const width = 720;
-  const plotHeight = 154;
-  const baseline = 174;
+  const plotHeight = 334;
+  const baseline = 354;
   const plotStart = 38;
   const plotWidth = 664;
   const maxRequests = Math.max(1, ...points.map((point) => point.requests));
@@ -84,12 +97,14 @@ export const ResultsChart = memo(function ResultsChart({
 
   return (
     <div className="chart-wrap">
-      <div className="chart-legend" aria-hidden="true">
-        {resultKeys.map((key) => (
-          <span key={key}><i className={`legend-${key}`} />{labels[key]}</span>
-        ))}
-      </div>
-      <svg className="chart" viewBox={`0 0 ${width} 218`} role="img" aria-label={t("overview.requestTrend")}>
+      {showLegend ? (
+        <div className="chart-legend" aria-hidden="true">
+          <span><i className="legend-success" />{labels.success}</span>
+          <span><i className="legend-upstreamRejected" />{labels.upstreamRejected}</span>
+          <span><i className="legend-error" />{t("metrics.errors")}</span>
+        </div>
+      ) : null}
+      <svg className="chart chart-results" viewBox={`0 0 ${width} 410`} role="img" aria-label={t("overview.requestTrend")}>
         <title>{t("overview.requestTrend")}</title>
         {[0, 0.5, 1].map((ratio) => {
           const y = baseline - ratio * plotHeight;
@@ -97,11 +112,12 @@ export const ResultsChart = memo(function ResultsChart({
         })}
         {points.map((point, pointIndex) => {
           const x = plotStart + pointIndex * slot + (slot - barWidth) / 2;
+          const displayed = overviewResults(point.results);
           let used = 0;
           return (
             <g key={`${point.start}-${pointIndex}`}>
-              {resultKeys.map((key) => {
-                const value = point.results[key];
+              {overviewResultKeys.map((key) => {
+                const value = displayed[key];
                 const height = value / maxRequests * plotHeight;
                 const y = baseline - used - height;
                 used += height;
@@ -118,7 +134,7 @@ export const ResultsChart = memo(function ResultsChart({
                 ) : null;
               })}
               {labelIndexes.has(pointIndex) ? (
-                <text className="chart-axis-label" x={x + barWidth / 2} y="205" textAnchor="middle">
+                <text className="chart-axis-label" x={x + barWidth / 2} y="396" textAnchor="middle">
                   {new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", hour: "2-digit" }).format(new Date(point.start))}
                 </text>
               ) : null}
@@ -153,11 +169,13 @@ function linePoints(values: number[], maximum: number, width: number, height: nu
 export const TokenChart = memo(function TokenChart({
   series,
   locale,
-  t
+  t,
+  showLegend = true
 }: {
   series: MetricsSeriesPoint[];
   locale: Locale;
   t: Translator;
+  showLegend?: boolean;
 }) {
   const points = groupSeries(series);
   const input = points.map((point) => point.tokens.input);
@@ -169,25 +187,27 @@ export const TokenChart = memo(function TokenChart({
   }
   return (
     <div className="chart-wrap">
-      <div className="chart-legend" aria-hidden="true">
-        <span><i className="legend-input" />{t("overview.inputTokens")}</span>
-        <span><i className="legend-output" />{t("overview.outputTokens")}</span>
-      </div>
-      <svg className="chart" viewBox="0 0 720 218" role="img" aria-label={t("overview.tokenTrend")}>
+      {showLegend ? (
+        <div className="chart-legend" aria-hidden="true">
+          <span><i className="legend-input" />{t("overview.inputTokens")}</span>
+          <span><i className="legend-output" />{t("overview.outputTokens")}</span>
+        </div>
+      ) : null}
+      <svg className="chart chart-token" viewBox="0 0 460 410" role="img" aria-label={t("overview.tokenTrend")}>
         <title>{t("overview.tokenTrend")}</title>
-        {[20, 97, 174].map((y) => <line key={y} className="chart-grid" x1="38" x2="702" y1={y} y2={y} />)}
+        {[20, 187, 354].map((y) => <line key={y} className="chart-grid" x1="26" x2="444" y1={y} y2={y} />)}
         <polyline
           className="token-line-input"
-          points={linePoints(input, maximum, 664, 154, 38, 20)}
+          points={linePoints(input, maximum, 418, 334, 26, 20)}
           vectorEffect="non-scaling-stroke"
         />
         <polyline
           className="token-line-output"
-          points={linePoints(output, maximum, 664, 154, 38, 20)}
+          points={linePoints(output, maximum, 418, 334, 26, 20)}
           vectorEffect="non-scaling-stroke"
         />
-        <text className="chart-axis-label" x="38" y="205">{points[0] ? formatDate(locale, points[0].start) : ""}</text>
-        <text className="chart-axis-label" x="702" y="205" textAnchor="end">
+        <text className="chart-axis-label" x="26" y="396">{points[0] ? formatDate(locale, points[0].start) : ""}</text>
+        <text className="chart-axis-label" x="444" y="396" textAnchor="end">
           {points.at(-1) ? formatDate(locale, points.at(-1)?.start ?? null) : ""}
         </text>
       </svg>

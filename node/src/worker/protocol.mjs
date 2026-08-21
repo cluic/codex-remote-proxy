@@ -32,6 +32,7 @@ const ERROR_FIELDS = new Set(["code", "message"]);
 const METRIC_OBSERVATION_FIELDS = new Set([
   "generation",
   "route",
+  "providerId",
   "result",
   "model",
   "inputTokens",
@@ -42,12 +43,14 @@ const METRIC_OBSERVATION_FIELDS = new Set([
 const SETTINGS_FIELDS = new Set([
   "configPath",
   "server",
+  "providers",
   "upstream",
   "proxy",
   "capture",
   "routing"
 ]);
 const SERVER_FIELDS = new Set(["host", "port", "logLevel"]);
+const PROVIDER_FIELDS = new Set(["id", "name", "weight", "upstream", "proxy"]);
 const UPSTREAM_FIELDS = new Set([
   "baseUrl",
   "apiKey",
@@ -184,6 +187,38 @@ function isValidModelPolicy(proxy) {
   return proxy.modelMode !== "override" || proxy.modelOverride !== null;
 }
 
+function isValidProviderCandidate(provider) {
+  return isPlainObject(provider)
+    && hasExactFields(provider, PROVIDER_FIELDS)
+    && isNonEmptyString(provider.id)
+    && provider.id.length <= 128
+    && isNonEmptyString(provider.name)
+    && [...provider.name].length <= 256
+    && Number.isInteger(provider.weight)
+    && provider.weight >= 1
+    && provider.weight <= 1_000
+    && isPlainObject(provider.upstream)
+    && hasExactFields(provider.upstream, UPSTREAM_FIELDS)
+    && isValidBaseUrl(provider.upstream.baseUrl)
+    && typeof provider.upstream.apiKey === "string"
+    && Number.isFinite(provider.upstream.timeoutMs)
+    && provider.upstream.timeoutMs > 0
+    && typeof provider.upstream.verifySsl === "boolean"
+    && isValidHeaderName(provider.upstream.authHeader)
+    && typeof provider.upstream.authScheme === "string"
+    && !CONTROL_CHARACTER_PATTERN.test(provider.upstream.authScheme)
+    && (provider.upstream.authScheme === ""
+      || HEADER_NAME_PATTERN.test(provider.upstream.authScheme))
+    && isValidExtraHeaders(provider.upstream.extraHeaders, provider.upstream.authHeader)
+    && isPlainObject(provider.proxy)
+    && hasExactFields(provider.proxy, PROXY_FIELDS)
+    && typeof provider.proxy.overrideAuthorization === "boolean"
+    && isValidHeaderName(provider.proxy.requestIdHeader)
+    && isValidModelPolicy(provider.proxy)
+    && (!provider.proxy.overrideAuthorization
+      || (provider.upstream.apiKey.length > 0 && isValidAuthenticationHeader(provider.upstream)));
+}
+
 function isValidBaseUrl(value) {
   if (!isNonEmptyString(value)) {
     return false;
@@ -235,6 +270,11 @@ function validateRuntimeSettings(settings) {
     || settings.server.port < 0
     || settings.server.port > 65535
     || !isNonEmptyString(settings.server.logLevel)
+    || !Array.isArray(settings.providers)
+    || settings.providers.length < 1
+    || settings.providers.length > 100
+    || settings.providers.some((provider) => !isValidProviderCandidate(provider))
+    || new Set(settings.providers.map((provider) => provider.id)).size !== settings.providers.length
     || !isPlainObject(settings.upstream)
     || !hasExactFields(settings.upstream, UPSTREAM_FIELDS)
     || !isValidBaseUrl(settings.upstream.baseUrl)
@@ -348,6 +388,9 @@ function validateMetricObservation(observation) {
     || !Number.isSafeInteger(observation.generation)
     || observation.generation <= 0
     || !METRIC_ROUTES.has(observation.route)
+    || (observation.route === "account" && observation.providerId !== null)
+    || (observation.route === "custom"
+      && (!isNonEmptyString(observation.providerId) || observation.providerId.length > 128))
     || !METRIC_RESULTS.has(observation.result)
     || (observation.model !== null && !isBoundedMetricModel(observation.model))
     || (!noUsage && !completeUsage)

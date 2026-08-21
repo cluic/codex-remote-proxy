@@ -10,6 +10,23 @@ import {
 } from "../src/worker/protocol.mjs";
 
 function makeSettings() {
+  const upstream = {
+    baseUrl: "http://127.0.0.1:41001",
+    apiKey: "protocol-test-secret",
+    timeoutMs: 5000,
+    verifySsl: true,
+    authHeader: "x-provider-auth",
+    authScheme: "Bearer",
+    extraHeaders: {
+      "x-region": "test"
+    }
+  };
+  const proxy = {
+    overrideAuthorization: true,
+    requestIdHeader: "x-client-request-id",
+    modelMode: "passthrough",
+    modelOverride: null
+  };
   return {
     configPath: "/tmp/crp-worker/proxy-config.json",
     server: {
@@ -17,23 +34,9 @@ function makeSettings() {
       port: 0,
       logLevel: "info"
     },
-    upstream: {
-      baseUrl: "http://127.0.0.1:41001",
-      apiKey: "protocol-test-secret",
-      timeoutMs: 5000,
-      verifySsl: true,
-      authHeader: "x-provider-auth",
-      authScheme: "Bearer",
-      extraHeaders: {
-        "x-region": "test"
-      }
-    },
-    proxy: {
-      overrideAuthorization: true,
-      requestIdHeader: "x-client-request-id",
-      modelMode: "passthrough",
-      modelOverride: null
-    },
+    providers: [{ id: "provider-1", name: "Primary", weight: 100, upstream, proxy }],
+    upstream,
+    proxy,
     capture: {
       enabled: false,
       dbPath: "/tmp/crp-worker/traffic.sqlite3"
@@ -332,6 +335,7 @@ test("child protocol accepts only bounded anonymous metric observations", () => 
     observation: {
       generation: 7,
       route: "custom",
+      providerId: "provider-1",
       result: "success",
       model: "gpt-5-codex",
       inputTokens: 123,
@@ -354,6 +358,7 @@ test("child protocol accepts only bounded anonymous metric observations", () => 
   }).observation, {
     generation: 7,
     route: "custom",
+    providerId: "provider-1",
     result: "networkError",
     model: null,
     inputTokens: null,

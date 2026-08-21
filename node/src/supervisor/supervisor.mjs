@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, resolve } from "node:path";
+import os from "node:os";
 import { isDeepStrictEqual } from "node:util";
 
 import { bootstrapCodexConfig, patchCodexConfigText } from "../codex/codex-config.mjs";
@@ -35,6 +36,8 @@ import { getPaths } from "../shared/paths.mjs";
 import { ActivityStore } from "./activity-store.mjs";
 import { AccountMonitor } from "./account-monitor.mjs";
 import { createAdminServer } from "./admin-server.mjs";
+import { AutoStartService } from "./autostart-service.mjs";
+import { ForwardingRecordsService } from "./forwarding-records-service.mjs";
 import { migrateLegacyConfiguration } from "./migration.mjs";
 import { MetricsStore } from "./metrics-store.mjs";
 import { ProviderService } from "./provider-service.mjs";
@@ -354,17 +357,33 @@ function createCodexService({
   };
 }
 
-function createSettingsService({ registry, credentialStore, providerService }) {
+function createSettingsService({
+  registry,
+  credentialStore,
+  providerService,
+  autoStartService
+}) {
   return {
     getSettings() {
+      const autoStart = autoStartService.getStatus();
       return {
         ...registry.getDocument().settings,
-        credentialBackend: credentialStore.backend ?? null
+        credentialBackend: credentialStore.backend ?? null,
+        autoStartSupported: autoStart.supported,
+        autoStartEnabled: autoStart.enabled,
+        autoStartState: autoStart.state,
+        autoStartPlatform: autoStart.platform
       };
     },
     async updateSettings(patch) {
       if (Object.hasOwn(patch, "routingMode")) {
         await providerService.setRoutingMode(patch.routingMode);
+      }
+      if (Object.hasOwn(patch, "captureEnabled")) {
+        await providerService.setCaptureEnabled(patch.captureEnabled);
+      }
+      if (Object.hasOwn(patch, "autoStartEnabled")) {
+        autoStartService.setEnabled(patch.autoStartEnabled);
       }
       return this.getSettings();
     }
@@ -490,6 +509,8 @@ export async function createSupervisor({
   registryFactory = (options) => new ProviderRegistry(options),
   providerModelCacheFactory = (options) => new ProviderModelCache(options),
   metricsStoreFactory = (options) => new MetricsStore(options),
+  forwardingRecordsServiceFactory = (options) => new ForwardingRecordsService(options),
+  autoStartServiceFactory = (options) => new AutoStartService(options),
   accountMonitorFactory = (options) => new AccountMonitor(options),
   workerManagerFactory = (options) => new WorkerManager(options),
   providerServiceFactory = (options) => new ProviderService(options),
@@ -510,6 +531,8 @@ export async function createSupervisor({
   const settings = registry.getDocument().settings;
   let workerManager;
   let metricsStore;
+  let forwardingRecordsService;
+  let autoStartService;
   let accountMonitor;
   let unsubscribeAccountMonitor = null;
   let accountRoutingRevision = 1;
@@ -553,6 +576,10 @@ export async function createSupervisor({
       historyRepair: codexHistoryRepair
     });
     metricsStore = metricsStoreFactory({ path: paths.metricsPath, now });
+    forwardingRecordsService = forwardingRecordsServiceFactory({
+      path: paths.capturePath,
+      listProviders: () => registry.list()
+    });
     workerManager = workerManagerFactory({
       host: settings.proxyHost,
       port: settings.proxyPort,
@@ -588,8 +615,18 @@ export async function createSupervisor({
       now,
       paths
     });
+    autoStartService = autoStartServiceFactory({
+      userHome: os.homedir(),
+      crpHome: dirname(paths.globalHome),
+      logPath: resolve(paths.globalHome, "autostart.log")
+    });
     auth = authFactory({ controlTokenPath: paths.controlTokenPath });
-    settingsService = createSettingsService({ registry, credentialStore, providerService });
+    settingsService = createSettingsService({
+      registry,
+      credentialStore,
+      providerService,
+      autoStartService
+    });
     diagnosticsService = createDiagnosticsService({ activityStore, now });
     adminServer = adminServerFactory({
       auth,
@@ -599,6 +636,7 @@ export async function createSupervisor({
       codexService,
       diagnosticsService,
       metricsService: metricsStore,
+      forwardingRecordsService,
       accountMonitor,
       getSupervisorState: () => ({ pid, startedAt }),
       requestSupervisorShutdown: requestShutdown,

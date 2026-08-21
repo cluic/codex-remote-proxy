@@ -50,7 +50,7 @@ test.beforeEach(async ({ crp }) => {
   });
 });
 
-test("switches from the sidebar route control and keeps Forwarding Records inert", async ({ page, crp }) => {
+test("switches from the sidebar route control and opens Forwarding Records", async ({ page, crp }) => {
   const mutations = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -60,11 +60,11 @@ test("switches from the sidebar route control and keeps Forwarding Records inert
   });
 
   await openCrp(page, crp);
-  await expect(page.getByRole("heading", { name: "Codex is securely connected" })).toBeVisible();
+  await expect(page.locator(".overview-command-bar")).toBeVisible();
   await page.getByRole("button", { name: "Stop proxy" }).click();
   await expect.poll(() => crp.state.worker.phase).toBe("stopped");
-  const routeSelect = page.getByLabel("Current route");
-  await expect(routeSelect).toHaveAttribute("title", /Provider Alpha · Switch and start/);
+  const routeSelect = page.getByLabel("Preferred provider");
+  await expect(routeSelect).toHaveAttribute("title", /Provider Alpha · Make preferred and start/);
   await routeSelect.selectOption("provider-b");
   await expect(routeSelect).toHaveValue("provider-b");
   expect(crp.state.activeProviderId).toBe("provider-b");
@@ -79,21 +79,42 @@ test("switches from the sidebar route control and keeps Forwarding Records inert
 
   await navigate(page, "Providers");
 
-  const before = page.url();
-  const requestCount = crp.collectors.records.filter((record) => record.type === "request").length;
   const forwarding = page.getByTestId("nav-forwarding-records");
-  await expect(forwarding).toHaveAttribute("aria-disabled", "true");
-  await expect(forwarding).toContainText("Coming soon");
-  await forwarding.dispatchEvent("click");
-  await expect(page).toHaveURL(before);
-  expect(crp.collectors.records.filter((record) => record.type === "request")).toHaveLength(requestCount);
+  await expect(forwarding).toHaveAttribute("href", "/forwarding");
+  await forwarding.click();
+  await expect(page).toHaveURL(/\/forwarding$/);
+  await expect(page.getByTestId("page-forwarding-records")).toBeVisible();
 
   await navigate(page, "Activity");
   await expect(page.getByRole("heading", { name: "Activity", level: 1 })).toBeVisible();
   await navigate(page, "System");
   await expect(page.getByRole("heading", { name: "System", level: 1 })).toBeVisible();
   await navigate(page, "Overview");
-  await expect(page.getByText("Generation 5")).toBeVisible();
+  await expect(page.locator(".overview-routing-segment")).toContainText("Provider Beta");
+  await expect(page.locator(".sidebar-runtime")).toContainText("Running");
+  await assertNoSecrets(page, crp);
+});
+
+test("updates provider priority weights without changing the preferred provider", async ({ page, crp }) => {
+  await openCrp(page, crp);
+  await navigate(page, "Providers");
+  const preferred = page.getByTestId("provider-card-provider-a");
+  const fallback = page.getByTestId("provider-card-provider-b");
+
+  await fallback.getByLabel("Priority weight for Provider Beta").fill("350");
+  await fallback.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect.poll(() => crp.state.providers.find(({ id }) => id === "provider-b")?.weight).toBe(350);
+  expect(crp.state.activeProviderId).toBe("provider-a");
+  await expect(fallback.getByLabel("Priority weight for Provider Beta")).toHaveValue("350");
+
+  await preferred.getByLabel("Priority weight for Provider Alpha").fill("500");
+  await preferred.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect.poll(() => crp.state.providers.find(({ id }) => id === "provider-a")?.weight).toBe(500);
+  expect(crp.calls.filter((call) => call.operation === "setProviderWeight")).toEqual([
+    { operation: "setProviderWeight", id: "provider-b", weight: 350 },
+    { operation: "setProviderWeight", id: "provider-a", weight: 500 }
+  ]);
+  expect(crp.state.activeProviderId).toBe("provider-a");
   await assertNoSecrets(page, crp);
 });
 
@@ -103,7 +124,7 @@ test("closes the mobile drawer after a sidebar mutation so feedback stays operab
   await page.getByRole("button", { name: "Open navigation" }).click();
   const drawer = page.getByRole("dialog", { name: "Primary navigation" });
   await expect(drawer).toBeVisible();
-  await drawer.getByLabel("Current route").selectOption("provider-b");
+  await drawer.getByLabel("Preferred provider").selectOption("provider-b");
   await expect(drawer).toBeHidden();
   const message = page.getByTestId("global-message");
   await expect(message).toContainText("Provider switched");
@@ -130,7 +151,7 @@ test("does not expose an untested provider as a sidebar route", async ({ page, c
     activeProviderId: "provider-a"
   });
   await openCrp(page, crp);
-  const option = page.getByLabel("Current route").locator('option[value="provider-b"]');
+  const option = page.getByLabel("Preferred provider").locator('option[value="provider-b"]');
   await expect(option).toHaveAttribute("disabled", "");
   await expect(option).toHaveText("Provider Beta · Untested");
   expect(crp.calls.filter((call) => call.operation === "activate")).toHaveLength(0);
@@ -180,8 +201,8 @@ test("renders populated Metrics and changes the aggregate window without stale d
   await expect(responseStart.locator("strong")).toHaveText("> 300 s");
   await expect(page.getByRole("img", { name: "Request results" })).toBeVisible();
   await expect(page.getByRole("img", { name: "Token trend" })).toBeVisible();
-  await expect(page.getByRole("img", { name: "Model distribution" })).toBeVisible();
-  await expect(page.getByRole("table").filter({ hasText: "Provider Alpha" })).toBeVisible();
+  await expect(page.locator(".overview-model-summary")).toContainText("gpt-5.1-codex-mini");
+  await expect(page.locator(".overview-provider-summary")).toContainText("Provider Alpha");
 
   await page.getByRole("button", { name: "7 days" }).click();
   await expect(page.getByRole("button", { name: "7 days" })).toHaveAttribute("aria-pressed", "true");
@@ -215,7 +236,7 @@ test("discloses incomplete Metrics rates and conserves the visible model remaind
   const successRate = page.locator(".metric-card").filter({ hasText: "Success rate" });
   await expect(successRate.locator("strong")).toHaveText("-");
   await expect(successRate).toContainText("Unavailable because 2 metric updates were dropped");
-  await expect(page.getByRole("table").filter({ hasText: "Provider Alpha" }))
+  await expect(page.locator(".overview-provider-summary"))
     .toContainText("Not available");
 
   const quality = page.getByRole("complementary", { name: "Data quality" });
@@ -226,9 +247,9 @@ test("discloses incomplete Metrics rates and conserves the visible model remaind
   await expect(quality).toContainText("Dropped metric updates2");
   await expect(page.getByText("Data quality: 14")).toHaveCount(0);
 
-  const distribution = page.locator(".distribution-chart");
-  await expect(distribution.locator("text").filter({ hasText: "Other models" })).toBeVisible();
-  await expect(distribution.locator("text").filter({ hasText: /^79$/ })).toBeVisible();
+  const distribution = page.locator(".overview-model-summary");
+  await expect(distribution).toContainText("Other models");
+  await expect(distribution.locator("li").filter({ hasText: "Other models" }).locator("strong")).toHaveText("101");
   await expect(page.getByText("This view contains 24 UTC hourly buckets, including the current partial hour."))
     .toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -241,7 +262,7 @@ test("shows empty and degraded Metrics without affecting proxy readiness", async
   await openCrp(page, crp);
   await expect(page.getByTestId("metrics-empty")).toBeVisible();
   await expect(page.getByRole("heading", { name: "No proxy traffic in this window" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Codex is securely connected" })).toBeVisible();
+  await expect(page.locator(".overview-command-bar")).toBeVisible();
   await page.getByRole("button", { name: "7 days" }).click();
   await expect(page.getByRole("button", { name: "7 days" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("metrics-empty")).toBeVisible();
@@ -267,10 +288,10 @@ test("isolates a Metrics API failure from the rest of the workspace", async ({ p
   });
   await openCrp(page, crp);
   await expect(page.getByRole("heading", { name: "Overview", level: 1 })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Codex is securely connected" })).toBeVisible();
+  await expect(page.locator(".overview-command-bar")).toBeVisible();
   await expect(page.getByText("Metrics are currently unavailable").first()).toBeVisible();
   await expect(page.getByTestId("metrics-empty")).toHaveCount(0);
-  await expect(page.locator(".runtime-facts").getByText("Provider Alpha", { exact: true })).toBeVisible();
+  await expect(page.locator(".overview-routing-segment")).toContainText("Provider Alpha");
   expect(crp.calls.filter((call) => call.operation === "getStatus").length).toBeGreaterThan(0);
 });
 
@@ -291,7 +312,7 @@ test("creates, discovers models, tests, switches, edits, and deletes a provider 
   const gamma = page.getByTestId("provider-card-provider-3");
   await expect(gamma).toContainText("Untested");
 
-  await gamma.getByRole("button", { name: "Test and switch" }).click();
+  await gamma.getByRole("button", { name: "Test and make preferred" }).click();
   const testDialog = page.getByRole("dialog", { name: "Test provider" });
   await testDialog.getByRole("button", { name: "Refresh models" }).click();
   const modelSelect = testDialog.getByLabel("Test model");
@@ -302,8 +323,8 @@ test("creates, discovers models, tests, switches, edits, and deletes a provider 
   await testDialog.getByRole("button", { name: "Refresh models" }).click();
   await expect(manualModel).toHaveValue("manual-fixture-model");
   await modelSelect.selectOption("fixture-model");
-  await testDialog.getByRole("button", { name: "Test and switch" }).click();
-  await expect(gamma.getByText("Current", { exact: true })).toBeVisible();
+  await testDialog.getByRole("button", { name: "Test and make preferred" }).click();
+  await expect(gamma.getByText("Preferred", { exact: true })).toBeVisible();
   expect(crp.state.activeProviderId).toBe("provider-3");
   expect(crp.upstreamRequests.at(-1)).toMatchObject({
     path: "/v1/responses",
@@ -312,7 +333,8 @@ test("creates, discovers models, tests, switches, edits, and deletes a provider 
     credentialMatched: true
   });
 
-  await page.getByTestId("provider-card-provider-a").getByRole("button", { name: "Switch" }).click();
+  await page.getByTestId("provider-card-provider-a").getByRole("button", { name: "Make preferred" }).click();
+  await page.getByRole("button", { name: "Stop proxy" }).click();
   const detailsTrigger = page.getByRole("button", { name: "View Provider Gamma details" });
   await detailsTrigger.focus();
   await detailsTrigger.click();
@@ -376,7 +398,7 @@ test("ordinary provider test selects the first provider through no-start compare
   await modelSelect.selectOption("fixture-model");
   await dialog.getByRole("button", { name: "Test and select" }).click();
 
-  await expect(card.getByText("Current", { exact: true })).toBeVisible();
+  await expect(card.getByText("Preferred", { exact: true })).toBeVisible();
   expect(crp.state.activeProviderId).toBe("provider-a");
   expect(crp.state.worker.phase).toBe("stopped");
   expect(crp.calls.filter((call) => call.operation === "testProvider")).toEqual([
@@ -492,12 +514,13 @@ test("shows ChatGPT quota and hot-updates account-first routing", async ({ page,
     activeProviderId: "provider-account-fallback",
     generation: 8
   });
+  crp.state.account.quota.windows = crp.state.account.quota.windows.filter(
+    (window) => window.windowDurationMins === 10_080
+  );
   await openCrp(page, crp);
-  await navigate(page, "System");
 
   await expect(page.getByText("ChatGPT signed in")).toBeVisible();
-  await expect(page.getByText("5-hour window")).toBeVisible();
-  await expect(page.getByText("65% remaining")).toBeVisible();
+  await expect(page.getByText("5-hour window")).toHaveCount(0);
   await expect(page.getByText("7-day window")).toBeVisible();
   await expect(page.getByText("38% remaining")).toBeVisible();
 
@@ -514,6 +537,11 @@ test("shows ChatGPT quota and hot-updates account-first routing", async ({ page,
 
   await page.getByRole("button", { name: "Refresh account quota" }).click();
   await expect.poll(() => crp.calls.filter((call) => call.operation === "refreshAccount").length).toBe(1);
+  await navigate(page, "System");
+  await expect(page.getByText("ChatGPT signed in")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Use ChatGPT quota first" })).toBeChecked();
+  await expect(page.getByText("7-day window")).toHaveCount(0);
+  await expect(page.getByText("5-hour window")).toHaveCount(0);
   await navigate(page, "Activity");
   await expect(page.locator(".activity-event").first()).toContainText("Routing preference changed");
   await assertNoSecrets(page, crp);
@@ -536,12 +564,12 @@ test("keeps fragmentless reload GET-only until explicit same-origin management r
   await expect(page.locator("#session-banner")).toContainText("Read-only session");
   await expect(page.getByRole("button", { name: "Stop proxy" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Restart worker" })).toBeDisabled();
-  await expect(page.getByLabel("Current route")).toBeDisabled();
+  await expect(page.getByLabel("Preferred provider")).toBeDisabled();
   await page.getByRole("button", { name: "Refresh status" }).click();
   await navigate(page, "Providers");
   await expect(page.getByRole("button", { name: "Add provider" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Duplicate Provider Beta" })).toBeDisabled();
-  await expect(page.getByTestId("provider-card-provider-b").getByRole("button", { name: "Switch" })).toBeDisabled();
+  await expect(page.getByTestId("provider-card-provider-b").getByRole("button", { name: "Make preferred" })).toBeDisabled();
   await navigate(page, "Activity");
   await page.getByRole("button", { name: "Next" }).click();
   await expect(page.locator(".activity-event")).toHaveCount(5);
@@ -551,9 +579,9 @@ test("keeps fragmentless reload GET-only until explicit same-origin management r
 
   await page.getByRole("button", { name: "Restore management" }).click();
   await expect(page.locator("#session-banner")).toHaveCount(0);
-  await expect(page.getByLabel("Current route")).toBeEnabled();
-  await page.getByLabel("Current route").selectOption("provider-b");
-  await expect(page.getByLabel("Current route")).toHaveValue("provider-b");
+  await expect(page.getByLabel("Preferred provider")).toBeEnabled();
+  await page.getByLabel("Preferred provider").selectOption("provider-b");
+  await expect(page.getByLabel("Preferred provider")).toHaveValue("provider-b");
   expect(crp.state.activeProviderId).toBe("provider-b");
   expect(mutations).toEqual([
     { method: "POST", path: "/api/v1/session/resume", resumeHeader: "1" },

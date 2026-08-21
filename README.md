@@ -2,11 +2,11 @@
 
 # Codex Remote Proxy
 
-Codex Remote Proxy (CRP) keeps Codex signed in with ChatGPT while routing model traffic to a selected OpenAI-compatible provider. Codex continues to use the built-in `OpenAI` provider identity, so switching upstreams does not move existing OpenAI-tagged threads.
+Codex Remote Proxy (CRP) keeps Codex signed in with ChatGPT while routing model traffic through a weighted pool of OpenAI-compatible providers. Codex continues to use the built-in `OpenAI` provider identity, so changing upstream priority does not move existing OpenAI-tagged threads.
 
 [简体中文](./README.zh-CN.md)
 
-> Release status: npm `0.4.1` is the current release and includes the Supervisor and `crp ui`. Changes after `0.4.1` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
+> Release status: npm `0.4.2` is the current release. Changes after `0.4.2` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
 
 ## Install
 
@@ -28,7 +28,7 @@ Without a global install:
 npx @cluic/codex-remote-proxy ui
 ```
 
-`crp ui` starts or discovers the local supervisor and opens the management UI. The interface starts in English on every browser and supports Simplified Chinese through the language selector. Only an explicitly selected locale is stored in browser storage, so a Chinese selection is retained on later launches.
+`crp ui` starts or discovers the local supervisor and opens the management UI. A saved explicit language choice wins; otherwise the interface uses the first supported Chinese or English browser/system preference and falls back to English. Inferred language is not persisted.
 
 The current development UI is implemented in `node/ui-src/` with React, TypeScript, and Vite. Those tools are build-time only: the package and Admin server still ship exactly `ui/index.html`, `ui/app.js`, and `ui/styles.css`, with no frontend runtime server, remote font, CDN, telemetry, source map, or dynamic chunk.
 
@@ -39,24 +39,28 @@ The local UI supports the complete daily workflow:
 - create named provider profiles;
 - enter a credential through a write-only field;
 - test OpenAI Responses API compatibility;
-- switch eligible providers directly from provider cards;
-- replace a credential on an inactive provider or delete an inactive provider;
+- assign each provider a priority weight and choose the preferred provider used to break equal-weight ties;
+- cool providers after retryable `429`, selected `5xx`, timeouts, resets, or clear network failures, and replay a bounded Responses request only when the upstream connection was never established;
+- replace a credential on a non-preferred provider or delete a non-preferred provider;
 - start, stop, restart, and inspect the proxy worker;
-- inspect anonymous 24-hour or 7-day request, result, observed-Token, model, Provider, and bounded-latency Metrics on Overview;
-- review sanitized control-plane Activity and read-only System facts;
+- inspect ChatGPT account/routing state plus anonymous 24-hour or 7-day request, result, observed-Token, model, Provider, and bounded-latency Metrics on the compact Overview;
+- review metadata-only Forwarding Records and control optional Capture from that page;
+- configure user-level start at login, routing, Codex integration, runtime facts, and diagnostics from the compact System page;
 - generate an in-memory diagnostic summary containing only creation state, generation time, and sanitized event count.
 
-System also shows the local Codex ChatGPT authentication mode, plan, and normalized 5-hour/7-day quota windows. It refreshes the account snapshot every five minutes and on demand through the private Codex app-server protocol. If that experimental interface is unavailable or changes, CRP reports an unavailable/unknown account state and keeps custom-provider routing operational.
+Overview shows the local Codex ChatGPT authentication mode, plan, and every normalized quota window actually returned by Codex; System keeps only a compact account/routing status. Recognized five-hour and seven-day windows receive friendly labels, but a missing window is never fabricated or reserved in the layout. CRP refreshes the account snapshot every five minutes and on demand through the private Codex app-server protocol. If that experimental interface is unavailable or changes, CRP reports an unavailable/unknown account state and keeps custom-provider routing operational.
 
-Routing defaults to `custom_only`. The System toggle can hot-apply `account_first` without restarting a running Worker. In that mode, only `POST /responses` and `POST /v1/responses` are eligible for the ChatGPT account path. CRP uses the account only when Codex reports a signed-in ChatGPT session, a unique account identity, and available quota; otherwise it uses the selected custom provider. A first account response that explicitly reports rate limiting is replayed once through the custom provider. Authentication failures, other upstream failures, and network errors stay visible and do not silently consume the custom API key. Replayable request bodies are bounded to 8 MiB.
+Routing defaults to `custom_only`. The Overview and System toggles can hot-apply `account_first` without restarting a running Worker. In that mode, only `POST /responses` and `POST /v1/responses` are eligible for the ChatGPT account path. CRP uses the account only when Codex reports a signed-in ChatGPT session, a unique account identity, and available quota; otherwise it enters the weighted custom-provider pool. Explicit account rate limiting falls through to that pool. Within the custom pool, higher weights route first and the preferred provider wins equal-weight ties. Retryable HTTP responses and connected transport failures cool that provider so the next request uses another candidate; CRP does not replay a custom POST after delivery may have occurred. Only a bounded Responses request that fails before the upstream connection is established can move to the next candidate in the same request. Non-Responses requests are never replayed, and replay buffering is capped at 8 MiB.
 
-`Forwarding Records` is visible as a disabled `Coming soon` navigation item. This MVP has no forwarding-record route, request/response viewer, Capture control, or mock traffic data. Overview Metrics is anonymous aggregate state and remains independent from optional Capture. Its 24-hour and 7-day series use fixed UTC hourly buckets. A request counts as successful only after a successful Responses terminal event or completed JSON response; if metric updates were dropped, the UI marks success rates unavailable instead of presenting a precise percentage. Provider and model distributions always retain an explicit grouped remainder.
+System can enable start at login without administrator privileges. CRP writes one marked, user-owned macOS LaunchAgent, Linux systemd user unit, or Windows Startup command that runs the installed CLI with the same `CRP_HOME`. The setting takes effect on the next sign-in; if the Node or package installation path later changes, System reports the managed item as stale so it can be repaired or disabled explicitly. Disabling rewrites only the identity-checked managed inode to an inert configuration; it does not race-prone delete the reserved path or Linux wants link. A foreign regular file, link, or unsafe artifact at the reserved path is reported as a conflict and is never overwritten, deleted, or used as permission to change the shared startup directory mode.
 
-Provider activation affects new requests. Requests already in flight keep the provider snapshot, including its model policy, with which they started. In `passthrough` mode CRP preserves the client model; in `override` mode it replaces only the top-level JSON `model` value with the Provider's configured model. The explicit activation route is also the production switch operation: it applies a new snapshot to a running Worker and starts a stopped Worker. Initial selection is deliberately different: after a successful compatibility test, Setup, CLI, and the ordinary Providers page all use a first-wins compare-and-set when no Provider is active, while the Worker remains stopped.
+`Forwarding Records` is a complete metadata-only route backed by the local Capture database. It supports outcome filters, bounded search, keyset pagination, a detail panel, summary counts, and a Capture on/off control. New Capture rows persist the final route, provider ID, and provider name, so historical attribution survives later provider edits or deletion; legacy rows retain URL-based best-effort inference. The API exposes timing, route/provider, model-request path, byte counts, status, IDs, and sanitized error metadata, but never selects or returns request/response bodies or authorization headers. Overview Metrics remains an independent anonymous aggregate. Its 24-hour and 7-day series use fixed UTC hourly buckets, semantic Responses completion, explicit unavailable rates after dropped observations, and grouped Provider/model remainders.
+
+Changing the preferred provider or a priority weight affects new requests. Requests already in flight keep the complete provider snapshot, including model policy, with which they started. In `passthrough` mode CRP preserves the client model; in `override` mode it replaces only the top-level JSON `model` value with that candidate's configured model. Explicit preference changes hot-apply a new weighted snapshot to a running Worker and start a stopped Worker; weight changes use a dedicated hot-apply route without changing the preferred provider. An eligible provider cannot be edited or deleted while the Worker is running, which prevents the runtime pool from retaining removed profiles or old credentials. A failed live compatibility probe is reported but does not invalidate that running snapshot. Initial selection remains a first-wins compare-and-set while the Worker is stopped.
 
 Proxy pass-through streams request and response bytes with backpressure and does not auto-decompress request bodies. Model override performs a bounded 8 MiB JSON transformation, preserves gzip, deflate, Brotli, and native zstd encoding when possible, and removes stale body-integrity/signature headers after a rewrite. On Node versions without native zstd compression, a verified single-frame zstd override is forwarded as identity after rewriting; zstd frames that cannot be safely inspected remain byte-exact pass-through for non-override traffic. Client cancellation stops the corresponding upstream work.
 
-Optional Capture stores at most 1 MiB for each request and response body while retaining the total observed byte count. When configured protected values exist, truncated bodies, declared or detected compressed bodies, and bodies containing literal or recoverably encoded protected values are stored as `empty-truncated`; fully screened text/binary records still use explicit UTF-8/base64 encoding. Configured API keys and extra-header values are removed from captured headers, bodies, URL/ID metadata, and debug logs. Buffered Metrics body inspection is independently bounded to 8 MiB, SSE inspection is incremental with bounded events, and neither path enables Capture.
+Optional Capture stores at most 1 MiB for each request and response body internally while retaining the total observed byte count. The Forwarding Records API deliberately projects metadata only. When configured protected values exist, truncated bodies, declared or detected compressed bodies, and bodies containing literal or recoverably encoded protected values are stored as `empty-truncated`; fully screened text/binary records still use explicit UTF-8/base64 encoding. Configured API keys and extra-header values are removed from captured headers, bodies, URL/ID metadata, and debug logs. Buffered Metrics body inspection is independently bounded to 8 MiB, SSE inspection is incremental with bounded events, and neither path enables Capture.
 
 ## Stable Codex Configuration
 
@@ -145,20 +149,20 @@ CLI-triggered compatibility tests, including `provider add --model`, request ini
 
 ## Upgrading From 0.2.2
 
-Current releases migrate the pre-supervisor flat configuration to provider-registry schema 3 on first supervisor startup. An existing valid schema-2 registry is upgraded atomically with `routingMode: "custom_only"`, so upgrading alone never redirects traffic through a ChatGPT account.
+Current releases migrate the pre-supervisor flat configuration to provider-registry schema 4 on first supervisor startup. Existing valid schema-2 and schema-3 registries are backed up and upgraded atomically; every existing provider receives the neutral default weight `100`, and existing routing/Capture settings are preserved. Schema inspection and replacement hold both the migration lock and the normal ProviderRegistry writer lock, and backup/publication directory entries are fsynced before success is reported.
 
 1. Stop the old managed proxy.
 2. Make a private backup of `~/.codex-remote-proxy/` and `~/.codex/config.toml`. Treat every backup as secret-bearing.
 3. Run `crp ui`.
 4. Review the migrated provider named `Default`, run its compatibility test, and activate it only after the test passes.
 
-Migration reads the legacy `config.json` and runtime `node/proxy-config.json` when present. It creates collision-safe, byte-exact private backups, stores the credential through the required native backend, creates an inactive and untested schema-3 provider registry in `custom_only` mode, validates the committed registry, and only then scrubs secret fields from the legacy files. Backups are retained. Schema-2 upgrade also retains a byte-exact backup and restores the original bytes if validation or publication fails.
+Migration reads the legacy `config.json` and runtime `node/proxy-config.json` when present. It creates collision-safe, byte-exact private backups, stores the credential through the required native backend, creates an inactive and untested schema-4 provider registry in `custom_only` mode with weight `100`, validates the committed registry, and only then scrubs secret fields from the legacy files. Backups are retained. Schema-2/schema-3 upgrades also retain byte-exact backups and restore the original bytes if validation or publication fails.
 
 If the legacy sources contain different credentials, migration returns `MIGRATION_INPUT_INVALID` before creating backups, accessing credential storage, writing the registry, or changing either source. CRP never chooses one credential automatically; resolve the conflict only through an operator-reviewed real-home migration.
 
 If a transaction fails before commit, CRP attempts to restore the original bytes and remove only registry and credential state that the transaction can prove it owns. It never deletes a foreign replacement. A `MIGRATION_COMMITTED_DEGRADED`, `MIGRATION_COMMITTED_LOCK_DEGRADED`, or `MIGRATION_ROLLBACK_DEGRADED` result means the final state is uncertain or needs repair: stop CRP, do not repeatedly retry, preserve the backups, and review the sanitized Activity error code before changing files. Automatic restoration from a backup is intentionally not attempted in a degraded state.
 
-Rollback to `0.2.2` is not a schema downgrade. Stop CRP first and restore the complete private pre-upgrade backup as one unit; do not copy a secret back into only one legacy file or mix schema-3 registry state with flat configuration. Real-home migration and rollback remain L3 operations and require platform-specific review.
+Rollback to `0.2.2` is not a schema downgrade. Stop CRP first and restore the complete private pre-upgrade backup as one unit; do not copy a secret back into only one legacy file or mix schema-4 registry state with flat configuration. Real-home migration and rollback remain L3 operations and require platform-specific review.
 
 ## Development
 
@@ -200,7 +204,7 @@ Tests use temporary homes, synthetic credentials, injected adapters, and loopbac
 
 The serial `core-chain` gate exercises the real CLI, Admin server, registry/provider service, WorkerManager, forked proxy worker, fixed ports, provider switching with an in-flight request, restart, shutdown, and secret scans. It deliberately substitutes an in-memory credential adapter and loopback upstreams, so it does not prove native credential access or a real external provider.
 
-Final M2E/V8 local verification passes exact `npm test` 463/463 (`412` unit-core + `8` isolated capture + `42` ordinary integration + `1` serial core-chain), Metrics storage focus 6/6, lint across 33 source files, UI typecheck/build/exact three-file verification, package-content 3/3 against the exact 33-file allowlist, Chromium 33/33 including the English/Chinese 1440/1024/390 responsive matrix, full and runtime audits with zero vulnerabilities, and same-state visual comparison recorded in `design-qa.md`. No deterministic gate is allowed to claim real Codex history, credentials, or an external provider; the earlier local macOS D2 native-Keychain/real-upstream result remains historical evidence for its reviewed tree.
+Release evidence must include lint, UI typecheck/build/exact three-file verification, the deterministic Node suite, Chromium English/Chinese responsive coverage, the exact package-content allowlist, runtime audit, and the visual comparison recorded in `design-qa.md`. Deterministic fixtures do not claim real Codex history, native credentials, login-start execution, or an external provider; those remain platform/human gates for the reviewed release tree.
 
 Supervisor discovery uses a bounded 2-second liveness probe while normal Admin operations use a separate 30-second timeout, so a successful provider test is not misreported as `SUPERVISOR_UNAVAILABLE`. Proxy targets are joined structurally, so base URLs with or without a trailing slash produce one path separator.
 

@@ -50,6 +50,7 @@ type ProvidersProps = {
   pending: string | null;
   onCreate: (input: ProviderInput, credential: string) => Promise<Provider | null>;
   onUpdate: (id: string, input: ProviderInput, replacement?: string) => Promise<Provider | null>;
+  onWeight: (id: string, weight: number) => Promise<boolean>;
   onTest: (id: string, model: string, switchAfter: boolean, activateIfNone?: boolean) => Promise<boolean>;
   onActivate: (id: string) => Promise<boolean>;
   onDelete: (id: string) => Promise<boolean>;
@@ -87,6 +88,9 @@ function validateProviderInput(
   t: Translator
 ): { input?: ProviderInput; error?: string } {
   if (values.name.trim().length === 0) return { error: t("providers.invalidForm") };
+  if (!Number.isInteger(values.weight) || values.weight < 1 || values.weight > 1_000) {
+    return { error: t("providers.invalidWeight") };
+  }
   let parsed: URL;
   try {
     parsed = new URL(values.baseUrl);
@@ -117,6 +121,7 @@ function validateProviderInput(
       authHeader: values.authHeader.trim() || "authorization",
       authScheme: values.authScheme.trim(),
       extraHeaders,
+      weight: values.weight,
       modelMode: values.modelMode,
       modelOverride: values.modelMode === "override" ? values.modelOverride?.trim() || null : null
     }
@@ -153,6 +158,7 @@ function ProviderForm({
   const [name, setName] = useState(initialName ?? provider?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "https://");
   const [credential, setCredential] = useState("");
+  const [weight, setWeight] = useState(provider?.weight ?? 100);
   const [advanced, setAdvanced] = useState(false);
   const [authHeader, setAuthHeader] = useState(provider?.authHeader ?? "authorization");
   const [authScheme, setAuthScheme] = useState(provider?.authScheme ?? "Bearer");
@@ -172,6 +178,7 @@ function ProviderForm({
       authHeader,
       authScheme,
       extraHeadersText,
+      weight,
       modelMode,
       modelOverride
     }, t);
@@ -205,6 +212,20 @@ function ProviderForm({
           onChange={(event) => setBaseUrl(event.target.value)}
           inputMode="url"
           spellCheck={false}
+          required
+        />
+        <Field
+          id="provider-weight"
+          name="weight"
+          label={t("providers.weight")}
+          help={t(editing ? "providers.weightEditHelp" : "providers.weightHelp")}
+          value={weight}
+          onChange={(event) => setWeight(Number(event.target.value))}
+          type="number"
+          min={1}
+          max={1_000}
+          step={1}
+          disabled={editing}
           required
         />
         <Field
@@ -291,6 +312,7 @@ export function ProvidersPage({
   pending,
   onCreate,
   onUpdate,
+  onWeight,
   onTest,
   onActivate,
   onDelete,
@@ -305,6 +327,7 @@ export function ProvidersPage({
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [model, setModel] = useState("");
   const selected = providers.find((provider) => provider.id === selectedId);
+  const selectedPoolLocked = workerRunning && selected?.lastTestStatus === "passed";
 
   const duplicateName = (provider: Provider): string => {
     const occupied = new Set(providers.map((item) => item.name.toLocaleLowerCase()));
@@ -401,6 +424,7 @@ export function ProvidersPage({
           {providers.map((provider) => {
             const active = provider.id === activeProviderId;
             const eligible = provider.lastTestStatus === "passed" && provider.credentialConfigured;
+            const poolLocked = workerRunning && provider.lastTestStatus === "passed";
             return (
               <article
                 key={provider.id}
@@ -413,13 +437,47 @@ export function ProvidersPage({
                     <h2>{provider.name}</h2>
                     <code>{provider.baseUrl}</code>
                   </div>
-                  {active ? <StatusBadge tone="success"><Check aria-hidden="true" />{t("common.current")}</StatusBadge> : null}
+                  {active ? <StatusBadge tone="success"><Check aria-hidden="true" />{t("providers.preferred")}</StatusBadge> : null}
                 </header>
                 <dl className="provider-card-facts">
                   <div><dt>{t("providers.testStatus")}</dt><dd><StatusBadge tone={testTone(provider.lastTestStatus)}>{testLabel(provider, t)}</StatusBadge></dd></div>
                   <div><dt>{t("providers.lastTest")}</dt><dd>{provider.lastTestAt ? formatDate(locale, provider.lastTestAt) : t("common.none")}</dd></div>
                   <div><dt>{t("providers.modelPolicy")}</dt><dd>{modelPolicy(provider, t)}</dd></div>
                   <div><dt>{t("providers.credential")}</dt><dd>{provider.credentialConfigured ? t("common.configured") : t("common.notConfigured")}</dd></div>
+                  <div className="provider-weight-fact">
+                    <dt>{t("providers.weight")}</dt>
+                    <dd>
+                      <form
+                        className="provider-weight-form"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const field = event.currentTarget.elements.namedItem("weight") as HTMLInputElement;
+                          const weight = Number(field.value);
+                          if (Number.isInteger(weight) && weight >= 1 && weight <= 1_000) {
+                            void onWeight(provider.id, weight);
+                          }
+                        }}
+                      >
+                        <input
+                          key={`${provider.id}-${provider.weight}`}
+                          name="weight"
+                          type="number"
+                          min={1}
+                          max={1_000}
+                          step={1}
+                          defaultValue={provider.weight}
+                          aria-label={t("providers.weightNamed", { name: provider.name })}
+                          disabled={readOnly || pending !== null}
+                        />
+                        <Button
+                          className="button-small"
+                          type="submit"
+                          busy={pending === `provider-weight-${provider.id}`}
+                          disabled={readOnly || pending !== null}
+                        >{t("providers.applyWeight")}</Button>
+                      </form>
+                    </dd>
+                  </div>
                 </dl>
                 {!active && !eligible ? (
                   <p className="provider-card-reason">
@@ -572,13 +630,13 @@ export function ProvidersPage({
           <>
             <Button
               variant="danger"
-              disabled={readOnly || selected.id === activeProviderId || pending !== null}
+              disabled={readOnly || selected.id === activeProviderId || pending !== null || selectedPoolLocked}
               onClick={() => setMode("delete")}
               aria-label={t("providers.deleteNamed", { name: selected.name })}
             ><Trash2 className="icon" aria-hidden="true" />{t("providers.delete")}</Button>
             <span className="modal-footer-spacer" />
             <Button
-              disabled={readOnly || selected.id === activeProviderId || pending !== null}
+              disabled={readOnly || selected.id === activeProviderId || pending !== null || selectedPoolLocked}
               onClick={() => setMode("edit")}
               aria-label={t("providers.editNamed", { name: selected.name })}
             ><Pencil className="icon" aria-hidden="true" />{t("providers.editTitle")}</Button>
@@ -610,7 +668,10 @@ export function ProvidersPage({
         {selected ? (
           <div className="provider-detail-grid">
             {selected.id === activeProviderId ? (
-              <Notice title={t("common.current")} tone="info"><p>{t("providers.activeReason")}</p></Notice>
+              <Notice title={t("providers.preferred")} tone="info"><p>{t("providers.activeReason")}</p></Notice>
+            ) : null}
+            {selectedPoolLocked ? (
+              <Notice title={t("providers.poolLockedTitle")} tone="info"><p>{t("providers.poolLockedHelp")}</p></Notice>
             ) : null}
             <DefinitionList rows={[
               { label: t("providers.testStatus"), value: <StatusBadge tone={testTone(selected.lastTestStatus)}>{testLabel(selected, t)}</StatusBadge> },

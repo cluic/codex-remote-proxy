@@ -16,6 +16,8 @@ import { isDeepStrictEqual } from "node:util";
 
 import { CrpError } from "../shared/errors.mjs";
 import {
+  MAX_PROVIDER_WEIGHT,
+  MIN_PROVIDER_WEIGHT,
   normalizeProvider,
   validateProviderInput,
   validateStoredProvider
@@ -27,11 +29,11 @@ const FIXED_SETTINGS = Object.freeze({
   proxyHost: "127.0.0.1",
   proxyPort: 15100,
   adminHost: "127.0.0.1",
-  adminPort: 15101,
-  captureEnabled: false
+  adminPort: 15101
 });
 const DEFAULT_SETTINGS = Object.freeze({
   ...FIXED_SETTINGS,
+  captureEnabled: false,
   routingMode: "custom_only"
 });
 const DOCUMENT_FIELDS = new Set([
@@ -47,6 +49,7 @@ const EDITABLE_FIELDS = new Set([
   "authHeader",
   "authScheme",
   "extraHeaders",
+  "weight",
   "modelMode",
   "modelOverride"
 ]);
@@ -85,7 +88,7 @@ function noChange(result) {
 
 function emptyDocument() {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     activeProviderId: null,
     providers: [],
     settings: { ...DEFAULT_SETTINGS }
@@ -128,7 +131,7 @@ function validateDocument(document) {
     if (!validateExactFields(document, DOCUMENT_FIELDS)) {
       throw new Error("invalid document fields");
     }
-    if (document.schemaVersion !== 3) {
+    if (document.schemaVersion !== 4) {
       throw new Error("unsupported schema version");
     }
     if (!Array.isArray(document.providers)) {
@@ -144,6 +147,9 @@ function validateDocument(document) {
     }
     if (!ROUTING_MODE_SET.has(document.settings.routingMode)) {
       throw new Error("invalid routing mode");
+    }
+    if (typeof document.settings.captureEnabled !== "boolean") {
+      throw new Error("invalid Capture setting");
     }
     if (document.activeProviderId !== null && typeof document.activeProviderId !== "string") {
       throw new Error("invalid active provider id");
@@ -555,6 +561,30 @@ export class ProviderRegistry {
     });
   }
 
+  setProviderWeightIfCurrent(id, expectedWeight, weight) {
+    if (!Number.isInteger(expectedWeight)
+      || expectedWeight < MIN_PROVIDER_WEIGHT
+      || expectedWeight > MAX_PROVIDER_WEIGHT
+      || !Number.isInteger(weight)
+      || weight < MIN_PROVIDER_WEIGHT
+      || weight > MAX_PROVIDER_WEIGHT) {
+      throw inputError(
+        "PROVIDER_INPUT_INVALID",
+        "The provider weight is invalid.",
+        `Choose an integer from ${MIN_PROVIDER_WEIGHT} to ${MAX_PROVIDER_WEIGHT}.`
+      );
+    }
+    const timestamp = this.now();
+    return this.#commit((document) => {
+      const index = this.#getIndex(document, id);
+      const current = document.providers[index];
+      if (current.weight !== expectedWeight) return noChange(false);
+      if (expectedWeight === weight) return noChange(true);
+      document.providers[index] = { ...current, weight, updatedAt: timestamp };
+      return true;
+    });
+  }
+
   delete(id) {
     return this.#commit((document) => {
       const index = this.#getIndex(document, id);
@@ -676,6 +706,37 @@ export class ProviderRegistry {
       if (document.settings.routingMode !== expectedMode) return noChange(false);
       if (expectedMode === mode) return noChange(true);
       document.settings.routingMode = mode;
+      return true;
+    });
+  }
+
+  setCaptureEnabled(enabled) {
+    if (typeof enabled !== "boolean") {
+      throw inputError(
+        "CAPTURE_SETTING_INVALID",
+        "The Capture setting is invalid.",
+        "Choose whether forwarding metadata should be recorded."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.captureEnabled === enabled) return noChange(enabled);
+      document.settings.captureEnabled = enabled;
+      return enabled;
+    });
+  }
+
+  setCaptureEnabledIfCurrent(expectedEnabled, enabled) {
+    if (typeof expectedEnabled !== "boolean" || typeof enabled !== "boolean") {
+      throw inputError(
+        "CAPTURE_SETTING_INVALID",
+        "The Capture setting is invalid.",
+        "Choose whether forwarding metadata should be recorded."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.captureEnabled !== expectedEnabled) return noChange(false);
+      if (expectedEnabled === enabled) return noChange(true);
+      document.settings.captureEnabled = enabled;
       return true;
     });
   }

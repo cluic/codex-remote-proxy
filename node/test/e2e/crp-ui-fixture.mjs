@@ -283,6 +283,7 @@ function publicProvider(input = {}, index = 0) {
     authHeader: input.authHeader ?? "authorization",
     authScheme: input.authScheme ?? "Bearer",
     extraHeaders: input.extraHeaders ?? {},
+    weight: input.weight ?? 100,
     modelMode: input.modelMode ?? "passthrough",
     modelOverride: input.modelOverride ?? null,
     lastTestAt: Object.hasOwn(input, "lastTestAt") ? input.lastTestAt : now,
@@ -322,6 +323,79 @@ function createServices({ upstream }) {
     testFailureCode: null,
     nextMutationError: null,
     routingMode: "custom_only",
+    captureEnabled: true,
+    autoStartEnabled: false,
+    forwardingRecords: [
+      {
+        id: 3,
+        startedAt: "2026-07-13T08:42:00.000Z",
+        completedAt: "2026-07-13T08:42:01.240Z",
+        durationMs: 1_240,
+        requestId: "req-fixture-3",
+        sessionId: "session-fixture",
+        threadId: "thread-fixture",
+        method: "POST",
+        incomingUrl: "/v1/responses",
+        targetUrl: "https://chatgpt.com/backend-api/codex/responses",
+        requestBytes: 1_280,
+        responseStatus: 200,
+        responseBytes: 18_420,
+        stream: true,
+        upstreamRequestId: "chatgpt-upstream-3",
+        errorType: null,
+        errorMessage: null,
+        outcome: "success",
+        providerId: "chatgpt-account",
+        providerName: "ChatGPT",
+        route: "account"
+      },
+      {
+        id: 2,
+        startedAt: "2026-07-13T08:39:00.000Z",
+        completedAt: "2026-07-13T08:39:00.420Z",
+        durationMs: 420,
+        requestId: "req-fixture-2",
+        sessionId: null,
+        threadId: "thread-fixture",
+        method: "POST",
+        incomingUrl: "/responses",
+        targetUrl: "https://fallback.example/v1/responses",
+        requestBytes: 940,
+        responseStatus: 429,
+        responseBytes: 210,
+        stream: false,
+        upstreamRequestId: null,
+        errorType: null,
+        errorMessage: null,
+        outcome: "rejected",
+        providerId: "provider-2",
+        providerName: "Fallback API",
+        route: "custom"
+      },
+      {
+        id: 1,
+        startedAt: "2026-07-13T08:35:00.000Z",
+        completedAt: "2026-07-13T08:35:00.080Z",
+        durationMs: 80,
+        requestId: "req-fixture-1",
+        sessionId: null,
+        threadId: null,
+        method: "POST",
+        incomingUrl: "/v1/responses",
+        targetUrl: "https://fallback.example/v1/responses",
+        requestBytes: 760,
+        responseStatus: 502,
+        responseBytes: 96,
+        stream: false,
+        upstreamRequestId: null,
+        errorType: "proxy_upstream_error",
+        errorMessage: "connection refused",
+        outcome: "error",
+        providerId: "provider-2",
+        providerName: "Fallback API",
+        route: "custom"
+      }
+    ],
     account: {
       phase: "ready",
       authMode: "chatgpt",
@@ -462,6 +536,22 @@ function createServices({ upstream }) {
         })
       });
       addActivity("provider", "update", id);
+      return structuredClone(provider);
+    },
+    async setProviderWeight(id, weight) {
+      rejectNextMutation("setProviderWeight");
+      const provider = state.providers.find((item) => item.id === id);
+      if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
+      assert.ok(Number.isInteger(weight) && weight >= 1 && weight <= 1_000);
+      provider.weight = weight;
+      provider.updatedAt = "2026-07-13T08:31:00.000Z";
+      if (state.worker.phase === "running") {
+        state.generation += 1;
+        state.worker.generation = state.generation;
+        if (state.worker.state) state.worker.state.generation = state.generation;
+      }
+      calls.push({ operation: "setProviderWeight", id, weight });
+      addActivity("provider", "weight", id);
       return structuredClone(provider);
     },
     async deleteProvider(id) {
@@ -737,6 +827,30 @@ function createServices({ upstream }) {
         return response;
       }
     },
+    forwardingRecordsService: {
+      list({ limit, before, outcome, search }) {
+        calls.push({ operation: "getForwardingRecords", limit, before, outcome, search });
+        let records = state.forwardingRecords;
+        if (before !== null) records = records.filter((record) => record.id < before);
+        if (outcome !== "all") records = records.filter((record) => record.outcome === outcome);
+        if (search) {
+          const query = search.toLowerCase();
+          records = records.filter((record) => JSON.stringify(record).toLowerCase().includes(query));
+        }
+        const page = records.slice(0, limit);
+        return {
+          storageState: "ready",
+          records: structuredClone(page),
+          page: { limit, nextBefore: records.length > limit ? page.at(-1)?.id ?? null : null },
+          summary: {
+            total: state.forwardingRecords.length,
+            success: state.forwardingRecords.filter((record) => record.outcome === "success").length,
+            rejected: state.forwardingRecords.filter((record) => record.outcome === "rejected").length,
+            error: state.forwardingRecords.filter((record) => record.outcome === "error").length
+          }
+        };
+      }
+    },
     requestSupervisorShutdown() {
       calls.push({
         operation: "shutdownSupervisor",
@@ -752,23 +866,39 @@ function createServices({ upstream }) {
           proxyPort: 15100,
           adminHost: "127.0.0.1",
           adminPort: 15101,
-          captureEnabled: false,
+          captureEnabled: state.captureEnabled,
           routingMode: state.routingMode,
-          credentialBackend: "native"
+          credentialBackend: "native",
+          autoStartSupported: true,
+          autoStartEnabled: state.autoStartEnabled,
+          autoStartState: state.autoStartEnabled ? "enabled" : "disabled",
+          autoStartPlatform: "darwin"
         };
       },
       async updateSettings(patch) {
         rejectNextMutation("updateSettings");
-        assert.deepEqual(Object.keys(patch), ["routingMode"]);
-        assert.ok(patch.routingMode === "custom_only" || patch.routingMode === "account_first");
-        state.routingMode = patch.routingMode;
-        if (state.worker.phase === "running") {
-          state.generation += 1;
-          state.worker.generation = state.generation;
-          if (state.worker.state) state.worker.state.generation = state.generation;
+        assert.equal(Object.keys(patch).length, 1);
+        if (Object.hasOwn(patch, "routingMode")) {
+          assert.ok(patch.routingMode === "custom_only" || patch.routingMode === "account_first");
+          state.routingMode = patch.routingMode;
+          if (state.worker.phase === "running") {
+            state.generation += 1;
+            state.worker.generation = state.generation;
+            if (state.worker.state) state.worker.state.generation = state.generation;
+          }
+          calls.push({ operation: "updateRoutingMode", mode: state.routingMode });
+          addActivity("settings", "routing-mode", null);
+        } else if (Object.hasOwn(patch, "captureEnabled")) {
+          assert.equal(typeof patch.captureEnabled, "boolean");
+          state.captureEnabled = patch.captureEnabled;
+          calls.push({ operation: "updateCapture", enabled: state.captureEnabled });
+          addActivity("settings", "capture", null);
+        } else {
+          assert.equal(typeof patch.autoStartEnabled, "boolean");
+          state.autoStartEnabled = patch.autoStartEnabled;
+          calls.push({ operation: "updateAutoStart", enabled: state.autoStartEnabled });
+          addActivity("settings", "autostart", null);
         }
-        calls.push({ operation: "updateRoutingMode", mode: state.routingMode });
-        addActivity("settings", "routing-mode", null);
         return await this.getSettings();
       }
     },
@@ -1481,6 +1611,7 @@ export async function assertLayoutIntegrity(page) {
     const candidates = Array.from(document.querySelectorAll(
       "h1, h2, h3, button, input, select, textarea, label, .setup-eyebrow, "
         + ".page-header > *, .runtime-facts > *, .metric-card, .section-heading > *, "
+        + ".overview-command-bar > *, .overview-panel-header > *, .overview-summary-panel > *, "
         + ".provider-card-header > *, .provider-card-actions > *, .activity-event summary > *, "
         + ".setup-progress li, .setup-stage-actions > *, .pagination > *, .topbar-actions > *, "
         + ".modal-footer > *"

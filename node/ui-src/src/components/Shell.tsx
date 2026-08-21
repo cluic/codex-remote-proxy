@@ -27,7 +27,7 @@ import { Button, IconButton, Modal, Notice, StatusBadge, cx } from "./Primitives
 const navConfig = [
   { route: "overview" as const, key: "nav.overview" as const, icon: CircleGauge },
   { route: "providers" as const, key: "nav.providers" as const, icon: Boxes },
-  { route: "forwarding" as const, key: "nav.forwarding" as const, icon: FileClock, disabled: true },
+  { route: "forwarding" as const, key: "nav.forwarding" as const, icon: FileClock },
   { route: "activity" as const, key: "nav.activity" as const, icon: Activity },
   { route: "system" as const, key: "nav.system" as const, icon: ServerCog }
 ];
@@ -35,6 +35,7 @@ const navConfig = [
 const routeTitleKeys: Record<Route, TranslationKey> = {
   overview: "nav.overview",
   providers: "nav.providers",
+  forwarding: "nav.forwarding",
   activity: "nav.activity",
   system: "nav.system",
   setup: "setup.title"
@@ -265,22 +266,6 @@ export function Shell({
         <nav className="sidebar-nav" aria-label={t("nav.label")}>
           {navConfig.map((item) => {
             const Icon = item.icon;
-            if (item.disabled) {
-              return (
-                <div
-                  key={item.route}
-                  className="nav-item nav-item-disabled"
-                  role="link"
-                  aria-disabled="true"
-                  aria-label={`${t(item.key)}, ${t("nav.comingSoon")}`}
-                  data-testid="nav-forwarding-records"
-                >
-                  <Icon aria-hidden="true" />
-                  <span>{t(item.key)}</span>
-                  <span className="nav-coming-soon">{t("nav.comingSoon")}</span>
-                </div>
-              );
-            }
             const enabledRoute = item.route as Route;
             const selected = route === enabledRoute;
             return (
@@ -288,6 +273,7 @@ export function Shell({
                 key={enabledRoute}
                 className={cx("nav-item", selected && "nav-item-current")}
                 href={`/${enabledRoute}`}
+                data-testid={enabledRoute === "forwarding" ? "nav-forwarding-records" : undefined}
                 aria-current={selected ? "page" : undefined}
                 onClick={(event) => { event.preventDefault(); navigate(enabledRoute); }}
               >
@@ -411,7 +397,9 @@ export function Shell({
               <Menu aria-hidden="true" />
             </IconButton>
             <div>
-              <strong>{t(routeTitleKeys[route])}</strong>
+              {route === "overview"
+                ? <h1>{t(routeTitleKeys[route])}</h1>
+                : <strong>{t(routeTitleKeys[route])}</strong>}
               <span>127.0.0.1:15101 · {t("brand.console")}</span>
             </div>
           </div>
@@ -446,7 +434,11 @@ export function Shell({
             </IconButton>
           </div>
         ) : null}
-        <main id="main-content" className="main-content" tabIndex={-1}>
+        <main
+          id="main-content"
+          className={cx("main-content", route === "overview" && "main-content-overview")}
+          tabIndex={-1}
+        >
           {children}
         </main>
       </div>

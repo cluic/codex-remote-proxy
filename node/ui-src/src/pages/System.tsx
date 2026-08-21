@@ -1,4 +1,18 @@
-import { FileJson, LockKeyhole, RefreshCw, Settings2, ShieldCheck } from "lucide-react";
+import {
+  Database,
+  FileJson,
+  KeyRound,
+  LockKeyhole,
+  Network,
+  Power,
+  RefreshCw,
+  Route,
+  Server,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  TriangleAlert
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -36,6 +50,7 @@ type SystemProps = {
   onGenerateDiagnostics: () => Promise<DiagnosticResult | null>;
   onRefreshAccount: () => void;
   onRoutingModeChange: (mode: "custom_only" | "account_first") => void;
+  onAutoStartChange: (enabled: boolean) => void;
 };
 
 function storageLabel(state: MetricsOverview["storageState"] | null, t: Translator): string {
@@ -45,10 +60,11 @@ function storageLabel(state: MetricsOverview["storageState"] | null, t: Translat
   return t("common.unknown");
 }
 
-function quotaWindowLabel(minutes: number | null, kind: "primary" | "secondary", t: Translator): string {
-  if (minutes === 300) return t("system.quota5h");
-  if (minutes === 10_080) return t("system.quota7d");
-  return kind === "primary" ? t("system.quotaPrimary") : t("system.quotaSecondary");
+function platformLabel(platform: string | null, t: Translator): string {
+  if (platform === "darwin") return t("system.platformDarwin");
+  if (platform === "linux") return t("system.platformLinux");
+  if (platform === "win32") return t("system.platformWin32");
+  return platform ?? t("common.unknown");
 }
 
 export function SystemPage({
@@ -63,16 +79,23 @@ export function SystemPage({
   onPrepareCodex,
   onGenerateDiagnostics,
   onRefreshAccount,
-  onRoutingModeChange
+  onRoutingModeChange,
+  onAutoStartChange
 }: SystemProps) {
   const [prepareOpen, setPrepareOpen] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BootstrapResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticResult | null>(null);
   const [routingSelection, setRoutingSelection] = useState(settings.routingMode);
+  const [autoStartSelection, setAutoStartSelection] = useState(settings.autoStartEnabled);
   useEffect(() => {
     if (pending !== "routing-mode") setRoutingSelection(settings.routingMode);
   }, [pending, settings.routingMode]);
+  useEffect(() => {
+    if (pending !== "autostart-setting") setAutoStartSelection(settings.autoStartEnabled);
+  }, [pending, settings.autoStartEnabled]);
+
   const workerRunning = status.worker?.phase === "running" && status.worker.state?.listening === true;
+  const mutationsDisabled = readOnly || pending !== null;
   const prepare = async () => {
     setPrepareOpen(false);
     const result = await onPrepareCodex();
@@ -100,128 +123,160 @@ export function SystemPage({
       ? t("system.accountApiKey")
       : t("system.accountUnknown");
   const accountFirst = routingSelection === "account_first";
+  const autoStartDescription = !settings.autoStartSupported
+    ? t("system.autoStartUnavailable")
+    : settings.autoStartState === "conflict"
+      ? t("system.autoStartConflict")
+      : settings.autoStartState === "stale"
+        ? t("system.autoStartStale")
+        : autoStartSelection
+          ? t("system.autoStartOn")
+          : t("system.autoStartOff");
 
   return (
-    <div className="page-stack" data-testid="page-system">
+    <div className="page-stack system-page" data-testid="page-system">
       <PageHeader title={t("system.title")} subtitle={t("system.subtitle")} />
-      <div className="system-grid">
-        <Panel>
-          <PanelHeader title={t("system.runtime")} description={t("system.runtimeHelp")} />
-          <div className="panel-content">
-            <DefinitionList rows={[
-              { label: t("system.adminAddress"), value: <code>{adminAddress}</code> },
-              { label: t("system.proxyAddress"), value: <code>{proxyAddress}</code> },
-              { label: t("system.managementService"), value: <StatusBadge tone="success">{t("common.connected")}</StatusBadge> },
-              { label: t("system.proxyWorker"), value: <StatusBadge tone={workerRunning ? "success" : "neutral"}>{workerRunning ? t("common.running") : t("common.stopped")}</StatusBadge> },
-              { label: t("system.activeProvider"), value: activeProvider?.name ?? t("common.none") },
-              { label: t("system.credentialBackend"), value: settings.credentialBackend === "native" ? t("system.native") : settings.credentialBackend ?? t("common.unknown") },
-              {
-                label: t("system.metricsStorage"),
-                value: (
-                  <StatusBadge tone={metrics?.storageState === "ready" ? "success" : metrics ? "warning" : "neutral"}>
-                    {storageLabel(metrics?.storageState ?? null, t)}
-                  </StatusBadge>
-                )
-              }
-            ]} />
-          </div>
-        </Panel>
-        <div className="system-tools">
+
+      <section className="system-health-grid" aria-label={t("system.health")}>
+        <article className="system-health-fact">
+          <span className="system-health-icon"><Network aria-hidden="true" /></span>
+          <div><span>{t("system.managementService")}</span><StatusBadge tone="success">{t("common.connected")}</StatusBadge></div>
+        </article>
+        <article className="system-health-fact">
+          <span className="system-health-icon"><Server aria-hidden="true" /></span>
+          <div><span>{t("system.proxyWorker")}</span><StatusBadge tone={workerRunning ? "success" : "neutral"}>{workerRunning ? t("common.running") : t("common.stopped")}</StatusBadge></div>
+        </article>
+        <article className="system-health-fact">
+          <span className="system-health-icon"><Route aria-hidden="true" /></span>
+          <div><span>{t("system.activeProvider")}</span><strong>{activeProvider?.name ?? t("common.none")}</strong></div>
+        </article>
+        <article className="system-health-fact">
+          <span className="system-health-icon"><ShieldCheck aria-hidden="true" /></span>
+          <div><span>{t("system.codexTitle")}</span><StatusBadge tone={status.codex.configured ? "success" : "warning"}>{status.codex.configured ? t("common.configured") : t("common.notConfigured")}</StatusBadge></div>
+        </article>
+      </section>
+
+      <div className="system-workspace">
+        <div className="system-main-column">
           <Panel>
-            <PanelHeader
-              title={t("system.accountTitle")}
-              description={t("system.accountHelp")}
-              action={(
-                <IconButton
-                  label={t("system.refreshAccount")}
-                  disabled={readOnly || pending !== null}
-                  onClick={onRefreshAccount}
-                >
-                  <RefreshCw
-                    className={pending === "account-refresh" ? "spin" : undefined}
-                    aria-hidden="true"
+            <PanelHeader title={t("system.preferences")} description={t("system.preferencesHelp")} />
+            <div className="system-settings-list">
+              <div className="system-setting-row">
+                <span className="system-setting-icon"><Power aria-hidden="true" /></span>
+                <span className="system-setting-copy">
+                  <strong>{t("system.autoStart")}</strong>
+                  <small>{autoStartDescription}</small>
+                  {settings.autoStartSupported ? (
+                    <small className="system-setting-meta">{t("system.autoStartPlatform", {
+                      platform: platformLabel(settings.autoStartPlatform, t)
+                    })}</small>
+                  ) : null}
+                </span>
+                <label className="system-switch-control">
+                  <span className="visually-hidden">{t("system.autoStart")}</span>
+                  <input
+                    type="checkbox"
+                    checked={autoStartSelection}
+                    disabled={mutationsDisabled || !settings.autoStartSupported
+                      || settings.autoStartState === "conflict"}
+                    onChange={(event) => {
+                      setAutoStartSelection(event.target.checked);
+                      onAutoStartChange(event.target.checked);
+                    }}
                   />
-                </IconButton>
-              )}
-            />
-            <div className="panel-content account-panel-content">
-              <div className="account-summary">
-                <StatusBadge tone={accountTone}>{accountLabel}</StatusBadge>
-                {account.planType ? <span className="account-plan">{account.planType}</span> : null}
+                  <span className="switch-track" aria-hidden="true"><span /></span>
+                </label>
               </div>
-              <DefinitionList rows={[
-                { label: t("system.authMode"), value: account.authMode ?? t("common.unknown") },
-                {
-                  label: t("system.quotaStatus"),
-                  value: account.quota?.status === "available"
-                    ? t("system.quotaAvailable")
-                    : account.quota?.status === "exhausted"
-                      ? t("system.quotaExhausted")
-                      : account.quotaSupported === false
-                        ? t("system.quotaUnsupported")
-                        : t("common.unknown")
-                },
-                { label: t("system.accountUpdated"), value: formatDate(locale, account.updatedAt, true) }
-              ]} />
-              {account.quota?.windows.length ? (
-                <div className="quota-window-list">
-                  {account.quota.windows.map((window) => {
-                    const label = quotaWindowLabel(window.windowDurationMins, window.kind, t);
-                    const resetAt = window.resetsAt === null
-                      ? null
-                      : new Date(window.resetsAt * 1_000).toISOString();
-                    return (
-                      <div className="quota-window" key={`${window.kind}-${window.windowDurationMins ?? "unknown"}`}>
-                        <div className="quota-window-heading">
-                          <span>{label}</span>
-                          <strong>{t("system.quotaRemaining", { value: window.remainingPercent })}</strong>
-                        </div>
-                        <progress
-                          max={100}
-                          value={window.remainingPercent}
-                          aria-label={`${label}: ${t("system.quotaRemaining", { value: window.remainingPercent })}`}
-                        />
-                        <small>{resetAt
-                          ? t("system.quotaResets", { value: formatDate(locale, resetAt, true) })
-                          : t("system.quotaResetUnknown")}</small>
-                      </div>
-                    );
-                  })}
+              {settings.autoStartState === "stale" ? (
+                <div className="system-setting-warning" role="status">
+                  <TriangleAlert aria-hidden="true" />
+                  <span>{t("system.autoStartStale")}</span>
+                  <div>
+                    <Button
+                      variant="primary"
+                      disabled={mutationsDisabled}
+                      onClick={() => {
+                        setAutoStartSelection(true);
+                        onAutoStartChange(true);
+                      }}
+                    >{t("system.autoStartRepair")}</Button>
+                    <Button
+                      variant="ghost"
+                      disabled={mutationsDisabled}
+                      onClick={() => {
+                        setAutoStartSelection(false);
+                        onAutoStartChange(false);
+                      }}
+                    >{t("system.autoStartRemove")}</Button>
+                  </div>
                 </div>
               ) : null}
-              {account.errorCode ? <code className="account-error-code">{account.errorCode}</code> : null}
-              <label className="routing-switch">
-                <input
-                  type="checkbox"
-                  checked={accountFirst}
-                  disabled={readOnly || pending !== null}
-                  onChange={(event) => {
-                    const mode = event.target.checked ? "account_first" : "custom_only";
-                    setRoutingSelection(mode);
-                    onRoutingModeChange(mode);
-                  }}
-                />
-                <span className="switch-track" aria-hidden="true"><span /></span>
-                <span className="routing-switch-copy">
+              {settings.autoStartState === "conflict" ? (
+                <div className="system-setting-warning" role="status">
+                  <TriangleAlert aria-hidden="true" />
+                  <span>{t("system.autoStartConflict")}</span>
+                </div>
+              ) : null}
+              <div className="system-setting-row">
+                <span className="system-setting-icon"><Sparkles aria-hidden="true" /></span>
+                <span className="system-setting-copy">
                   <strong>{t("system.accountFirst")}</strong>
                   <small>{t(accountFirst ? "system.accountFirstOn" : "system.accountFirstOff")}</small>
                 </span>
-              </label>
+                <label className="system-switch-control">
+                  <span className="visually-hidden">{t("system.accountFirst")}</span>
+                  <input
+                    type="checkbox"
+                    checked={accountFirst}
+                    disabled={mutationsDisabled}
+                    onChange={(event) => {
+                      const mode = event.target.checked ? "account_first" : "custom_only";
+                      setRoutingSelection(mode);
+                      onRoutingModeChange(mode);
+                    }}
+                  />
+                  <span className="switch-track" aria-hidden="true"><span /></span>
+                </label>
+              </div>
+              <div className="system-account-row">
+                <span className="system-setting-icon"><KeyRound aria-hidden="true" /></span>
+                <div>
+                  <span className="system-account-heading">
+                    <StatusBadge tone={accountTone}>{accountLabel}</StatusBadge>
+                    {account.planType ? <strong>{account.planType}</strong> : null}
+                  </span>
+                  <small>{t("system.accountUpdated")}: {formatDate(locale, account.updatedAt, true)}</small>
+                  {account.errorCode ? <code>{account.errorCode}</code> : null}
+                </div>
+                <IconButton
+                  label={t("system.refreshAccount")}
+                  disabled={mutationsDisabled}
+                  onClick={onRefreshAccount}
+                >
+                  <RefreshCw className={pending === "account-refresh" ? "spin" : undefined} aria-hidden="true" />
+                </IconButton>
+              </div>
             </div>
           </Panel>
+
           <Panel>
             <PanelHeader
               title={t("system.codexTitle")}
               description={status.codex.configured ? t("system.codexReady") : t("system.codexNotReady")}
             />
-            <div className="panel-content system-tool-body">
+            <div className="panel-content system-codex-body">
               <div className="system-tool-status">
                 <StatusBadge tone={status.codex.configured ? "success" : "warning"}>
-                  <ShieldCheck aria-hidden="true" />
                   {status.codex.configured ? t("common.configured") : t("common.notConfigured")}
                 </StatusBadge>
                 <code>{status.codex.modelProvider ?? "OpenAI"} · {status.codex.proxyUrl ?? "http://127.0.0.1:15100"}</code>
               </div>
+              <Button
+                variant="primary"
+                disabled={mutationsDisabled}
+                busy={pending === "codex-bootstrap"}
+                onClick={() => setPrepareOpen(true)}
+              ><Settings2 className="icon" aria-hidden="true" />{t("system.prepare")}</Button>
               {bootstrapResult ? (
                 <Notice title={t("system.historyRepair")} tone="success">
                   <p>{bootstrapResult.historyRepair.required
@@ -229,17 +284,33 @@ export function SystemPage({
                     : t("system.historyRepairNotNeeded")}</p>
                 </Notice>
               ) : null}
-              <Button
-                variant="primary"
-                disabled={readOnly || pending !== null}
-                busy={pending === "codex-bootstrap"}
-                onClick={() => setPrepareOpen(true)}
-              ><Settings2 className="icon" aria-hidden="true" />{t("system.prepare")}</Button>
             </div>
           </Panel>
+        </div>
+
+        <div className="system-side-column">
+          <Panel>
+            <PanelHeader title={t("system.runtime")} description={t("system.runtimeHelp")} />
+            <div className="panel-content">
+              <DefinitionList rows={[
+                { label: t("system.adminAddress"), value: <code>{adminAddress}</code> },
+                { label: t("system.proxyAddress"), value: <code>{proxyAddress}</code> },
+                { label: t("system.credentialBackend"), value: settings.credentialBackend === "native" ? t("system.native") : settings.credentialBackend ?? t("common.unknown") },
+                {
+                  label: t("system.metricsStorage"),
+                  value: (
+                    <StatusBadge tone={metrics?.storageState === "ready" ? "success" : metrics ? "warning" : "neutral"}>
+                      {storageLabel(metrics?.storageState ?? null, t)}
+                    </StatusBadge>
+                  )
+                }
+              ]} />
+            </div>
+          </Panel>
+
           <Panel>
             <PanelHeader title={t("system.diagnostics")} description={t("system.diagnosticsHelp")} />
-            <div className="panel-content system-tool-body">
+            <div className="panel-content system-diagnostics-body">
               {diagnostics ? (
                 <div className="diagnostic-result" role="status">
                   <FileJson aria-hidden="true" />
@@ -256,14 +327,15 @@ export function SystemPage({
                 </div>
               )}
               <Button
-                disabled={readOnly || pending !== null}
+                disabled={mutationsDisabled}
                 busy={pending === "diagnostics"}
                 onClick={() => void generate()}
-              ><FileJson className="icon" aria-hidden="true" />{t("system.generate")}</Button>
+              ><Database className="icon" aria-hidden="true" />{t("system.generate")}</Button>
             </div>
           </Panel>
         </div>
       </div>
+
       <Modal
         open={prepareOpen}
         title={t("system.prepareTitle")}

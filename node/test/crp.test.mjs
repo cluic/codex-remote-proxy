@@ -593,6 +593,23 @@ test("status never starts a missing supervisor", async () => {
   assert.equal(ensureCalls, 0);
 });
 
+test("CRP_HOME selects the same CLI instance paths used by login startup", async (t) => {
+  const customHome = makeTempHome();
+  t.after(() => rmSync(customHome, { recursive: true, force: true }));
+  let observedPaths = null;
+  const result = await invokeCli(["status", "--json"], {
+    environment: { CRP_HOME: customHome, CRP_LOCALE: "en" },
+    discoverSupervisorImpl: async ({ paths }) => {
+      observedPaths = paths;
+      return null;
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(observedPaths.statePath, getPaths(customHome).statePath);
+  assert.equal(observedPaths.controlTokenPath, getPaths(customHome).controlTokenPath);
+});
+
 test("rejects legacy start options before supervisor discovery or mutation", async () => {
   const secret = "legacy-complete-secret";
   const clientCalls = [];

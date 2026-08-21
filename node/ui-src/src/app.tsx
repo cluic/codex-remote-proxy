@@ -17,6 +17,7 @@ import {
   type TranslationKey
 } from "./i18n";
 import { ActivityPage } from "./pages/Activity";
+import { ForwardingRecordsPage } from "./pages/ForwardingRecords";
 import { OverviewPage } from "./pages/Overview";
 import { ProvidersPage } from "./pages/Providers";
 import { SetupPage } from "./pages/Setup";
@@ -26,6 +27,8 @@ import type {
   ActivityPageData,
   BootstrapResult,
   DiagnosticResult,
+  ForwardingRecordsPageData,
+  ForwardingRecordsQuery,
   Locale,
   MetricsOverview,
   MetricsWindow,
@@ -44,6 +47,7 @@ const emptyActivity: ActivityPageData = {
 
 function routeFromPath(pathname: string): Route {
   if (pathname === "/providers") return "providers";
+  if (pathname === "/forwarding") return "forwarding";
   if (pathname === "/activity") return "activity";
   if (pathname === "/system") return "system";
   if (pathname === "/setup") return "setup";
@@ -305,6 +309,14 @@ export function App() {
     )
   ), [api, executeMutation]);
 
+  const updateProviderWeight = useCallback(async (id: string, weight: number): Promise<boolean> => (
+    await executeMutation(
+      `provider-weight-${id}`,
+      () => api.updateProviderWeight(id, weight),
+      "notice.providerWeightUpdated"
+    ) !== null
+  ), [api, executeMutation]);
+
   const testProvider = useCallback(async (
     id: string,
     model: string,
@@ -431,6 +443,29 @@ export function App() {
       "notice.routingUpdated"
     );
   }, [api, executeMutation]);
+
+  const updateCaptureEnabled = useCallback(async (captureEnabled: boolean): Promise<boolean> => (
+    await executeMutation(
+      "capture-setting",
+      () => api.updateCaptureEnabled(captureEnabled),
+      captureEnabled ? "notice.captureEnabled" : "notice.captureDisabled"
+    ) !== null
+  ), [api, executeMutation]);
+
+  const updateAutoStartEnabled = useCallback((autoStartEnabled: boolean) => {
+    void executeMutation(
+      "autostart-setting",
+      () => api.updateAutoStartEnabled(autoStartEnabled),
+      autoStartEnabled ? "notice.autoStartEnabled" : "notice.autoStartDisabled"
+    );
+  }, [api, executeMutation]);
+
+  const loadForwardingRecords = useCallback(async (
+    query: ForwardingRecordsQuery,
+    signal?: AbortSignal
+  ): Promise<ForwardingRecordsPageData> => (
+    await api.getForwardingRecords(query, signal)
+  ), [api]);
 
   const changeMetricsWindow = useCallback((next: MetricsWindow) => {
     metricsWindowRef.current = next;
@@ -588,6 +623,7 @@ export function App() {
           locale={locale}
           t={t}
           status={workspace.status}
+          settings={workspace.settings}
           providers={workspace.providers}
           metrics={metrics}
           metricsError={metricsError}
@@ -599,6 +635,8 @@ export function App() {
           onStart={startProxy}
           onRestart={restartProxy}
           onPrepareCodex={() => void prepareCodex()}
+          onRefreshAccount={refreshAccount}
+          onRoutingModeChange={updateRoutingMode}
         />
       ) : null}
       {route === "providers" ? (
@@ -608,7 +646,19 @@ export function App() {
           workerRunning={workspace.status.worker?.phase === "running"
             && workspace.status.worker.state?.listening === true}
           onUpdate={updateProvider}
+          onWeight={updateProviderWeight}
           onDelete={deleteProvider}
+        />
+      ) : null}
+      {route === "forwarding" ? (
+        <ForwardingRecordsPage
+          locale={locale}
+          t={t}
+          captureEnabled={workspace.settings.captureEnabled}
+          readOnly={accessMode !== "writable"}
+          pending={pending}
+          onLoad={loadForwardingRecords}
+          onCaptureChange={updateCaptureEnabled}
         />
       ) : null}
       {route === "activity" ? (
@@ -635,6 +685,7 @@ export function App() {
           onGenerateDiagnostics={generateDiagnostics}
           onRefreshAccount={refreshAccount}
           onRoutingModeChange={updateRoutingMode}
+          onAutoStartChange={updateAutoStartEnabled}
         />
       ) : null}
       {route === "setup" ? (

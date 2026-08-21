@@ -20,6 +20,9 @@ import {
   decideUpstreamRoute,
   parseCodexQuotaHeaders
 } from "./routing/account-routing.mjs";
+import {
+  ProviderScheduler
+} from "./routing/provider-scheduler.mjs";
 
 const CONFIG_ENV_VAR = "CODEX_PROXY_CONFIG";
 const DEFAULT_CONFIG_PATH = resolve(import.meta.dirname, "..", "proxy-config.json");
@@ -30,6 +33,10 @@ const CAPTURE_BODY_MAX_BYTES = 1024 * 1024;
 const MODEL_OVERRIDE_MAX_BYTES = 8 * 1024 * 1024;
 const SSE_EVENT_MAX_BYTES = METRIC_USAGE_MAX_BYTES;
 const SSE_EVENT_MAX_DATA_LINES = 16 * 1024;
+
+export function isEstablishedUpstreamSocket(socket) {
+  return socket !== null && typeof socket === "object" && socket.connecting === false;
+}
 const METRIC_MAX_MODEL_CODE_POINTS = 256;
 const METRIC_MAX_OBSERVATION_TOKENS = 100_000_000;
 const CONFIG_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
@@ -107,6 +114,21 @@ export function loadConfig(configPath = resolveConfigPath()) {
     throw new Error("upstream.apiKey is required when proxy.overrideAuthorization is true");
   }
 
+  const normalizedUpstream = {
+    baseUrl: String(upstream.baseUrl).replace(/\/$/, ""),
+    apiKey: typeof upstream.apiKey === "string" ? upstream.apiKey : "",
+    timeoutMs: Number.isFinite(upstream.timeoutMs) ? Number(upstream.timeoutMs) : 300000,
+    verifySsl: typeof upstream.verifySsl === "boolean" ? upstream.verifySsl : true,
+    authHeader: typeof upstream.authHeader === "string" && upstream.authHeader ? upstream.authHeader : "authorization",
+    authScheme: typeof upstream.authScheme === "string" ? upstream.authScheme : "Bearer",
+    extraHeaders: isStringMap(upstream.extraHeaders) ? upstream.extraHeaders : {}
+  };
+  const normalizedProxy = {
+    overrideAuthorization: typeof proxy.overrideAuthorization === "boolean" ? proxy.overrideAuthorization : true,
+    requestIdHeader: typeof proxy.requestIdHeader === "string" && proxy.requestIdHeader ? proxy.requestIdHeader : "x-client-request-id",
+    modelMode,
+    modelOverride: typeof modelOverride === "string" ? modelOverride.trim() : null
+  };
   return {
     configPath,
     server: {
@@ -114,21 +136,15 @@ export function loadConfig(configPath = resolveConfigPath()) {
       port: Number.isInteger(server.port) ? server.port : 15100,
       logLevel: typeof server.logLevel === "string" && server.logLevel ? server.logLevel : "info"
     },
-    upstream: {
-      baseUrl: String(upstream.baseUrl).replace(/\/$/, ""),
-      apiKey: typeof upstream.apiKey === "string" ? upstream.apiKey : "",
-      timeoutMs: Number.isFinite(upstream.timeoutMs) ? Number(upstream.timeoutMs) : 300000,
-      verifySsl: typeof upstream.verifySsl === "boolean" ? upstream.verifySsl : true,
-      authHeader: typeof upstream.authHeader === "string" && upstream.authHeader ? upstream.authHeader : "authorization",
-      authScheme: typeof upstream.authScheme === "string" ? upstream.authScheme : "Bearer",
-      extraHeaders: isStringMap(upstream.extraHeaders) ? upstream.extraHeaders : {}
-    },
-    proxy: {
-      overrideAuthorization: typeof proxy.overrideAuthorization === "boolean" ? proxy.overrideAuthorization : true,
-      requestIdHeader: typeof proxy.requestIdHeader === "string" && proxy.requestIdHeader ? proxy.requestIdHeader : "x-client-request-id",
-      modelMode,
-      modelOverride: typeof modelOverride === "string" ? modelOverride.trim() : null
-    },
+    providers: [{
+      id: "standalone",
+      name: "Standalone",
+      weight: 100,
+      upstream: normalizedUpstream,
+      proxy: normalizedProxy
+    }],
+    upstream: normalizedUpstream,
+    proxy: normalizedProxy,
     capture: normalizeCaptureConfig(capture, {
       baseDir: dirname(configPath),
       defaultDbPath: DEFAULT_CAPTURE_DB_PATH,
@@ -848,18 +864,39 @@ function createSseInspector() {
   };
 }
 
-function protectedHeaderValues(settings) {
-  return normalizeProtectedValues([
-    settings.upstream.apiKey,
-    ...Object.values(settings.upstream.extraHeaders)
+function configuredProviderCandidates(settings) {
+  return Array.isArray(settings.providers) && settings.providers.length > 0
+    ? settings.providers
+    : [{
+        id: "standalone",
+        name: "Standalone",
+        weight: 100,
+        upstream: settings.upstream,
+        proxy: settings.proxy
+      }];
+}
+
+function settingsForProvider(settings, provider) {
+  return {
+    ...settings,
+    upstream: provider.upstream,
+    proxy: provider.proxy
+  };
+}
+
+function providerProtectedValues(settings) {
+  return configuredProviderCandidates(settings).flatMap((provider) => [
+    provider.upstream.apiKey,
+    ...Object.values(provider.upstream.extraHeaders)
   ]);
 }
 
+function protectedHeaderValues(settings) {
+  return normalizeProtectedValues(providerProtectedValues(settings));
+}
+
 function protectedRequestValues(req, settings) {
-  const values = [
-    settings.upstream.apiKey,
-    ...Object.values(settings.upstream.extraHeaders)
-  ];
+  const values = providerProtectedValues(settings);
   for (let index = 0; index < req.rawHeaders.length; index += 2) {
     const name = req.rawHeaders[index].toLowerCase();
     if (name === "authorization" || name === "chatgpt-account-id") {
@@ -1304,6 +1341,9 @@ function buildRequestContext({
   requestId,
   requestHeaders,
   requestBody,
+  providerId,
+  providerName,
+  route,
   startedAt,
   captureHandle,
   protectedValues
@@ -1338,6 +1378,9 @@ function buildRequestContext({
       protectedValues
     ),
     targetUrl: redactProtectedUrl(targetUrl.href, protectedValues),
+    providerId,
+    providerName,
+    route,
     requestHeaders: captureHeaders,
     requestBody,
     startedAt: new Date(startedAt).toISOString(),
@@ -1359,6 +1402,9 @@ function saveCaptureRecord(captureContext, fields) {
     method: captureContext.method,
     incomingUrl: captureContext.incomingUrl,
     targetUrl: captureContext.targetUrl,
+    providerId: captureContext.providerId,
+    providerName: captureContext.providerName,
+    route: captureContext.route,
     requestHeaders: captureContext.requestHeaders,
     requestBody: captureContext.requestBody,
     requestBodyBytes: captureContext.requestBodyBytes,
@@ -1391,7 +1437,8 @@ export function createServer(settings, {
   recordMetric = () => {},
   metricNow = Date.now,
   routingNow = Date.now,
-  resolveAccountTarget = (target) => target
+  resolveAccountTarget = (target) => target,
+  providerScheduler = new ProviderScheduler({ now: routingNow })
 } = {}) {
   let accountBlockedUntilMs = null;
   return http.createServer((req, res) => {
@@ -1424,12 +1471,27 @@ export function createServer(settings, {
       });
       return;
     }
-    const requestSettings = active.settings;
-    const requestProtectedValues = protectedRequestValues(req, requestSettings);
+    const baseRequestSettings = active.settings;
+    const customCandidates = providerScheduler.ordered(
+      configuredProviderCandidates(baseRequestSettings)
+    );
+    if (customCandidates.length === 0) {
+      writeJson(res, 503, {
+        error: {
+          code: "PROVIDER_POOL_UNAVAILABLE",
+          message: "No custom provider is currently available."
+        }
+      });
+      return;
+    }
+    let customCandidateIndex = 0;
+    let currentCustomProvider = customCandidates[customCandidateIndex];
+    let requestSettings = settingsForProvider(baseRequestSettings, currentCustomProvider);
+    const requestProtectedValues = protectedRequestValues(req, baseRequestSettings);
     const requestDebugEnabled = requestSettings.server.logLevel.toLowerCase() === "debug";
     const rawRequestId = req.headers[requestSettings.proxy.requestIdHeader] || req.headers["x-request-id"] || "-";
     const requestId = redactRecoverableProtectedText(String(rawRequestId), requestProtectedValues);
-    const customTargetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
+    let customTargetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
     let accountState = requestSettings.routing?.account ?? null;
     try {
       accountState = accountStateSource?.current().state ?? accountState;
@@ -1456,7 +1518,7 @@ export function createServer(settings, {
     const startedAt = Date.now();
     const metricStartedAt = metricNow();
     const responsesRequest = isResponsesRequest(req.url);
-    const overrideModel = requestSettings.proxy.modelMode === "override"
+    let overrideModel = requestSettings.proxy.modelMode === "override"
       && typeof requestSettings.proxy.modelOverride === "string"
       ? requestSettings.proxy.modelOverride
       : null;
@@ -1497,6 +1559,7 @@ export function createServer(settings, {
     let responseStartBin = null;
     let timedOut = false;
     let replayBody = null;
+    let upstreamConnected = false;
 
     function requestCaptureSnapshot() {
       const snapshot = captureBodySnapshot(requestCapture, requestEncoding, requestProtectedValues);
@@ -1516,6 +1579,9 @@ export function createServer(settings, {
         requestId,
         requestHeaders: forwardedHeaders,
         requestBody: Buffer.alloc(0),
+        providerId: metricRoute === "account" ? "chatgpt-account" : currentCustomProvider.id,
+        providerName: metricRoute === "account" ? "ChatGPT" : currentCustomProvider.name,
+        route: metricRoute,
         startedAt,
         captureHandle,
         protectedValues: requestProtectedValues
@@ -1564,6 +1630,7 @@ export function createServer(settings, {
       const observation = {
         generation: active.generation,
         route: metricRoute,
+        providerId: metricRoute === "custom" ? currentCustomProvider.id : null,
         result,
         model: requestEnded ? finishRequestInspection() : requestModel,
         inputTokens: result === "success" ? (usage?.inputTokens ?? null) : null,
@@ -1584,7 +1651,17 @@ export function createServer(settings, {
       for (const name of res.getHeaderNames()) res.removeHeader(name);
     }
 
-    function switchToCustomRoute() {
+    function switchToCustomRoute(candidateIndex = customCandidateIndex) {
+      const candidate = customCandidates[candidateIndex];
+      if (!candidate) return false;
+      customCandidateIndex = candidateIndex;
+      currentCustomProvider = candidate;
+      requestSettings = settingsForProvider(baseRequestSettings, candidate);
+      customTargetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
+      overrideModel = requestSettings.proxy.modelMode === "override"
+        && typeof requestSettings.proxy.modelOverride === "string"
+        ? requestSettings.proxy.modelOverride
+        : null;
       metricRoute = "custom";
       targetUrl = customTargetUrl;
       safeTargetUrl = redactProtectedUrl(targetUrl.href, requestProtectedValues);
@@ -1597,14 +1674,19 @@ export function createServer(settings, {
       responseState = null;
       responseStartBin = null;
       timedOut = false;
+      upstreamConnected = false;
       if (captureContext) {
         captureContext.targetUrl = safeTargetUrl;
+        captureContext.providerId = currentCustomProvider.id;
+        captureContext.providerName = currentCustomProvider.name;
+        captureContext.route = "custom";
         captureContext.requestHeaders = sanitizeHeadersForCapture(
           forwardedHeaders,
           requestSettings.upstream.authHeader,
           requestProtectedValues
         );
       }
+      return true;
     }
 
     function prepareCustomOverrideBody(encodedBody) {
@@ -1689,16 +1771,54 @@ export function createServer(settings, {
       return forwardedBody;
     }
 
+    function prepareCustomPassthroughBody(encodedBody) {
+      if (requestCapture) {
+        requestCapture = createBoundedCollector(CAPTURE_BODY_MAX_BYTES);
+        requestCapture.append(encodedBody);
+      }
+      const decoded = decodeBoundedBody(
+        encodedBody,
+        requestEncoding,
+        METRIC_BODY_INSPECTION_MAX_BYTES
+      );
+      if (decoded) {
+        const inspector = createTopLevelJsonInspector({ stringKeys: ["model"] });
+        inspector.write(decoded);
+        const inspection = inspector.end();
+        requestModel = inspection.complete && !inspection.invalid
+          ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
+          : null;
+      } else {
+        requestModel = null;
+      }
+      requestInspectionFinished = true;
+      return encodedBody;
+    }
+
     function startCustomFallback() {
       if (terminal || !Buffer.isBuffer(replayBody)) return;
-      switchToCustomRoute();
+      if (!switchToCustomRoute(0)) return;
       const forwardedBody = overrideModel
         ? prepareCustomOverrideBody(replayBody)
-        : replayBody;
+        : prepareCustomPassthroughBody(replayBody);
       if (!forwardedBody || terminal) return;
       logRequestBody(forwardedBody.subarray(0, 4096));
       const outgoing = createUpstreamRequest();
       outgoing?.end(forwardedBody);
+    }
+
+    function startNextCustomFallback() {
+      if (terminal || !Buffer.isBuffer(replayBody)) return false;
+      const nextIndex = customCandidateIndex + 1;
+      if (!switchToCustomRoute(nextIndex)) return false;
+      const forwardedBody = overrideModel
+        ? prepareCustomOverrideBody(replayBody)
+        : prepareCustomPassthroughBody(replayBody);
+      if (!forwardedBody || terminal) return false;
+      logRequestBody(forwardedBody.subarray(0, 4096));
+      const outgoing = createUpstreamRequest();
+      outgoing?.end(forwardedBody);
+      return outgoing !== null;
     }
 
     function logRequestBody(body = null) {
@@ -1899,6 +2019,14 @@ export function createServer(settings, {
           return;
         }
       }
+      if (metricRoute === "custom") {
+        providerScheduler.markResponse(
+          currentCustomProvider.id,
+          incoming.statusCode,
+          incoming.headers
+        );
+      }
+      upstreamConnected = true;
       upstreamResponse = incoming;
       const stream = isEventStream(incoming.headers["content-type"]);
       const contentEncoding = incoming.headers["content-encoding"];
@@ -1996,6 +2124,13 @@ export function createServer(settings, {
         );
         upstreamRequest = createdRequest;
       } catch (error) {
+        if (metricRoute === "custom"
+          && Buffer.isBuffer(replayBody)
+          && customCandidateIndex + 1 < customCandidates.length
+          && providerScheduler.markTransportFailure(currentCustomProvider.id, error)) {
+          const started = startNextCustomFallback();
+          if (started || terminal) return null;
+        }
         finishProxyFailure({
           statusCode: 502,
           errorType: "proxy_upstream_error",
@@ -2005,13 +2140,39 @@ export function createServer(settings, {
         return null;
       }
       ensureCaptureContext();
+      const attemptProtocol = targetUrl.protocol;
+      createdRequest.once("socket", (socket) => {
+        const markConnected = () => {
+          if (createdRequest === upstreamRequest) upstreamConnected = true;
+        };
+        if (isEstablishedUpstreamSocket(socket)) {
+          markConnected();
+        } else if (attemptProtocol === "https:") {
+          socket.once("secureConnect", markConnected);
+        } else if (socket.connecting) {
+          socket.once("connect", markConnected);
+        } else {
+          markConnected();
+        }
+      });
       createdRequest.setTimeout(requestSettings.upstream.timeoutMs, () => {
         if (createdRequest !== upstreamRequest) return;
         timedOut = true;
-        createdRequest.destroy(new Error("upstream timeout"));
+        const timeoutError = new Error("upstream timeout");
+        timeoutError.code = "ETIMEDOUT";
+        createdRequest.destroy(timeoutError);
       });
       createdRequest.on("error", (error) => {
         if (terminal || createdRequest !== upstreamRequest) return;
+        const retryable = metricRoute === "custom"
+          && providerScheduler.markTransportFailure(currentCustomProvider.id, error);
+        if (retryable
+          && !upstreamConnected
+          && Buffer.isBuffer(replayBody)
+          && customCandidateIndex + 1 < customCandidates.length) {
+          const started = startNextCustomFallback();
+          if (started || terminal) return;
+        }
         finishProxyFailure({
           statusCode: timedOut ? 504 : 502,
           errorType: timedOut ? "proxy_timeout" : "proxy_upstream_error",
@@ -2035,7 +2196,10 @@ export function createServer(settings, {
     req.on("aborted", handleClientAbort);
     req.on("error", handleClientAbort);
 
-    if (initialAccountRoute) {
+    const customFailoverReplay = !initialAccountRoute
+      && responsesRequest
+      && customCandidates.length > 1;
+    if (initialAccountRoute || customFailoverReplay) {
       const accountChunks = [];
       let accountBytes = 0;
       let outgoing = null;
@@ -2089,8 +2253,12 @@ export function createServer(settings, {
         }
         replayBody = Buffer.concat(accountChunks, accountBytes);
         logRequestBody(replayBody.subarray(0, 4096));
+        const forwardedBody = !initialAccountRoute && overrideModel
+          ? prepareCustomOverrideBody(replayBody)
+          : replayBody;
+        if (!forwardedBody || terminal) return;
         outgoing = createUpstreamRequest();
-        outgoing?.end(replayBody);
+        outgoing?.end(forwardedBody);
       });
       return;
     }

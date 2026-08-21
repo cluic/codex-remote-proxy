@@ -276,6 +276,53 @@ test("CRUD returns only public provider fields and removes inactive credentials"
   assert.equal(JSON.stringify(activity.events).includes(secret), false);
 });
 
+test("running provider pools reject stale-profile mutations and general updates cannot bypass weight routing", async (t) => {
+  const secret = makeSecret("pool-member");
+  const { service, registry, credentials, workerManager } = makeHarness(t);
+  const provider = await service.createProvider(providerInput("Pool member"), secret);
+
+  await assert.rejects(
+    () => service.updateProvider(provider.id, { weight: 250 }),
+    (error) => error?.code === "PROVIDER_WEIGHT_ENDPOINT_REQUIRED"
+  );
+  assert.equal(registry.get(provider.id).weight, 100);
+
+  registry.markTest(provider.id, { status: "passed" });
+  workerManager.phase = "running";
+  const operationsBefore = structuredClone(credentials.operations);
+  await assert.rejects(
+    () => service.updateProvider(provider.id, { name: "Stale mutation" }, makeSecret("replacement")),
+    (error) => error?.code === "PROVIDER_POOL_RUNNING"
+  );
+  await assert.rejects(
+    () => service.deleteProvider(provider.id),
+    (error) => error?.code === "PROVIDER_POOL_RUNNING"
+  );
+  assert.equal(registry.get(provider.id).name, "Pool member");
+  assert.equal(credentials.values.get("credential-1"), secret);
+  assert.deepEqual(credentials.operations, operationsBefore);
+});
+
+test("a failed live compatibility probe does not invalidate the running provider snapshot", async (t) => {
+  const { service, registry, workerManager } = makeHarness(t, {
+    fetchImpl: async () => ({ ok: false, status: 503 })
+  });
+  const provider = await service.createProvider(
+    providerInput("Running provider"),
+    makeSecret("running-provider")
+  );
+  registry.markTest(provider.id, { status: "passed" });
+  workerManager.phase = "running";
+
+  const result = await service.testProvider(provider.id, "model-test");
+  assert.deepEqual(result, {
+    ok: false,
+    code: "PROVIDER_TEST_HTTP",
+    initialActivation: null
+  });
+  assert.equal(registry.get(provider.id).lastTestStatus, "passed");
+});
+
 test("create does not forward a public fallback-consent option to credential storage", async (t) => {
   const secret = makeSecret("no-public-fallback");
   const { service, credentials } = makeHarness(t);
@@ -1208,7 +1255,13 @@ test("activate persists then confirms increasing generations and rolls back fail
   const credentialGets = credentials.operations
     .filter(([operation]) => operation === "get")
     .map(([, ref]) => ref);
-  assert.deepEqual(credentialGets, ["credential-1", "credential-2", "credential-2"]);
+  assert.deepEqual(credentialGets, [
+    "credential-1",
+    "credential-2",
+    "credential-1",
+    "credential-2",
+    "credential-1"
+  ]);
   const status = await service.getStatus();
   assert.equal(JSON.stringify(status).includes(secretA), false);
   assert.equal(JSON.stringify(status).includes(secretB), false);
@@ -1242,7 +1295,7 @@ test("serializes concurrent activations before credential reads and worker chang
   await Promise.resolve();
   assert.deepEqual(
     credentials.operations.filter(([operation]) => operation === "get"),
-    [["get", "credential-1"]]
+    [["get", "credential-1"], ["get", "credential-2"]]
   );
   assert.equal(workerManager.calls.length, 0);
   releaseFirstStart();
@@ -1256,7 +1309,12 @@ test("serializes concurrent activations before credential reads and worker chang
   )), [["start", 1], ["applySnapshot", 2]]);
   assert.deepEqual(
     credentials.operations.filter(([operation]) => operation === "get"),
-    [["get", "credential-1"], ["get", "credential-2"]]
+    [
+      ["get", "credential-1"],
+      ["get", "credential-2"],
+      ["get", "credential-2"],
+      ["get", "credential-1"]
+    ]
   );
 });
 
@@ -1297,7 +1355,7 @@ test("restores the confirmed worker snapshot when post-ack health fails", async 
   ]);
   assert.deepEqual(
     credentials.operations.filter(([operation]) => operation === "get"),
-    [["get", "credential-2"]]
+    [["get", "credential-2"], ["get", "credential-1"]]
   );
 });
 
@@ -1640,6 +1698,117 @@ test("routing mode restores persisted and Worker state after an uncertain apply 
     [
       ["applySnapshot", "account_first", 2],
       ["applySnapshot", "custom_only", 3]
+    ]
+  );
+});
+
+test("provider weights order the runtime pool and hot-apply without changing the preferred provider", async (t) => {
+  const { service, registry, workerManager, activity } = makeHarness(t);
+  const providerA = await service.createProvider(
+    { ...providerInput("Preferred"), weight: 100 },
+    makeSecret("preferred")
+  );
+  const providerB = await service.createProvider(
+    { ...providerInput("Higher", "https://higher.example/v1"), weight: 300 },
+    makeSecret("higher")
+  );
+  registry.markTest(providerA.id, { status: "passed" });
+  registry.markTest(providerB.id, { status: "passed" });
+  registry.setActive(providerA.id);
+
+  await service.startProxy();
+  assert.equal(registry.getDocument().activeProviderId, providerA.id);
+  assert.equal(workerManager.calls.at(-1)[1].providerId, providerB.id);
+  assert.deepEqual(
+    workerManager.calls.at(-1)[1].settings.providers.map(({ id, weight }) => ({ id, weight })),
+    [
+      { id: providerB.id, weight: 300 },
+      { id: providerA.id, weight: 100 }
+    ]
+  );
+  workerManager.calls.length = 0;
+
+  const updated = await service.setProviderWeight(providerA.id, 500);
+  assert.equal(updated.weight, 500);
+  assert.equal(registry.getDocument().activeProviderId, providerA.id);
+  assert.equal(registry.get(providerA.id).weight, 500);
+  assert.deepEqual(workerManager.calls.map(([operation]) => operation), ["applySnapshot"]);
+  assert.equal(workerManager.calls[0][1].generation, 2);
+  assert.equal(workerManager.calls[0][1].providerId, providerA.id);
+  assert.deepEqual(
+    workerManager.calls[0][1].settings.providers.map(({ id, weight }) => ({ id, weight })),
+    [
+      { id: providerA.id, weight: 500 },
+      { id: providerB.id, weight: 300 }
+    ]
+  );
+  assert.deepEqual(activity.events.at(-1), {
+    category: "provider",
+    action: "weight",
+    providerId: providerA.id,
+    result: "success",
+    errorCode: null,
+    details: { weight: 500, generation: 2 }
+  });
+});
+
+test("reports a committed provider-weight update without rolling back durable state", async (t) => {
+  const { service, registry, workerManager, activity } = makeHarness(t);
+  const provider = await service.createProvider(providerInput(), makeSecret("weight"));
+  const update = registry.setProviderWeightIfCurrent.bind(registry);
+  registry.setProviderWeightIfCurrent = (...argumentsList) => {
+    const result = update(...argumentsList);
+    throw new CrpError(
+      "PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED",
+      "Saved with a residual lock.",
+      "Repair the registry lock.",
+      { status: 500, details: { committed: true } }
+    );
+  };
+
+  await assert.rejects(
+    () => service.setProviderWeight(provider.id, 250),
+    (error) => error?.code === "PROVIDER_WEIGHT_COMMITTED_DEGRADED"
+      && error.details.committed === true
+      && error.details.degraded === true
+  );
+  assert.equal(registry.get(provider.id).weight, 250);
+  assert.deepEqual(workerManager.calls, []);
+  assert.deepEqual(activity.events.at(-1), {
+    category: "provider",
+    action: "weight",
+    providerId: provider.id,
+    result: "degraded",
+    errorCode: "PROVIDER_WEIGHT_COMMITTED_DEGRADED",
+    details: { weight: 250, generation: 0 }
+  });
+});
+
+test("Capture setting persists while stopped and hot-applies to a running Worker", async (t) => {
+  const { service, registry, workerManager, activity } = makeHarness(t);
+  const stopped = await service.setCaptureEnabled(true);
+  assert.equal(stopped.captureEnabled, true);
+  assert.equal(registry.getDocument().settings.captureEnabled, true);
+  assert.deepEqual(workerManager.calls, []);
+
+  const provider = await service.createProvider(providerInput(), makeSecret("capture"));
+  registry.markTest(provider.id, { status: "passed" });
+  registry.setActive(provider.id);
+  await service.startProxy();
+  workerManager.calls.length = 0;
+
+  const running = await service.setCaptureEnabled(false);
+  assert.equal(running.captureEnabled, false);
+  assert.equal(running.generation, 2);
+  assert.equal(registry.getDocument().settings.captureEnabled, false);
+  assert.deepEqual(workerManager.calls.map(([operation]) => operation), ["applySnapshot"]);
+  assert.equal(workerManager.calls[0][1].settings.capture.enabled, false);
+  assert.deepEqual(
+    activity.events.filter(({ category, action }) => category === "settings" && action === "capture")
+      .map(({ result, details }) => ({ result, details })),
+    [
+      { result: "success", details: { enabled: true, generation: 0 } },
+      { result: "success", details: { enabled: false, generation: 2 } }
     ]
   );
 });

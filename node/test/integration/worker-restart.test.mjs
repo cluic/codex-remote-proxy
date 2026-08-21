@@ -38,10 +38,31 @@ async function reservePort() {
 
 function makeSnapshot({ generation, port, upstreamPort, dir }) {
   return {
+    providerId: "provider-restart",
     generation,
     settings: {
       configPath: join(dir, "proxy-config.json"),
       server: { host: "127.0.0.1", port, logLevel: "info" },
+      providers: [{
+        id: "provider-restart",
+        name: "Restart fixture",
+        weight: 100,
+        upstream: {
+          baseUrl: `http://127.0.0.1:${upstreamPort}`,
+          apiKey: SECRET,
+          timeoutMs: 5_000,
+          verifySsl: true,
+          authHeader: "x-provider-auth",
+          authScheme: "Bearer",
+          extraHeaders: {}
+        },
+        proxy: {
+          overrideAuthorization: true,
+          requestIdHeader: "x-client-request-id",
+          modelMode: "passthrough",
+          modelOverride: null
+        }
+      }],
       upstream: {
         baseUrl: `http://127.0.0.1:${upstreamPort}`,
         apiKey: SECRET,

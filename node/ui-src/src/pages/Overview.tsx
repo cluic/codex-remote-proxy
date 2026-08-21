@@ -1,36 +1,41 @@
 import {
   ArrowRight,
-  CircleOff
+  CircleOff,
+  CircleUserRound,
+  RefreshCw,
+  TrendingUp
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ApiError } from "../api";
-import { DistributionChart, ResultsChart, TokenChart } from "../components/Charts";
+import { ResultsChart, TokenChart } from "../components/Charts";
 import {
   Button,
   EmptyState,
+  IconButton,
   Modal,
   Notice,
-  PageHeader,
   Panel,
-  PanelHeader,
   StatusBadge,
   cx
 } from "../components/Primitives";
 import {
   formatCompactNumber,
+  formatDate,
   formatDuration,
   formatNumber,
   formatPercent,
   type Translator
 } from "../i18n";
 import type {
+  AccountQuotaWindow,
   LatencySummary,
   Locale,
   MetricsOverview,
   MetricsWindow,
   Provider,
   Route,
+  Settings,
   StatusResponse
 } from "../types";
 
@@ -38,6 +43,7 @@ type OverviewProps = {
   locale: Locale;
   t: Translator;
   status: StatusResponse;
+  settings: Settings;
   providers: Provider[];
   metrics: MetricsOverview | null;
   metricsError: ApiError | null;
@@ -49,12 +55,27 @@ type OverviewProps = {
   onStart: () => void;
   onRestart: () => void;
   onPrepareCodex: () => void;
+  onRefreshAccount: () => void;
+  onRoutingModeChange: (mode: Settings["routingMode"]) => void;
 };
 
-function MetricCard({ label, value, detail }: { label: string; value: string; detail: string }) {
+function MetricCard({
+  label,
+  value,
+  detail,
+  positive = false
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  positive?: boolean;
+}) {
   return (
     <article className="metric-card">
-      <span>{label}</span>
+      <div className="metric-card-heading">
+        <span>{label}</span>
+        {positive ? <TrendingUp aria-hidden="true" /> : null}
+      </div>
       <strong>{value}</strong>
       <small>{detail}</small>
     </article>
@@ -67,10 +88,17 @@ function formatLatency(locale: Locale, latency: LatencySummary): string {
   return "-";
 }
 
+function quotaWindowLabel(window: AccountQuotaWindow, t: Translator): string {
+  if (window.windowDurationMins === 300) return t("system.quota5h");
+  if (window.windowDurationMins === 10_080) return t("system.quota7d");
+  return window.kind === "primary" ? t("system.quotaPrimary") : t("system.quotaSecondary");
+}
+
 export function OverviewPage({
   locale,
   t,
   status,
+  settings,
   providers,
   metrics,
   metricsError,
@@ -81,14 +109,28 @@ export function OverviewPage({
   onMetricsWindow,
   onStart,
   onRestart,
-  onPrepareCodex
+  onPrepareCodex,
+  onRefreshAccount,
+  onRoutingModeChange
 }: OverviewProps) {
   const [prepareOpen, setPrepareOpen] = useState(false);
+  const [routingSelection, setRoutingSelection] = useState(settings.routingMode);
+  useEffect(() => {
+    if (pending !== "routing-mode") setRoutingSelection(settings.routingMode);
+  }, [pending, settings.routingMode]);
+
   const active = status.activeProvider;
+  const account = status.account;
   const workerRunning = status.worker?.phase === "running" && status.worker.state?.listening === true;
   const workerFailed = status.worker?.phase === "failed" || status.worker?.error !== null && status.worker?.error !== undefined;
   const providerEligible = active?.lastTestStatus === "passed" && active.credentialConfigured;
   const ready = Boolean(providerEligible && status.codex.configured && workerRunning && !status.codex.historyRepairPending);
+  const accountFirst = routingSelection === "account_first";
+  const accountLabel = account.authenticated === true
+    ? t("system.accountSignedIn")
+    : account.authenticated === false
+      ? t("system.accountApiKey")
+      : t("system.accountUnknown");
 
   let actionHelp = t("overview.noProvider");
   let actionLabel = t("overview.addProvider");
@@ -136,63 +178,114 @@ export function OverviewPage({
   const metricsUnavailable = metricsError !== null
     || metrics === null
     || metrics.storageState === "unavailable";
-  const visibleModels = metrics?.models.slice(0, 7) ?? [];
+  const visibleModels = metrics?.models.slice(0, 3) ?? [];
   const otherModelRequests = (metrics?.modelOtherRequests ?? 0)
-    + (metrics?.models.slice(7).reduce((sum, model) => sum + model.requests, 0) ?? 0);
+    + (metrics?.models.slice(3).reduce((sum, model) => sum + model.requests, 0) ?? 0);
+  const visibleProviders = metrics?.providers.slice(0, 2) ?? [];
 
   return (
-    <div className="page-stack" data-testid="page-overview">
-      <PageHeader title={t("overview.title")} subtitle={t("overview.subtitle")} />
-
-      <section className={cx("readiness-band", ready ? "readiness-ready" : "readiness-action")}>
-        <div className="readiness-copy">
-          <StatusBadge tone={ready ? "success" : "warning"}>
-            {ready ? t("common.ready") : t("overview.actionTitle")}
-          </StatusBadge>
-          <div>
-            <h2>{ready ? t("overview.readyTitle") : t("overview.actionTitle")}</h2>
-            <p>{ready
-              ? t("overview.readyHelp", { provider: active?.name ?? t("common.none") })
-              : actionHelp}</p>
+    <div className="page-stack overview-page" data-testid="page-overview">
+      {!ready ? (
+        <section className="overview-action-strip" aria-labelledby="overview-action-title">
+          <div className="overview-action-copy">
+            <StatusBadge tone="warning">{t("overview.actionTitle")}</StatusBadge>
+            <div>
+              <h2 id="overview-action-title">{t("overview.actionTitle")}</h2>
+              <p>{actionHelp}</p>
+            </div>
           </div>
-        </div>
-        {!ready ? (
           <Button variant="primary" disabled={readOnly || pending !== null} onClick={action}>
             {actionLabel}<ArrowRight className="icon" aria-hidden="true" />
           </Button>
-        ) : null}
+        </section>
+      ) : null}
+
+      <section className="overview-command-bar" aria-label={t("system.accountTitle")}>
+        <div className="overview-account-segment">
+          <span className={cx("overview-account-icon", account.authenticated === true && "is-authenticated")}>
+            <CircleUserRound aria-hidden="true" />
+          </span>
+          <div className="overview-account-copy">
+            <div>
+              <strong>{accountLabel}</strong>
+              {account.planType ? <span className="overview-account-plan">{account.planType}</span> : null}
+            </div>
+            <small>{account.updatedAt
+              ? t("overview.accountChecked", { value: formatDate(locale, account.updatedAt, true) })
+              : t("overview.accountSession")}</small>
+          </div>
+        </div>
+
+        <label className="overview-routing-segment">
+          <input
+            type="checkbox"
+            checked={accountFirst}
+            disabled={readOnly || pending !== null}
+            onChange={(event) => {
+              const mode = event.target.checked ? "account_first" : "custom_only";
+              setRoutingSelection(mode);
+              onRoutingModeChange(mode);
+            }}
+          />
+          <span className="switch-track" aria-hidden="true"><span /></span>
+          <span className="overview-routing-copy">
+            <strong>{t("system.accountFirst")}</strong>
+            <small>{accountFirst
+              ? t("overview.accountFirstFallback", { provider: active?.name ?? t("common.none") })
+              : t("overview.customOnlyRoute", { provider: active?.name ?? t("common.none") })}</small>
+          </span>
+        </label>
+
+        <div className="overview-quota-segment">
+          {account.quota?.windows.length ? (
+            <div className="overview-quota-windows">
+              {account.quota.windows.map((window, index) => {
+                const label = quotaWindowLabel(window, t);
+                const resetAt = window.resetsAt === null
+                  ? null
+                  : new Date(window.resetsAt * 1_000).toISOString();
+                return (
+                  <div className="overview-quota-window" key={`${window.kind}-${window.windowDurationMins ?? "unknown"}-${index}`}>
+                    <div className="overview-quota-heading">
+                      <span>{label}</span>
+                      <strong>{t("system.quotaRemaining", { value: window.remainingPercent })}</strong>
+                    </div>
+                    <progress
+                      max={100}
+                      value={window.remainingPercent}
+                      aria-label={`${label}: ${t("system.quotaRemaining", { value: window.remainingPercent })}`}
+                    />
+                    <small>{resetAt
+                      ? t("system.quotaResets", { value: formatDate(locale, resetAt, true) })
+                      : t("system.quotaResetUnknown")}</small>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="overview-quota-empty">
+              <strong>{t("system.quotaStatus")}</strong>
+              <small>{account.quotaSupported === false
+                ? t("system.quotaUnsupported")
+                : t("overview.quotaUnavailable")}</small>
+            </div>
+          )}
+          <IconButton
+            className="overview-account-refresh"
+            label={t("system.refreshAccount")}
+            disabled={readOnly || pending !== null}
+            onClick={onRefreshAccount}
+          >
+            <RefreshCw className={pending === "account-refresh" ? "spin" : undefined} aria-hidden="true" />
+          </IconButton>
+        </div>
       </section>
 
-      <section className="runtime-facts" aria-label={t("overview.title")}>
-        <article>
-          <span>{t("overview.management")}</span>
-          <strong>{t("common.connected")}</strong>
-          <small>PID {status.supervisor.pid ?? "-"}</small>
-        </article>
-        <article>
-          <span>{t("overview.worker")}</span>
-          <strong>{workerRunning ? t("common.running") : t("common.stopped")}</strong>
-          <small>{t("overview.generation", { value: status.worker?.generation ?? status.generation })}</small>
-        </article>
-        <article>
-          <span>{t("overview.activeProvider")}</span>
-          <strong>{active?.name ?? t("common.none")}</strong>
-          <small>{active?.lastTestStatus === "passed" ? t("common.passed") : t("common.untested")}</small>
-        </article>
-        <article>
-          <span>{t("overview.codex")}</span>
-          <strong>{status.codex.configured ? t("common.configured") : t("common.notConfigured")}</strong>
-          <small>{status.codex.modelProvider ?? "OpenAI"}</small>
-        </article>
-      </section>
-
-      <section className="metrics-section" aria-labelledby="metrics-heading">
-        <header className="section-heading">
+      <section className="metrics-section overview-metrics" aria-labelledby="metrics-heading">
+        <header className="overview-metrics-toolbar">
           <div>
             <h2 id="metrics-heading">{t("overview.metricsTitle")}</h2>
-            <p>{t("overview.metricsHelp")} {t(metricsWindow === "24h"
-              ? "overview.window24Detail"
-              : "overview.window7Detail")}</p>
+            <span>{t(metricsWindow === "24h" ? "overview.window24Detail" : "overview.window7Detail")}</span>
           </div>
           <div className="segmented-control" aria-label={t("overview.metricsTitle")}>
             <button
@@ -233,6 +326,7 @@ export function OverviewPage({
                 detail={successRateComplete
                   ? `${formatNumber(locale, successful)} ${t("overview.successful").toLowerCase()}`
                   : successRateUnavailable}
+                positive={successRateComplete && successful > 0}
               />
               <MetricCard
                 label={t("overview.observedTokens")}
@@ -255,70 +349,83 @@ export function OverviewPage({
                 />
               </div>
             ) : (
-              <div className="metrics-dashboard" data-testid="metrics-loaded">
-                <Panel>
-                  <PanelHeader title={t("overview.requestTrend")} description={t("overview.requestTrendHelp")} />
-                  <div className="panel-content chart-content"><ResultsChart series={metrics.series} locale={locale} t={t} /></div>
-                </Panel>
-                <Panel>
-                  <PanelHeader title={t("overview.tokenTrend")} description={t("overview.tokenTrendHelp")} />
-                  <div className="panel-content chart-content"><TokenChart series={metrics.series} locale={locale} t={t} /></div>
-                </Panel>
-                <Panel>
-                  <PanelHeader title={t("overview.modelDistribution")} description={t("overview.modelDistributionHelp")} />
-                  <div className="panel-content chart-content">
-                    {visibleModels.length > 0 || otherModelRequests > 0 ? (
-                      <DistributionChart
-                        items={[
-                          ...visibleModels.map((model) => ({ label: model.model, value: model.requests })),
-                          ...(otherModelRequests > 0
-                            ? [{ label: t("overview.otherModels"), value: otherModelRequests }]
-                            : [])
-                        ]}
-                        locale={locale}
-                        title={t("overview.modelDistribution")}
-                        t={t}
-                      />
-                    ) : <p className="chart-empty">{t("overview.noModelData")}</p>}
-                  </div>
-                </Panel>
-                <Panel>
-                  <PanelHeader title={t("overview.providerPerformance")} description={t("overview.providerPerformanceHelp")} />
-                  <div className="table-scroll">
-                    <table className="data-table provider-performance-table">
-                      <thead><tr>
-                        <th>{t("common.provider")}</th>
-                        <th>{t("overview.requestVolume")}</th>
-                        <th>{t("overview.successRate")}</th>
-                        <th>{t("overview.p95Latency")}</th>
-                      </tr></thead>
-                      <tbody>
-                        {metrics.providers.map((provider) => (
-                          <tr key={provider.providerId}>
-                            <th title={providerNames.get(provider.providerId) ?? provider.providerId}>
-                              {providerNames.get(provider.providerId) ?? provider.providerId}
-                            </th>
-                            <td>{formatNumber(locale, provider.requests)}</td>
-                            <td title={successRateComplete ? undefined : successRateUnavailable}>
-                              {successRateComplete && provider.requests > 0
-                              ? formatPercent(locale, provider.successfulRequests / provider.requests)
-                              : successRateComplete ? "-" : t("common.notAvailable")}
-                            </td>
-                            <td>{formatLatency(locale, provider.latency)}</td>
-                          </tr>
-                        ))}
-                        {metrics.providerOtherRequests > 0 ? (
-                          <tr>
-                            <th>{t("overview.other")}</th>
-                            <td>{formatNumber(locale, metrics.providerOtherRequests)}</td>
-                            <td>-</td>
-                            <td>-</td>
-                          </tr>
-                        ) : null}
-                      </tbody>
-                    </table>
-                  </div>
-                </Panel>
+              <div className="overview-dashboard" data-testid="metrics-loaded">
+                <div className="overview-primary-charts">
+                  <Panel className="overview-chart-panel">
+                    <header className="overview-panel-header">
+                      <h2>{t("overview.requestTrend")}</h2>
+                      <div className="overview-chart-legend" aria-hidden="true">
+                        <span><i className="legend-success" />{t("metrics.success")}</span>
+                        <span><i className="legend-upstreamRejected" />{t("metrics.rejected")}</span>
+                        <span><i className="legend-error" />{t("metrics.errors")}</span>
+                      </div>
+                    </header>
+                    <div className="panel-content chart-content">
+                      <ResultsChart series={metrics.series} locale={locale} t={t} showLegend={false} />
+                    </div>
+                  </Panel>
+                  <Panel className="overview-chart-panel">
+                    <header className="overview-panel-header">
+                      <h2>{t("overview.tokenTrend")}</h2>
+                      <div className="overview-chart-legend" aria-hidden="true">
+                        <span><i className="legend-input" />{t("overview.inputTokens")}</span>
+                        <span><i className="legend-output" />{t("overview.outputTokens")}</span>
+                      </div>
+                    </header>
+                    <div className="panel-content chart-content">
+                      <TokenChart series={metrics.series} locale={locale} t={t} showLegend={false} />
+                    </div>
+                  </Panel>
+                </div>
+
+                <div className="overview-summary-grid">
+                  <Panel className="overview-summary-panel overview-model-summary">
+                    <h2>{t("overview.modelDistribution")}</h2>
+                    <ul>
+                      {visibleModels.map((model, index) => (
+                        <li key={model.model}>
+                          <i className={`model-rank-${index + 1}`} aria-hidden="true" />
+                          <span title={model.model}>{model.model}</span>
+                          <strong>{formatCompactNumber(locale, model.requests)}</strong>
+                        </li>
+                      ))}
+                      {otherModelRequests > 0 ? (
+                        <li title={t("overview.otherModelsDetail", {
+                          unknown: metrics.dataQuality.unknownModelRequests,
+                          grouped: metrics.dataQuality.modelOverflowRequests
+                        })}>
+                          <i className="model-rank-other" aria-hidden="true" />
+                          <span>{t("overview.otherModels")}</span>
+                          <strong>{formatCompactNumber(locale, otherModelRequests)}</strong>
+                        </li>
+                      ) : null}
+                      {visibleModels.length === 0 && otherModelRequests === 0
+                        ? <li className="overview-summary-empty">{t("overview.noModelData")}</li>
+                        : null}
+                    </ul>
+                  </Panel>
+
+                  <Panel className="overview-summary-panel overview-provider-summary">
+                    <h2>{t("overview.providerPerformance")}</h2>
+                    <div className="overview-provider-items">
+                      {visibleProviders.map((provider) => (
+                        <article key={provider.providerId}>
+                          <strong title={providerNames.get(provider.providerId) ?? provider.providerId}>
+                            {providerNames.get(provider.providerId) ?? provider.providerId}
+                          </strong>
+                          <span>{formatNumber(locale, provider.requests)} {t("overview.requestsShort")}</span>
+                          <span>{successRateComplete && provider.requests > 0
+                            ? formatPercent(locale, provider.successfulRequests / provider.requests)
+                            : t("common.notAvailable")}</span>
+                          <small>{formatLatency(locale, provider.latency)} P95</small>
+                        </article>
+                      ))}
+                      {visibleProviders.length === 0
+                        ? <span className="overview-summary-empty">{t("overview.noProviderData")}</span>
+                        : null}
+                    </div>
+                  </Panel>
+                </div>
               </div>
             )}
 

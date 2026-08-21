@@ -7,27 +7,36 @@ import { WorkerManager } from "../src/supervisor/worker-manager.mjs";
 const SECRET = "manager-unit-secret";
 
 function makeSnapshot(generation = 1, port = 15100, providerId = null) {
+  const upstream = {
+    baseUrl: "http://127.0.0.1:41001",
+    apiKey: SECRET,
+    timeoutMs: 5000,
+    verifySsl: true,
+    authHeader: "x-provider-auth",
+    authScheme: "Bearer",
+    extraHeaders: {}
+  };
+  const proxy = {
+    overrideAuthorization: true,
+    requestIdHeader: "x-client-request-id",
+    modelMode: "passthrough",
+    modelOverride: null
+  };
   return {
     ...(providerId === null ? {} : { providerId }),
     generation,
     settings: {
       configPath: "/tmp/crp-worker-manager/proxy-config.json",
       server: { host: "127.0.0.1", port, logLevel: "info" },
-      upstream: {
-        baseUrl: "http://127.0.0.1:41001",
-        apiKey: SECRET,
-        timeoutMs: 5000,
-        verifySsl: true,
-        authHeader: "x-provider-auth",
-        authScheme: "Bearer",
-        extraHeaders: {}
-      },
-      proxy: {
-        overrideAuthorization: true,
-        requestIdHeader: "x-client-request-id",
-        modelMode: "passthrough",
-        modelOverride: null
-      },
+      providers: [{
+        id: providerId ?? "provider-1",
+        name: "Primary",
+        weight: 100,
+        upstream,
+        proxy
+      }],
+      upstream,
+      proxy,
       capture: { enabled: false, dbPath: "/tmp/crp-worker-manager/traffic.sqlite3" },
       routing: {
         mode: "custom_only",
@@ -385,13 +394,14 @@ test("metric observations retain request-generation provider attribution across 
   await settle(harness.manager.start(makeSnapshot(1, 15100, "provider-a")), harness.clock);
   await settle(harness.manager.applySnapshot(makeSnapshot(2, 15100, "provider-b")), harness.clock);
   const child = harness.children[0];
-  const metric = (generation, result, model) => ({
+  const metric = (generation, providerId, result, model) => ({
     version: 1,
     type: "metric",
     requestId: "metric-observation",
     observation: {
       generation,
       route: "custom",
+      providerId,
       result,
       model,
       inputTokens: result === "success" ? 12 : null,
@@ -401,9 +411,9 @@ test("metric observations retain request-generation provider attribution across 
     }
   });
 
-  child.emit("message", metric(2, "success", "model-b"));
-  child.emit("message", metric(1, "upstreamError", "model-a"));
-  child.emit("message", metric(999, "networkError", null));
+  child.emit("message", metric(2, "provider-b", "success", "model-b"));
+  child.emit("message", metric(1, "provider-a", "upstreamError", "model-a"));
+  child.emit("message", metric(999, "provider-missing", "networkError", null));
   await Promise.resolve();
 
   assert.deepEqual(harness.metrics, [
@@ -443,6 +453,7 @@ test("account route metrics use the built-in account attribution", async (t) => 
     observation: {
       generation: 1,
       route: "account",
+      providerId: null,
       result: "success",
       model: "gpt-5-codex",
       inputTokens: 12,
@@ -500,6 +511,7 @@ test("metric callback failures are dropped without changing worker lifecycle sta
     observation: {
       generation: 1,
       route: "custom",
+      providerId: "provider-a",
       result: "success",
       model: null,
       inputTokens: null,
