@@ -31,6 +31,13 @@ function fixture(t, suffix = "") {
   return { root, userHome, crpHome };
 }
 
+function systemdQuoted(value) {
+  return `"${value
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("%", "%%")}"`;
+}
+
 test("macOS start at login installs an exact private LaunchAgent and disables it in place", (t) => {
   const { userHome, crpHome } = fixture(t, "darwin-");
   const service = new AutoStartService({
@@ -61,7 +68,9 @@ test("macOS start at login installs an exact private LaunchAgent and disables it
   assert.match(contents, /<string>start<\/string>/);
   assert.match(contents, /<string>--json<\/string>/);
   assert.ok(contents.includes(`<string>${resolve(crpHome)}</string>`));
-  assert.equal(lstatSync(path).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(lstatSync(path).mode & 0o777, 0o600);
+  }
 
   assert.equal(service.setEnabled(false).enabled, false);
   assert.equal(existsSync(path), true);
@@ -95,10 +104,12 @@ test("Linux start at login creates a user unit and keeps an inert managed unit w
   );
   assert.equal(resolve(dirname(linkPath), readlinkSync(linkPath)), resolve(unitPath));
   const contents = readFileSync(unitPath, "utf8");
-  assert.ok(contents.includes(`Environment="CRP_HOME=${resolve(crpHome)}"`));
+  assert.ok(contents.includes(`Environment=${systemdQuoted(`CRP_HOME=${resolve(crpHome)}`)}`));
   assert.ok(contents.includes(" start --json"));
   assert.match(contents, /^# managed-by=@cluic\/codex-remote-proxy;schema=1/);
-  assert.equal(lstatSync(unitParent).mode & 0o777, 0o755);
+  if (process.platform !== "win32") {
+    assert.equal(lstatSync(unitParent).mode & 0o777, 0o755);
+  }
   assert.equal(service.getStatus().state, "enabled");
 
   writeFileSync(unitPath, `${contents}# installation drift\n`, { mode: 0o600 });
