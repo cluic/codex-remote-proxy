@@ -186,6 +186,8 @@ async function configure(message) {
       error.workerFatalCode = "WORKER_START_FAILED";
       throw error;
     }
+  } else {
+    app.captureManager.applyRuntimeConfig(message.settings.capture);
   }
   phase = "running";
   await sendChildMessage(lifecycleMessage("configured", message.requestId));

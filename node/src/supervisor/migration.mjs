@@ -16,7 +16,11 @@ import {
 import { basename, dirname, join } from "node:path";
 
 import { ProviderRegistry } from "../providers/provider-registry.mjs";
-import { validateStoredProvider } from "../providers/provider-schema.mjs";
+import {
+  DEFAULT_PROVIDER_WEIGHT,
+  normalizeProvider,
+  validateStoredProvider
+} from "../providers/provider-schema.mjs";
 import { CrpError } from "../shared/errors.mjs";
 
 const DEFAULT_FILE_OPERATIONS = {
@@ -33,6 +37,7 @@ const DEFAULT_FILE_OPERATIONS = {
   writeFileSync
 };
 const BACKUP_ATTEMPTS = 8;
+const REPLACEMENT_COMMITTED_IDENTITY = Symbol("replacementCommittedIdentity");
 
 function migrationError(code, cause, details = {}) {
   const contracts = {
@@ -140,11 +145,11 @@ function scrubDocument(document) {
   return next;
 }
 
-function emptyRegistryBytes() {
+function registryBytesForProvider(provider) {
   return Buffer.from(`${JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     activeProviderId: null,
-    providers: [],
+    providers: [provider],
     settings: {
       proxyHost: "127.0.0.1",
       proxyPort: 15100,
@@ -164,6 +169,26 @@ function sameIdentity(left, right) {
   return left !== null && right !== null
     && left.dev === right.dev
     && left.ino === right.ino;
+}
+
+function fsyncDirectory(path, fileOperations) {
+  let descriptor;
+  try {
+    const directoryFlag = typeof FS_CONSTANTS.O_DIRECTORY === "number"
+      ? FS_CONSTANTS.O_DIRECTORY
+      : 0;
+    descriptor = fileOperations.openSync(path, FS_CONSTANTS.O_RDONLY | directoryFlag);
+    fileOperations.fsyncSync(descriptor);
+    fileOperations.closeSync(descriptor);
+    descriptor = undefined;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { fileOperations.closeSync(descriptor); } catch {}
+    }
+    if (process.platform === "win32"
+      && ["EACCES", "EINVAL", "EPERM"].includes(error?.code)) return;
+    throw error;
+  }
 }
 
 function lstatRegular(path, fileOperations, { missing = false } = {}) {
@@ -221,6 +246,7 @@ function ensureCanonicalBlocker(path, fileOperations) {
     fileOperations.fsyncSync(descriptor);
     fileOperations.closeSync(descriptor);
     descriptor = undefined;
+    fsyncDirectory(dirname(path), fileOperations);
     return true;
   } catch (error) {
     if (descriptor !== undefined) {
@@ -250,6 +276,7 @@ function claimOwnedPath(path, expectedIdentity, fileOperations, createId = rando
   }
   try {
     fileOperations.rmSync(claimPath);
+    fsyncDirectory(dirname(path), fileOperations);
     return true;
   } catch {
     restoreClaim(claimPath, path, fileOperations);
@@ -272,6 +299,7 @@ function createLock({ lockPath, fileOperations, createId }) {
     fileOperations.closeSync(descriptor);
     closed = true;
     descriptor = undefined;
+    fsyncDirectory(dirname(lockPath), fileOperations);
     return { token, identity };
   } catch (error) {
     if (identity === null) {
@@ -316,6 +344,7 @@ function releaseLock({ lockPath, lock, fileOperations, createId }) {
       return false;
     }
     fileOperations.rmSync(claimPath);
+    fsyncDirectory(dirname(lockPath), fileOperations);
     return true;
   } catch {
     restoreClaim(claimPath, lockPath, fileOperations);
@@ -337,6 +366,7 @@ function writeExclusive(path, bytes, fileOperations, createId = randomUUID) {
     fileOperations.closeSync(descriptor);
     closed = true;
     descriptor = undefined;
+    fsyncDirectory(dirname(path), fileOperations);
     const committed = lstatRegular(path, fileOperations);
     if (!sameIdentity(committed.identity, identity)) {
       throw migrationError("MIGRATION_ROLLBACK_DEGRADED", null, {
@@ -404,6 +434,14 @@ function replaceFile(path, bytes, expectedIdentity, fileOperations, createId) {
         degraded: true
       });
     }
+    try {
+      fsyncDirectory(dirname(path), fileOperations);
+    } catch (error) {
+      Object.defineProperty(error, REPLACEMENT_COMMITTED_IDENTITY, {
+        value: committed.identity
+      });
+      throw error;
+    }
     return committed.identity;
   } catch (error) {
     if (tempIdentity !== null) {
@@ -449,7 +487,55 @@ function validateSchema2Registry(document) {
   const names = new Set();
   try {
     for (const provider of document.providers) {
-      validateStoredProvider(provider);
+      validateStoredProvider({ ...provider, weight: DEFAULT_PROVIDER_WEIGHT });
+      const normalizedName = provider.name.toLowerCase();
+      if (ids.has(provider.id) || names.has(normalizedName)) {
+        throw new Error("duplicate provider");
+      }
+      ids.add(provider.id);
+      names.add(normalizedName);
+    }
+  } catch (error) {
+    throw migrationError("MIGRATION_INPUT_INVALID", error);
+  }
+  if (document.activeProviderId !== null && !ids.has(document.activeProviderId)) {
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  }
+}
+
+function validateSchema3Registry(document) {
+  const documentFields = new Set(["schemaVersion", "activeProviderId", "providers", "settings"]);
+  const settingsFields = new Set([
+    "proxyHost",
+    "proxyPort",
+    "adminHost",
+    "adminPort",
+    "captureEnabled",
+    "routingMode"
+  ]);
+  if (document.schemaVersion !== 3
+    || Object.keys(document).length !== documentFields.size
+    || Object.keys(document).some((key) => !documentFields.has(key))
+    || !Array.isArray(document.providers)
+    || document.settings === null
+    || typeof document.settings !== "object"
+    || Array.isArray(document.settings)
+    || Object.keys(document.settings).length !== settingsFields.size
+    || Object.keys(document.settings).some((key) => !settingsFields.has(key))
+    || document.settings.proxyHost !== "127.0.0.1"
+    || document.settings.proxyPort !== 15100
+    || document.settings.adminHost !== "127.0.0.1"
+    || document.settings.adminPort !== 15101
+    || typeof document.settings.captureEnabled !== "boolean"
+    || !["custom_only", "account_first"].includes(document.settings.routingMode)
+    || (document.activeProviderId !== null && typeof document.activeProviderId !== "string")) {
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  }
+  const ids = new Set();
+  const names = new Set();
+  try {
+    for (const provider of document.providers) {
+      validateStoredProvider({ ...provider, weight: DEFAULT_PROVIDER_WEIGHT });
       const normalizedName = provider.name.toLowerCase();
       if (ids.has(provider.id) || names.has(normalizedName)) {
         throw new Error("duplicate provider");
@@ -473,7 +559,11 @@ function inspectCurrentRegistry(path, fileOperations) {
     validateSchema2Registry(document);
     return { kind: "schema-2", source: { ...source, document } };
   }
-  if (document.schemaVersion !== 3) throw migrationError("MIGRATION_INPUT_INVALID");
+  if (document.schemaVersion === 3) {
+    validateSchema3Registry(document);
+    return { kind: "schema-3", source: { ...source, document } };
+  }
+  if (document.schemaVersion !== 4) throw migrationError("MIGRATION_INPUT_INVALID");
   new ProviderRegistry({ path, fileOperations });
   const after = lstatRegular(path, fileOperations);
   if (!sameIdentity(after.identity, source.identity)) {
@@ -508,6 +598,30 @@ export async function migrateLegacyConfiguration({
     fileOperations,
     createId: createLockId
   });
+  const registryLockPath = `${paths.registryPath}.crp.lock`;
+  let registryLock;
+  try {
+    registryLock = createLock({
+      lockPath: registryLockPath,
+      fileOperations,
+      createId: createLockId
+    });
+  } catch (error) {
+    const migrationLockReleased = releaseLock({
+      lockPath,
+      lock,
+      fileOperations,
+      createId: createLockId
+    });
+    if (!migrationLockReleased) {
+      throw migrationError("MIGRATION_ROLLBACK_DEGRADED", error, {
+        committed: false,
+        degraded: true
+      });
+    }
+    throw error;
+  }
+  let registryLockReleased = false;
 
   let completed = false;
   let providerId = null;
@@ -526,25 +640,40 @@ export async function migrateLegacyConfiguration({
       completed = true;
       return { migrated: false, reason: "already-current" };
     }
-    if (registryInspection.kind === "schema-2") {
+    if (registryInspection.kind === "schema-2" || registryInspection.kind === "schema-3") {
       const source = registryInspection.source;
       createBackup(source, fileOperations, createBackupId);
       const upgradedDocument = {
         ...source.document,
-        schemaVersion: 3,
+        schemaVersion: 4,
+        providers: source.document.providers.map((provider) => ({
+          ...provider,
+          weight: DEFAULT_PROVIDER_WEIGHT
+        })),
         settings: {
           ...source.document.settings,
-          routingMode: "custom_only"
+          routingMode: source.document.settings.routingMode ?? "custom_only"
         }
       };
       const bytes = Buffer.from(`${JSON.stringify(upgradedDocument, null, 2)}\n`, "utf8");
-      const currentIdentity = replaceFile(
-        paths.registryPath,
-        bytes,
-        source.identity,
-        fileOperations,
-        createLockId
-      );
+      let currentIdentity;
+      try {
+        currentIdentity = replaceFile(
+          paths.registryPath,
+          bytes,
+          source.identity,
+          fileOperations,
+          createLockId
+        );
+      } catch (error) {
+        if (error?.[REPLACEMENT_COMMITTED_IDENTITY]) {
+          upgradedRegistry = {
+            source,
+            currentIdentity: error[REPLACEMENT_COMMITTED_IDENTITY]
+          };
+        }
+        throw error;
+      }
       upgradedRegistry = { source, currentIdentity };
       new ProviderRegistry({ path: paths.registryPath, fileOperations });
       const verified = readSafeFile(paths.registryPath, fileOperations);
@@ -554,15 +683,18 @@ export async function migrateLegacyConfiguration({
       if (activityStore) {
         await activityStore.append({
           category: "migration",
-          action: "provider-registry-schema-3",
+          action: "provider-registry-schema-4",
           providerId: null,
           result: "success",
           errorCode: null,
-          details: { routingMode: "custom_only" }
+          details: {
+            sourceSchemaVersion: source.document.schemaVersion,
+            providerWeight: DEFAULT_PROVIDER_WEIGHT
+          }
         });
       }
       completed = true;
-      return { migrated: true, reason: "provider-registry-schema-3" };
+      return { migrated: true, reason: "provider-registry-schema-4" };
     }
 
     const configSource = readSource(legacyConfigPath, fileOperations);
@@ -592,7 +724,17 @@ export async function migrateLegacyConfiguration({
       else throw error;
     }
 
-    const initialRegistryBytes = emptyRegistryBytes();
+    const profile = normalizeProvider({
+      name: "Default",
+      baseUrl: values.baseUrl,
+      credentialRef,
+      authHeader: values.authHeader,
+      authScheme: values.authScheme,
+      extraHeaders: values.extraHeaders,
+      modelMode: "passthrough",
+      modelOverride: null
+    }, { id: providerId, now: now() });
+    const initialRegistryBytes = registryBytesForProvider(profile);
     try {
       registryOwned = {
         identity: writeExclusive(
@@ -612,51 +754,42 @@ export async function migrateLegacyConfiguration({
 
     const registry = new ProviderRegistry({
       path: paths.registryPath,
-      createId: () => providerId,
-      now,
       fileOperations
     });
-    try {
-      registry.create({
-        name: "Default",
-        baseUrl: values.baseUrl,
-        credentialRef,
-        authHeader: values.authHeader,
-        authScheme: values.authScheme,
-        extraHeaders: values.extraHeaders,
-        modelMode: "passthrough",
-        modelOverride: null
-      });
-    } catch (error) {
-      if (isCommittedError(error)) commitWarning = error;
-      else throw error;
-    }
     const committed = registry.getDocument();
-    if (committed.schemaVersion !== 3
+    if (committed.schemaVersion !== 4
       || committed.activeProviderId !== null
       || committed.providers.length !== 1
       || committed.providers[0].lastTestStatus !== "untested") {
       throw migrationError("MIGRATION_FAILED");
     }
     const committedRegistry = readSafeFile(paths.registryPath, fileOperations);
-    registryOwned = {
-      identity: committedRegistry.identity,
-      bytes: Buffer.from(committedRegistry.bytes)
-    };
+    if (!sameIdentity(committedRegistry.identity, registryOwned.identity)
+      || !committedRegistry.bytes.equals(registryOwned.bytes)) {
+      throw migrationError("MIGRATION_FAILED");
+    }
 
     for (const source of sources) {
       const scrubbedBytes = Buffer.from(
         `${JSON.stringify(scrubDocument(source.document), null, 2)}\n`,
         "utf8"
       );
-      source.currentIdentity = replaceFile(
-        source.path,
-        scrubbedBytes,
-        source.currentIdentity,
-        fileOperations,
-        createLockId
-      );
-      scrubbedSources.push(source);
+      try {
+        source.currentIdentity = replaceFile(
+          source.path,
+          scrubbedBytes,
+          source.currentIdentity,
+          fileOperations,
+          createLockId
+        );
+        scrubbedSources.push(source);
+      } catch (error) {
+        if (error?.[REPLACEMENT_COMMITTED_IDENTITY]) {
+          source.currentIdentity = error[REPLACEMENT_COMMITTED_IDENTITY];
+          scrubbedSources.push(source);
+        }
+        throw error;
+      }
     }
 
     if (activityStore) {
@@ -761,12 +894,23 @@ export async function migrateLegacyConfiguration({
     }
     throw migrationError("MIGRATION_FAILED", failure, { committed: false });
   } finally {
-    const released = releaseLock({
+    let registryReleased = true;
+    if (!registryLockReleased) {
+      registryLockReleased = true;
+      registryReleased = releaseLock({
+        lockPath: registryLockPath,
+        lock: registryLock,
+        fileOperations,
+        createId: createLockId
+      });
+    }
+    const migrationReleased = releaseLock({
       lockPath,
       lock,
       fileOperations,
       createId: createLockId
     });
+    const released = registryReleased && migrationReleased;
     if (!released && completed) {
       throw migrationError("MIGRATION_COMMITTED_LOCK_DEGRADED", null, {
         committed: true,

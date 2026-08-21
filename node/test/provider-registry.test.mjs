@@ -92,7 +92,7 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
   });
 
   assert.deepEqual(registry.getDocument(), {
-    schemaVersion: 3,
+    schemaVersion: 4,
     activeProviderId: null,
     providers: [],
     settings: DEFAULT_SETTINGS
@@ -107,6 +107,7 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
     authHeader: "authorization",
     authScheme: "Bearer",
     extraHeaders: {},
+    weight: 100,
     modelMode: "passthrough",
     modelOverride: null,
     lastTestAt: null,
@@ -389,6 +390,12 @@ test("validates passthrough and override model modes", () => {
     () => validateProviderInput(validInput({ modelMode: "unknown" })),
     assertCrpError("PROVIDER_INPUT_INVALID", 400)
   );
+  for (const weight of [0, 1.5, 1_001, "100"]) {
+    assert.throws(
+      () => validateProviderInput(validInput({ weight })),
+      assertCrpError("PROVIDER_INPUT_INVALID", 400)
+    );
+  }
   assert.throws(
     () => validateProviderInput(validInput({
       modelMode: "override",
@@ -421,6 +428,7 @@ test("validates passthrough and override model modes", () => {
       authHeader: "authorization",
       authScheme: "Bearer",
       extraHeaders: {},
+      weight: 100,
       modelMode: "passthrough",
       modelOverride: null,
       lastTestAt: null,
@@ -440,7 +448,7 @@ test("loads a legacy controlled model override and allows replacing it safely", 
   }), { id: "provider-legacy", now: FIXED_NOW });
   legacy.modelOverride = "legacy\tmodel";
   writeFileSync(registryPath, `${JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     activeProviderId: null,
     providers: [legacy],
     settings: DEFAULT_SETTINGS
@@ -589,6 +597,51 @@ test("persists only supported global routing modes", (t) => {
   );
 });
 
+test("persists Capture as a compare-and-set global setting", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({ path: registryPath, now: () => FIXED_NOW });
+
+  assert.equal(registry.setCaptureEnabled(true), true);
+  assert.equal(registry.getDocument().settings.captureEnabled, true);
+  assert.equal(registry.setCaptureEnabledIfCurrent(false, true), false);
+  assert.equal(registry.setCaptureEnabledIfCurrent(true, false), true);
+  assert.equal(registry.getDocument().settings.captureEnabled, false);
+  assert.equal(
+    new ProviderRegistry({ path: registryPath }).getDocument().settings.captureEnabled,
+    false
+  );
+  assert.throws(
+    () => registry.setCaptureEnabled("yes"),
+    assertCrpError("CAPTURE_SETTING_INVALID", 400)
+  );
+});
+
+test("updates provider weight through compare-and-set without invalidating compatibility", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({
+    path: registryPath,
+    createId: () => "provider-1",
+    now: makeClock(FIXED_NOW, LATER_NOW)
+  });
+  registry.create(validInput());
+  registry.markTest("provider-1", { status: "passed" });
+
+  assert.equal(registry.setProviderWeightIfCurrent("provider-1", 200, 300), false);
+  assert.equal(registry.get("provider-1").weight, 100);
+  assert.equal(registry.setProviderWeightIfCurrent("provider-1", 100, 300), true);
+  assert.equal(registry.get("provider-1").weight, 300);
+  assert.equal(registry.get("provider-1").lastTestStatus, "passed");
+  assert.equal(registry.setProviderWeightIfCurrent("provider-1", 300, 300), true);
+  assert.throws(
+    () => registry.setProviderWeightIfCurrent("provider-1", 300, 0),
+    assertCrpError("PROVIDER_INPUT_INVALID", 400)
+  );
+  assert.throws(
+    () => registry.setProviderWeightIfCurrent("missing", 100, 200),
+    assertCrpError("PROVIDER_NOT_FOUND", 404)
+  );
+});
+
 test("multi-instance initial activation compare-and-set is first-wins", (t) => {
   const { registryPath } = makeTempRegistry(t, "crp-provider-active-first-wins-");
   let staleInstanceRegistryRenames = 0;
@@ -684,7 +737,7 @@ test("reloads the complete persisted document", (t) => {
   assert.deepEqual(reloaded.getActive(), beforeReload.providers[0]);
 });
 
-test("rejects malformed JSON, unmigrated schema 2, and invalid schema 3 documents", (t) => {
+test("rejects malformed JSON, unmigrated schemas, and invalid schema 4 documents", (t) => {
   const { tempDir } = makeTempRegistry(t, "crp-provider-invalid-");
   const documents = [
     "{ malformed",
@@ -695,16 +748,17 @@ test("rejects malformed JSON, unmigrated schema 2, and invalid schema 3 document
       providers: [],
       settings: Object.fromEntries(Object.entries(DEFAULT_SETTINGS).filter(([key]) => key !== "routingMode"))
     })}\n`,
-    `${JSON.stringify({ schemaVersion: 3, activeProviderId: null, providers: {}, settings: DEFAULT_SETTINGS })}\n`,
-    `${JSON.stringify({ schemaVersion: 3, activeProviderId: "missing", providers: [], settings: DEFAULT_SETTINGS })}\n`,
+    `${JSON.stringify({ schemaVersion: 3, activeProviderId: null, providers: [], settings: DEFAULT_SETTINGS })}\n`,
+    `${JSON.stringify({ schemaVersion: 4, activeProviderId: null, providers: {}, settings: DEFAULT_SETTINGS })}\n`,
+    `${JSON.stringify({ schemaVersion: 4, activeProviderId: "missing", providers: [], settings: DEFAULT_SETTINGS })}\n`,
     `${JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       activeProviderId: null,
       providers: [],
       settings: { ...DEFAULT_SETTINGS, proxyPort: 15102 }
     })}\n`,
     `${JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       activeProviderId: null,
       providers: [{
         ...normalizeProvider(validInput(), { id: "provider-1", now: FIXED_NOW }),
@@ -713,7 +767,7 @@ test("rejects malformed JSON, unmigrated schema 2, and invalid schema 3 document
       settings: DEFAULT_SETTINGS
     })}\n`,
     `${JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       activeProviderId: null,
       providers: [{
         ...normalizeProvider(validInput(), { id: "provider-1", now: FIXED_NOW }),
@@ -723,7 +777,7 @@ test("rejects malformed JSON, unmigrated schema 2, and invalid schema 3 document
       settings: DEFAULT_SETTINGS
     })}\n`,
     `${JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       activeProviderId: null,
       providers: [{
         ...normalizeProvider(validInput(), { id: "provider-1", now: FIXED_NOW }),
@@ -1128,6 +1182,7 @@ test("toPublicProvider returns an exact allowlisted shape with a boolean credent
     "authHeader",
     "authScheme",
     "extraHeaders",
+    "weight",
     "modelMode",
     "modelOverride",
     "lastTestAt",

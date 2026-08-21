@@ -1,6 +1,6 @@
 export type Locale = "en" | "zh-CN";
 
-export type Route = "overview" | "providers" | "activity" | "system" | "setup";
+export type Route = "overview" | "providers" | "forwarding" | "activity" | "system" | "setup";
 
 export type AccessMode = "initializing" | "writable" | "read-only" | "terminal" | "stopped";
 
@@ -13,6 +13,7 @@ export interface Provider {
   authHeader: string;
   authScheme: string;
   extraHeaders: Record<string, string>;
+  weight: number;
   modelMode: "passthrough" | "override";
   modelOverride: string | null;
   lastTestAt: string | null;
@@ -29,6 +30,7 @@ export interface ProviderInput {
   authHeader: string;
   authScheme: string;
   extraHeaders: Record<string, string>;
+  weight: number;
   modelMode: "passthrough" | "override";
   modelOverride: string | null;
 }
@@ -112,6 +114,10 @@ export interface Settings {
   captureEnabled: boolean;
   routingMode: "custom_only" | "account_first";
   credentialBackend: string | null;
+  autoStartSupported: boolean;
+  autoStartEnabled: boolean;
+  autoStartState: "enabled" | "disabled" | "stale" | "conflict" | "unavailable";
+  autoStartPlatform: string | null;
 }
 
 export interface ActivityEvent {
@@ -127,6 +133,46 @@ export interface ActivityEvent {
 export interface ActivityPageData {
   events: ActivityEvent[];
   page: { limit: number; offset: number; nextOffset: number | null };
+}
+
+export type ForwardingOutcome = "all" | "success" | "rejected" | "error";
+
+export interface ForwardingRecord {
+  id: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  requestId: string | null;
+  sessionId: string | null;
+  threadId: string | null;
+  method: string | null;
+  incomingUrl: string | null;
+  targetUrl: string | null;
+  requestBytes: number;
+  responseStatus: number | null;
+  responseBytes: number;
+  stream: boolean;
+  upstreamRequestId: string | null;
+  errorType: string | null;
+  errorMessage: string | null;
+  outcome: Exclude<ForwardingOutcome, "all">;
+  providerId: string | null;
+  providerName: string | null;
+  route: "account" | "custom" | "unknown";
+}
+
+export interface ForwardingRecordsPageData {
+  storageState: "missing" | "ready";
+  records: ForwardingRecord[];
+  page: { limit: number; nextBefore: number | null };
+  summary: { total: number; success: number; rejected: number; error: number };
+}
+
+export interface ForwardingRecordsQuery {
+  limit?: number;
+  before?: number | null;
+  outcome?: ForwardingOutcome;
+  search?: string;
 }
 
 export interface ModelCatalog {

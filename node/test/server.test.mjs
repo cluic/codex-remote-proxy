@@ -10,12 +10,28 @@ import { join } from "node:path";
 import { EventEmitter, once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 
-import { buildTargetUrl, createApp, createServer, isDirectExecution, loadConfig } from "../src/server.mjs";
+import {
+  buildTargetUrl,
+  createApp,
+  createServer,
+  isDirectExecution,
+  isEstablishedUpstreamSocket,
+  loadConfig
+} from "../src/server.mjs";
 import { RuntimeSettingsSource } from "../src/worker/runtime-settings.mjs";
 
 function makeTempDir(prefix) {
   return join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
+
+test("an already-open TLS socket is established even when certificate verification is disabled", () => {
+  assert.equal(isEstablishedUpstreamSocket({
+    connecting: false,
+    encrypted: true,
+    authorized: false
+  }), true);
+  assert.equal(isEstablishedUpstreamSocket({ connecting: true }), false);
+});
 
 function listen(server, host = "127.0.0.1") {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -73,6 +89,7 @@ function makeSettings({
   modelOverride = null,
   logLevel = "info",
   captureEnabled = true,
+  providers = null,
   routingMode = "custom_only",
   accountState = {
     authMode: null,
@@ -81,6 +98,28 @@ function makeSettings({
     updatedAt: null
   }
 }) {
+  const upstream = {
+    baseUrl,
+    apiKey,
+    timeoutMs,
+    verifySsl,
+    authHeader,
+    authScheme,
+    extraHeaders
+  };
+  const proxy = {
+    overrideAuthorization: true,
+    requestIdHeader,
+    modelMode,
+    modelOverride
+  };
+  const providerPool = providers ?? [{
+    id: "provider-primary",
+    name: "Primary",
+    weight: 100,
+    upstream,
+    proxy
+  }];
   return {
     configPath: "/tmp/crp-task5-proxy-config.json",
     server: {
@@ -88,21 +127,9 @@ function makeSettings({
       port: 0,
       logLevel
     },
-    upstream: {
-      baseUrl,
-      apiKey,
-      timeoutMs,
-      verifySsl,
-      authHeader,
-      authScheme,
-      extraHeaders
-    },
-    proxy: {
-      overrideAuthorization: true,
-      requestIdHeader,
-      modelMode,
-      modelOverride
-    },
+    providers: providerPool,
+    upstream: providerPool[0].upstream,
+    proxy: providerPool[0].proxy,
     capture: {
       enabled: captureEnabled,
       dbPath: "/tmp/crp-task5-traffic.sqlite3"
@@ -111,6 +138,38 @@ function makeSettings({
       mode: routingMode,
       accountRevision: 1,
       account: structuredClone(accountState)
+    }
+  };
+}
+
+function providerCandidate({
+  id,
+  name,
+  weight,
+  baseUrl,
+  apiKey,
+  timeoutMs = 5_000,
+  modelMode = "passthrough",
+  modelOverride = null
+}) {
+  return {
+    id,
+    name,
+    weight,
+    upstream: {
+      baseUrl,
+      apiKey,
+      timeoutMs,
+      verifySsl: true,
+      authHeader: "authorization",
+      authScheme: "Bearer",
+      extraHeaders: {}
+    },
+    proxy: {
+      overrideAuthorization: true,
+      requestIdHeader: "x-client-request-id",
+      modelMode,
+      modelOverride
     }
   };
 }
@@ -658,6 +717,375 @@ test("account network failures do not switch to the custom API", async (t) => {
   assert.equal(customRequests, 0);
 });
 
+test("weighted custom routing cools an HTTP failure and routes the next request to fallback", async (t) => {
+  let primaryRequests = 0;
+  let fallbackRequests = 0;
+  const primary = http.createServer((req, res) => {
+    primaryRequests += 1;
+    assert.equal(req.headers.authorization, "Bearer primary-secret");
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = 503;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: { type: "primary-unavailable" } }));
+    });
+  });
+  const primaryPort = await listen(primary);
+  t.after(() => closeServer(primary));
+  const fallback = http.createServer((req, res) => {
+    fallbackRequests += 1;
+    assert.equal(req.headers.authorization, "Bearer fallback-secret");
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString("utf8")), {
+        model: "weighted-model",
+        input: "request-2"
+      });
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse({
+        usage: { input_tokens: 2, output_tokens: 1 }
+      })));
+    });
+  });
+  const fallbackPort = await listen(fallback);
+  t.after(() => closeServer(fallback));
+  const providers = [
+    providerCandidate({
+      id: "primary-high",
+      name: "Primary high weight",
+      weight: 500,
+      baseUrl: `http://127.0.0.1:${primaryPort}`,
+      apiKey: "primary-secret"
+    }),
+    providerCandidate({
+      id: "fallback-low",
+      name: "Fallback low weight",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${fallbackPort}`,
+      apiKey: "fallback-secret"
+    })
+  ];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    captureEnabled: true
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 9, settings });
+  const captureManager = createMemoryCaptureManager();
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    recordMetric: (observation) => metrics.push(structuredClone(observation)),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const statuses = [];
+  for (const request of [1, 2]) {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "weighted-model", input: `request-${request}` })
+    });
+    statuses.push(response.status);
+    await response.arrayBuffer();
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(primaryRequests, 1);
+  assert.equal(fallbackRequests, 1);
+  assert.deepEqual(statuses, [503, 200]);
+  assert.deepEqual(metrics.map(({ providerId, result }) => ({ providerId, result })), [
+    { providerId: "primary-high", result: "upstreamError" },
+    { providerId: "fallback-low", result: "success" },
+  ]);
+  assert.equal(captureManager.records.length, 2);
+  assert.deepEqual(captureManager.records.map((record) => record.targetUrl), [
+    `http://127.0.0.1:${primaryPort}/v1/responses`,
+    `http://127.0.0.1:${fallbackPort}/v1/responses`
+  ]);
+  assert.ok(captureManager.records.every((record) => (
+    JSON.stringify(record).includes("primary-secret") === false
+      && JSON.stringify(record).includes("fallback-secret") === false
+  )));
+});
+
+test("weighted custom routing never replays after delivery and cools a timed-out provider", async (t) => {
+  let primaryRequests = 0;
+  let fallbackRequests = 0;
+  const primary = http.createServer((req) => {
+    primaryRequests += 1;
+    req.resume();
+  });
+  const primaryPort = await listen(primary);
+  t.after(() => closeServer(primary));
+  const fallback = http.createServer((req, res) => {
+    fallbackRequests += 1;
+    req.resume();
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const fallbackPort = await listen(fallback);
+  t.after(() => closeServer(fallback));
+  const providers = [
+    providerCandidate({
+      id: "timeout-primary",
+      name: "Timeout primary",
+      weight: 500,
+      baseUrl: `http://127.0.0.1:${primaryPort}`,
+      apiKey: "timeout-primary-secret",
+      timeoutMs: 50
+    }),
+    providerCandidate({
+      id: "timeout-fallback",
+      name: "Timeout fallback",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${fallbackPort}`,
+      apiKey: "timeout-fallback-secret"
+    })
+  ];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 10, settings });
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createMemoryCaptureManager(),
+    recordMetric: (observation) => metrics.push(structuredClone(observation)),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const statuses = [];
+  for (const request of [1, 2]) {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "timeout-model", input: `request-${request}` })
+    });
+    statuses.push(response.status);
+    await response.arrayBuffer();
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(primaryRequests, 1);
+  assert.equal(fallbackRequests, 1);
+  assert.deepEqual(statuses, [504, 200]);
+  assert.deepEqual(metrics.map(({ providerId, result }) => ({ providerId, result })), [
+    { providerId: "timeout-primary", result: "timeout" },
+    { providerId: "timeout-fallback", result: "success" }
+  ]);
+});
+
+test("weighted custom routing safely replays a pre-connect failure", async (t) => {
+  const unavailable = http.createServer();
+  const unavailablePort = await listen(unavailable);
+  await closeServer(unavailable);
+  let fallbackRequests = 0;
+  const fallback = http.createServer((req, res) => {
+    fallbackRequests += 1;
+    req.resume();
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const fallbackPort = await listen(fallback);
+  t.after(() => closeServer(fallback));
+  const providers = [
+    providerCandidate({
+      id: "offline-primary",
+      name: "Offline primary",
+      weight: 500,
+      baseUrl: `http://127.0.0.1:${unavailablePort}`,
+      apiKey: "offline-primary-secret"
+    }),
+    providerCandidate({
+      id: "offline-fallback",
+      name: "Offline fallback",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${fallbackPort}`,
+      apiKey: "offline-fallback-secret"
+    })
+  ];
+  const settings = makeSettings({ baseUrl: providers[0].upstream.baseUrl, providers });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 11, settings });
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createMemoryCaptureManager(),
+    recordMetric: (observation) => metrics.push(structuredClone(observation)),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "safe-replay-model", input: "retry-me" })
+  });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(fallbackRequests, 1);
+  assert.deepEqual(metrics.map(({ providerId, result }) => ({ providerId, result })), [
+    { providerId: "offline-fallback", result: "success" }
+  ]);
+});
+
+test("weighted cooldown applies each selected provider model policy and settles its metadata", async (t) => {
+  const primaryBodies = [];
+  const fallbackBodies = [];
+  const primary = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      primaryBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      res.statusCode = 503;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: { type: "retry" } }));
+    });
+  });
+  const primaryPort = await listen(primary);
+  t.after(() => closeServer(primary));
+  const fallback = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      fallbackBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const fallbackPort = await listen(fallback);
+  t.after(() => closeServer(fallback));
+  const providers = [
+    providerCandidate({
+      id: "override-primary",
+      name: "Override primary",
+      weight: 500,
+      baseUrl: `http://127.0.0.1:${primaryPort}`,
+      apiKey: "override-primary-secret",
+      modelMode: "override",
+      modelOverride: "provider-override-model"
+    }),
+    providerCandidate({
+      id: "passthrough-fallback",
+      name: "Passthrough fallback",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${fallbackPort}`,
+      apiKey: "passthrough-fallback-secret"
+    })
+  ];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    captureEnabled: true
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 10, settings });
+  const captureManager = createMemoryCaptureManager();
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    recordMetric: (observation) => metrics.push(structuredClone(observation)),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const first = { model: "client-model", input: "first-request" };
+  const second = { model: "client-model", input: "second-request" };
+  const statuses = [];
+  for (const body of [first, second]) {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    statuses.push(response.status);
+    await response.arrayBuffer();
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.deepEqual(statuses, [503, 200]);
+  assert.deepEqual(primaryBodies, [{ ...first, model: "provider-override-model" }]);
+  assert.deepEqual(fallbackBodies, [second]);
+  assert.deepEqual(metrics.map(({ providerId, model, result }) => ({ providerId, model, result })), [
+    { providerId: "override-primary", model: "provider-override-model", result: "upstreamError" },
+    { providerId: "passthrough-fallback", model: "client-model", result: "success" }
+  ]);
+  assert.equal(captureManager.records.length, 2);
+  assert.deepEqual(captureManager.records.map((record) => record.targetUrl), [
+    `http://127.0.0.1:${primaryPort}/v1/responses`,
+    `http://127.0.0.1:${fallbackPort}/v1/responses`
+  ]);
+  assert.deepEqual(
+    captureManager.records.map((record) => JSON.parse(record.requestBody.toString("utf8"))),
+    [{ ...first, model: "provider-override-model" }, second]
+  );
+});
+
+test("custom routing does not replay non-Responses requests or non-retryable rejections", async (t) => {
+  let fallbackRequests = 0;
+  const primary = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = req.url === "/v1/responses" ? 401 : 503;
+      res.end();
+    });
+  });
+  const primaryPort = await listen(primary);
+  t.after(() => closeServer(primary));
+  const fallback = http.createServer((_req, res) => {
+    fallbackRequests += 1;
+    res.statusCode = 200;
+    res.end();
+  });
+  const fallbackPort = await listen(fallback);
+  t.after(() => closeServer(fallback));
+  const providers = [
+    providerCandidate({ id: "primary", name: "Primary", weight: 200, baseUrl: `http://127.0.0.1:${primaryPort}`, apiKey: "a" }),
+    providerCandidate({ id: "fallback", name: "Fallback", weight: 100, baseUrl: `http://127.0.0.1:${fallbackPort}`, apiKey: "b" })
+  ];
+  const settings = makeSettings({ baseUrl: providers[0].upstream.baseUrl, providers, captureEnabled: false });
+  const proxy = createServer(settings, {
+    captureManager: createInactiveCaptureManager(),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const rejected = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}"
+  });
+  assert.equal(rejected.status, 401);
+  await rejected.arrayBuffer();
+  const nonResponses = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}"
+  });
+  assert.equal(nonResponses.status, 503);
+  await nonResponses.arrayBuffer();
+  assert.equal(fallbackRequests, 0);
+});
+
 test("server writes proxied request and response to sqlite", async () => {
   const dir = makeTempDir("crp-server");
   mkdirSync(dir, { recursive: true });
@@ -751,6 +1179,9 @@ test("server writes proxied request and response to sqlite", async () => {
   assert.equal(rows[0].request_id, "req-it-1");
   assert.equal(rows[0].thread_id, "thread-it-1");
   assert.equal(rows[0].upstream_request_id, "upstream-test-1");
+  assert.equal(rows[0].provider_id, "standalone");
+  assert.equal(rows[0].provider_name, "Standalone");
+  assert.equal(rows[0].route, "custom");
   assert.match(rows[0].request_headers_json, /REDACTED/);
   assert.doesNotMatch(rows[0].request_headers_json, /upstream-secret/);
   assert.match(rows[0].response_headers_json, /REDACTED/);

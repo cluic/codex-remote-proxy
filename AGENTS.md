@@ -73,9 +73,17 @@
 - Routine package updates must use patch Changesets; minor or major releases require an explicit release-policy change.
 - Package versioning must refresh the npm lockfile root version before opening a release pull request.
 - Version-only release updates must not recalculate or prune the dependency graph.
+- Cross-platform tests that inject a target platform must distinguish host filesystem semantics from generated target-platform semantics.
 - Authenticated visual checks must keep control tokens in-process instead of placing them in browser command arguments or logs.
 - Custom-provider routing must strip ChatGPT authorization independently of the provider auth-header configuration.
 - A block spanning multiple exhausted quota windows must last until the latest exhausted-window reset.
+- UI information-architecture changes must update every E2E locator tied to removed headings or containers before the full browser run.
+- Fixed-port core-chain verification must inspect active listeners first and must not stop a user-owned CRP service without approval.
+- Repository diagnostics must use paths relative to their declared working directory.
+- GitHub CLI JSON queries must use fields advertised by the installed `gh` version.
+- Retryable POST routing may replay only before upstream delivery is possible; uncertain delivery must cool the provider for later requests.
+- Managed startup mutations must prove marker and inode identity, publish without clobber, disable through inert content, and preserve foreign paths and shared-directory modes.
+- Running provider pools must reject eligible configuration mutations unless the resulting snapshot is hot-applied and confirmed; failed probes must not invalidate a live snapshot.
 
 ## Required Checks
 

@@ -153,6 +153,7 @@ export function SetupPage({
       authHeader: authHeader.trim() || "authorization",
       authScheme: authScheme.trim(),
       extraHeaders,
+      weight: 100,
       modelMode,
       modelOverride: modelMode === "override" ? modelOverride.trim() : null
     }, secret);

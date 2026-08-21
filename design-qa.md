@@ -1,36 +1,70 @@
-# CRP Web V8 Design QA
+# CRP Overview Redesign QA
 
-Date: 2026-07-16
+Date: 2026-08-21
 
 ## Comparison Contract
 
-- Reference: `output/web-v8/reference/v0-overview-default.png`
-- Implementation: `output/web-v8/implementation/overview-1272x716.png`
-- Combined comparison: `output/web-v8/comparison/overview-1272x716.png`
-- Capture surface: the same local in-app browser and matched 1272 x 716 PNG viewport.
-- State: Simplified Chinese, Supervisor connected, Worker running, active tested Provider, Codex configured, writable management session.
-- Comparison layout: v0 reference on the left; V8 implementation on the right.
+- Source visual truth: `output/overview-redesign/source-option-1-1440x900.png`
+- Browser-rendered implementation: `output/overview-redesign/implementation-1440x900.png`
+- Combined comparison: `output/overview-redesign/comparison-2880x900.png`
+- Viewport and pixels: source and implementation are both 1440 x 900 pixels at a 1440 x 900 CSS viewport with device scale factor 1; no density normalization was required.
+- State: English, writable management session, Supervisor connected, Worker running, tested `Fallback API` Provider, Codex configured, ChatGPT Plus authenticated, `account_first` enabled, one returned seven-day quota window, populated 24-hour Metrics.
 
-## Visual Review
+## Full-view Comparison Evidence
 
-The implementation retains the v0 target's quiet local-operations character: fixed sidebar, compact top bar, restrained white/gray surfaces, dark green runtime band, small radii, dense status facts, Lucide controls, and bilingual navigation. The approved V8 change intentionally replaces the lower first-screen proxy-control cards with anonymous Metrics so request volume, success rate, observed Tokens, model distribution, and Provider performance become immediately scannable.
+The final implementation preserves the selected direction's fixed sidebar and top bar, restrained green/gray console palette, single account/routing/quota command strip, four compact KPI cards, wide request-result chart, narrower Token trend, and bottom model/Provider summaries. The final document is exactly one 1440 x 900 viewport (`scrollWidth = 1440`, `scrollHeight = 900`), so all selected operational content remains visible without scrolling.
 
-Issues found and fixed during comparison:
+Intentional product-correct deviations from the Stitch source are accepted:
 
-- Removed the page-sized focus outline created by programmatic route focus while retaining focus rings on interactive controls.
-- Wrapped visually hidden chart tables in a clipped non-table container so accessibility data cannot create mobile horizontal overflow.
-- Kept all model requests visible through Top 7 plus Other aggregation.
-- Hid empty Activity pagination rather than rendering an invalid `1-0` range.
-- Rendered latency overflow as `> 300 s` instead of presenting it as missing data.
+- The source showed fixed five-hour and seven-day quota blocks. The implementation renders the actual account-monitor array and, for the verified state, shows only the returned weekly window.
+- The source's generic custom-API switch is replaced by the real `Use ChatGPT quota first` control and names the active fallback Provider.
+- The existing CRP shell, brand abbreviation, language selector, Provider selector, and Worker controls are preserved rather than replacing stable application-wide navigation.
+- The compact Metrics heading and 24-hour/7-day selector remain visible because they control real data and explain the active aggregation window.
 
-## Additional Evidence
+## Focused-region Evidence
 
-- Provider cards: `output/web-v8/implementation/providers-1280x720.png`
-- Mobile Overview: `output/web-v8/implementation/overview-390x844.png`
-- Chromium acceptance: 33/33 passed.
-- Responsive matrix: English and Simplified Chinese passed at 1440, 1024, and 390 widths.
-- Stable mobile state: no document overflow, no visible off-screen controls, and the closed drawer is hidden from interaction and accessibility order.
+No additional crop was required: the equal-density 2880 x 900 side-by-side comparison keeps the command strip, KPI typography, chart legends, chart marks, and bottom summaries readable in one input. The top command strip was also inspected directly in the live browser after the final build to confirm one quota window, a checked account-first switch, full `ChatGPT signed in` copy, and no clipping.
 
-## Result
+## Required Fidelity Surfaces
 
-PASS. The final comparison has no unresolved P0, P1, or P2 visual defect.
+- Fonts and typography: the implementation retains the product's existing Avenir/Segoe/PingFang stack and weight hierarchy. Page title, command labels, KPI values, panel titles, technical model names, and microcopy remain legible without wrapping or truncation at 1440 px. This intentionally preserves product typography instead of importing the mock's font stack.
+- Spacing and layout rhythm: 256 px sidebar, 64 px top bar, 28 px content gutters, 8 px panels, subtle borders, and compact 12-20 px internal gaps match the selected operational density. Final desktop height is exactly 900 px with no hidden persistent controls.
+- Colors and visual tokens: the existing `#17372c` primary, neutral canvas/surface tokens, green success, amber rejection, red error, blue input, and magenta output map closely to the source and retain semantic contrast.
+- Image quality and asset fidelity: the source contains no raster product imagery. Existing Lucide icons are retained as the project's standard icon library; no placeholder imagery, custom SVG, emoji, or simulated asset was introduced.
+- Copy and content: labels use the live bilingual dictionary and real contracts. Account plan, fallback Provider, quota remaining/reset, KPI values, model names, and Provider performance are data-driven rather than baked into the layout.
+
+## Interaction and Responsive Verification
+
+- Account-first routing was toggled off and back on; the checked state and local settings mutation settled correctly.
+- The Metrics window was switched to seven days and back to 24 hours; `aria-pressed` followed the selected window.
+- Manual account quota refresh completed through the existing mutation path.
+- Browser console errors checked after the final interaction pass: 0.
+- At 390 x 844 (`output/overview-redesign/implementation-390x844.png`), the command strip stacks, KPI cards use two columns, navigation moves off-canvas, and the document has no horizontal overflow (`scrollWidth = 375` within the scrollbar-adjusted viewport).
+- Full Chromium E2E matrix: 47/47 passed, including English/Chinese and 1440/1024/390 layout checks.
+
+## Comparison History
+
+1. Initial implementation: the account segment duplicated `ChatGPT signed in` with a `Connected` badge and clipped the account copy. Classified P2. Fix: removed the redundant badge and gave the account identity the full segment width.
+2. Second implementation: chart height was too conservative relative to the selected mock. Classified P2 composition drift. Fix: increased the request and Token plotting surfaces while keeping legends and summaries in the first viewport.
+3. Third implementation: the desktop document measured 922 px high, leaving a 22 px vertical scroll despite all content being visible. Classified P2 viewport mismatch. Fix: applied route-specific Overview content padding; final dimensions are exactly 1440 x 900.
+4. Final implementation: no actionable P0, P1, or P2 visual findings remain. The deviations listed above are deliberate product-contract corrections, not unresolved fidelity defects.
+
+## System Page Redesign QA
+
+- Baseline composition: `output/web-v8/reference/v0-system-1272x716.png`
+- Browser-rendered implementation at the same viewport: `output/system-redesign/implementation-1272x716.png`
+- Side-by-side comparison: `output/system-redesign/comparison-2544x716.png`
+- Full desktop implementation: `output/system-redesign/implementation-1440x900.png`
+- Mobile implementation: `output/system-redesign/implementation-390x844.png`
+
+The baseline devoted the dominant first viewport to a large one-purpose readiness banner, four oversized status cards, and duplicate proxy controls. The redesign keeps the same shell and visual tokens but compresses management, Worker, preferred Provider, and Codex health into one four-fact strip. The main workspace then gives the largest area to actionable startup and routing settings, while runtime endpoints and diagnostics use the narrower column. ChatGPT quota charts remain on Overview; System carries only the account identity, last-check time, refresh action, and routing preference.
+
+At 1440 x 900, the initial System document is exactly one viewport (`scrollWidth = 1440`, `scrollHeight = 900`). At 390 x 844, health facts form a two-by-two grid, settings remain touch-sized, the document has no horizontal overflow (`scrollWidth = 375` in the scrollbar-adjusted viewport), and lower operational sections remain available by vertical scroll. Start-at-login, account-first off/on, account refresh, Codex preparation, and diagnostic generation use real fixture-backed controls; the final interaction pass produced no visible error alert.
+
+The start-at-login setting exposes its platform/user-level boundary directly, and the Provider terminology now distinguishes a preferred equal-weight tie-breaker from weighted routing order. No custom icon assets, placeholder graphics, fixed quota windows, or secret-bearing data were introduced.
+
+## Follow-up Polish
+
+- P3: Real-world accounts with several simultaneous quota windows may benefit from a later density pass after representative production snapshots are available; the current auto-fit layout already remains functional.
+
+final result: passed

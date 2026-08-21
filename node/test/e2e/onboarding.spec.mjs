@@ -95,7 +95,7 @@ async function completeSetup(page, crp, copy, providerName) {
   await expect(page.getByRole("heading", { name: copy.complete })).toBeVisible();
   await page.getByRole("button", { name: copy.overview }).click();
   await expect(page.getByRole("heading", { name: copy.overviewTitle, level: 1 })).toBeVisible();
-  await expect(page.getByRole("heading", { name: copy.ready })).toBeVisible();
+  await expect(page.locator(".overview-command-bar")).toBeVisible();
 }
 
 test("the injected Admin status is healthy before the UI loads", async ({ crp }) => {
@@ -179,7 +179,8 @@ test("completes a clean English install with the exact safe request order", asyn
       authScheme: "Bearer",
       extraHeaders: {},
       modelMode: "passthrough",
-      modelOverride: null
+      modelOverride: null,
+      weight: 100
     }
   });
 
@@ -301,7 +302,7 @@ test("clears provider secrets before both local validation and backend failure r
   await assertNoSecrets(page, crp, [localSecret, backendSecret]);
 });
 
-test("defaults to English even when the browser prefers Chinese", async ({ page, crp }) => {
+test("uses the first supported browser language without persisting an inferred choice", async ({ page, crp }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "languages", {
       configurable: true,
@@ -309,8 +310,8 @@ test("defaults to English even when the browser prefers Chinese", async ({ page,
     });
   });
   await openCrp(page, crp);
-  await expect(page.locator("html")).toHaveAttribute("lang", "en");
-  await expect(page.getByRole("heading", { name: "Set up Codex Remote Proxy", level: 1 })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page.getByRole("heading", { name: "设置 Codex Remote Proxy", level: 1 })).toBeVisible();
   expect(await page.evaluate(() => localStorage.length)).toBe(0);
   const noscriptCopy = await page.locator("noscript").evaluate((element) => element.innerHTML);
   expect(noscriptCopy).toContain("CRP requires JavaScript");
@@ -339,7 +340,7 @@ test("persists an explicit Chinese selection across a read-only reload", async (
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "languages", {
       configurable: true,
-      get: () => ["zh-CN", "en-US"]
+      get: () => ["en-US", "zh-CN"]
     });
   });
   await openCrp(page, crp);

@@ -14,6 +14,7 @@ const PUBLIC_PROVIDER_FIELDS = [
   "authHeader",
   "authScheme",
   "extraHeaders",
+  "weight",
   "modelMode",
   "modelOverride",
   "lastTestAt",
@@ -240,7 +241,14 @@ function pick(source, fields) {
 }
 
 function projectProvider(provider) {
-  return provider === null ? null : pick(provider, PUBLIC_PROVIDER_FIELDS);
+  if (provider === null) return null;
+  const projected = pick(provider, PUBLIC_PROVIDER_FIELDS);
+  projected.weight = Number.isInteger(provider?.weight)
+    && provider.weight >= 1
+    && provider.weight <= 1_000
+    ? provider.weight
+    : 100;
+  return projected;
 }
 
 function projectWorker(worker) {
@@ -320,6 +328,7 @@ function projectActivityEvent(event) {
 }
 
 function projectSettings(settings) {
+  const autoStartStates = new Set(["enabled", "disabled", "stale", "conflict", "unavailable"]);
   return {
     proxyHost: typeof settings?.proxyHost === "string" ? settings.proxyHost : null,
     proxyPort: Number.isInteger(settings?.proxyPort) ? settings.proxyPort : null,
@@ -331,6 +340,14 @@ function projectSettings(settings) {
       : "custom_only",
     credentialBackend: typeof settings?.credentialBackend === "string"
       ? settings.credentialBackend
+      : null,
+    autoStartSupported: settings?.autoStartSupported === true,
+    autoStartEnabled: settings?.autoStartEnabled === true,
+    autoStartState: autoStartStates.has(settings?.autoStartState)
+      ? settings.autoStartState
+      : "unavailable",
+    autoStartPlatform: typeof settings?.autoStartPlatform === "string"
+      ? settings.autoStartPlatform
       : null
   };
 }
@@ -535,6 +552,87 @@ function projectMetricsOverview(metrics, requestedWindow) {
   };
 }
 
+function projectForwardingRecord(record) {
+  const id = Number.isSafeInteger(record?.id) && record.id > 0 ? record.id : null;
+  const outcome = ["success", "rejected", "error"].includes(record?.outcome)
+    ? record.outcome
+    : "error";
+  const route = ["account", "custom", "unknown"].includes(record?.route)
+    ? record.route
+    : "unknown";
+  const boundedCount = (value) => Number.isSafeInteger(value)
+    && value >= 0
+    && value <= 1_000_000_000_000
+    ? value
+    : 0;
+  return {
+    id,
+    startedAt: projectMetricTimestamp(record?.startedAt),
+    completedAt: projectMetricTimestamp(record?.completedAt),
+    durationMs: record?.durationMs === null
+      ? null
+      : (Number.isSafeInteger(record?.durationMs)
+          && record.durationMs >= 0
+          && record.durationMs <= 30 * 24 * 60 * 60 * 1_000
+          ? record.durationMs
+          : null),
+    requestId: projectMetricText(record?.requestId, 256),
+    sessionId: projectMetricText(record?.sessionId, 256),
+    threadId: projectMetricText(record?.threadId, 256),
+    method: projectMetricText(record?.method, 32),
+    incomingUrl: projectMetricText(record?.incomingUrl, 2_048),
+    targetUrl: projectMetricText(record?.targetUrl, 2_048),
+    requestBytes: boundedCount(record?.requestBytes),
+    responseStatus: record?.responseStatus === null
+      ? null
+      : (Number.isInteger(record?.responseStatus)
+          && record.responseStatus >= 100
+          && record.responseStatus <= 599
+          ? record.responseStatus
+          : null),
+    responseBytes: boundedCount(record?.responseBytes),
+    stream: record?.stream === true,
+    upstreamRequestId: projectMetricText(record?.upstreamRequestId, 256),
+    errorType: projectMetricText(record?.errorType, 256),
+    errorMessage: projectMetricText(record?.errorMessage, 512),
+    outcome,
+    providerId: projectMetricText(record?.providerId, 256),
+    providerName: projectMetricText(record?.providerName, 256),
+    route
+  };
+}
+
+function projectForwardingRecordsPage(result, requestedLimit) {
+  const records = Array.isArray(result?.records)
+    ? result.records.slice(0, requestedLimit).map(projectForwardingRecord)
+      .filter((record) => record.id !== null)
+    : [];
+  const summaryCount = (value) => Number.isSafeInteger(value)
+    && value >= 0
+    && value <= METRIC_MAX_COUNT
+    ? value
+    : 0;
+  return {
+    storageState: ["missing", "ready"].includes(result?.storageState)
+      ? result.storageState
+      : "missing",
+    records,
+    page: {
+      limit: requestedLimit,
+      nextBefore: Number.isSafeInteger(result?.page?.nextBefore)
+        && result.page.nextBefore > 0
+        ? result.page.nextBefore
+        : null
+    },
+    summary: {
+      total: summaryCount(result?.summary?.total),
+      success: summaryCount(result?.summary?.success),
+      rejected: summaryCount(result?.summary?.rejected),
+      error: summaryCount(result?.summary?.error)
+    }
+  };
+}
+
 function projectSupervisorState(state) {
   return {
     pid: Number.isSafeInteger(state?.pid) ? state.pid : null,
@@ -627,7 +725,11 @@ function parseProviderRoute(pathname) {
   }
   if (id.length === 0 || id.length > 128 || /[\\/\u0000-\u001f\u007f]/.test(id)) return null;
   const action = rawParts[1] ?? null;
-  if (action !== null && action !== "test" && action !== "activate" && action !== "models") {
+  if (action !== null
+    && action !== "test"
+    && action !== "activate"
+    && action !== "models"
+    && action !== "weight") {
     return null;
   }
   return { id, action };
@@ -649,6 +751,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/status`, ["GET"]],
     [`${API_PREFIX}/account/refresh`, ["POST"]],
     [`${API_PREFIX}/metrics/overview`, ["GET"]],
+    [`${API_PREFIX}/forwarding-records`, ["GET"]],
     [`${API_PREFIX}/providers`, ["GET", "POST"]],
     [`${API_PREFIX}/proxy/start`, ["POST"]],
     [`${API_PREFIX}/proxy/stop`, ["POST"]],
@@ -663,7 +766,8 @@ function allowedMethods(pathname) {
   const providerRoute = parseProviderRoute(pathname);
   if (!providerRoute) return null;
   if (providerRoute.action === null) return ["GET", "PATCH", "DELETE"];
-  return providerRoute.action === "models" ? ["GET", "POST"] : ["POST"];
+  if (providerRoute.action === "models") return ["GET", "POST"];
+  return providerRoute.action === "weight" ? ["PATCH"] : ["POST"];
 }
 
 function positiveQueryInteger(url, name, fallback, { min = 0, max }) {
@@ -710,6 +814,7 @@ export function createAdminServer({
   codexService,
   diagnosticsService,
   metricsService,
+  forwardingRecordsService,
   accountMonitor,
   getSupervisorState = () => ({ pid: process.pid, startedAt: null }),
   requestSupervisorShutdown = null,
@@ -946,6 +1051,45 @@ export function createAdminServer({
       sendJson(response, 200, { metrics: projectMetricsOverview(metrics, window) });
       return;
     }
+    if (url.pathname === `${API_PREFIX}/forwarding-records` && request.method === "GET") {
+      const allowed = new Set(["limit", "before", "outcome", "search"]);
+      for (const key of url.searchParams.keys()) {
+        if (!allowed.has(key)) throw bodyError("API_BODY_INVALID");
+      }
+      const limit = positiveQueryInteger(url, "limit", 50, { min: 1, max: 100 });
+      const beforeValues = url.searchParams.getAll("before");
+      const before = beforeValues.length === 0
+        ? null
+        : positiveQueryInteger(url, "before", null, { min: 1, max: Number.MAX_SAFE_INTEGER });
+      const outcomeValues = url.searchParams.getAll("outcome");
+      if (outcomeValues.length > 1
+        || (outcomeValues.length === 1
+          && !["all", "success", "rejected", "error"].includes(outcomeValues[0]))) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const searchValues = url.searchParams.getAll("search");
+      if (searchValues.length > 1
+        || (searchValues.length === 1
+          && ([...searchValues[0]].length > 100 || /[\u0000-\u001f\u007f]/.test(searchValues[0])))) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      if (!forwardingRecordsService || typeof forwardingRecordsService.list !== "function") {
+        throw new CrpError(
+          "FORWARDING_RECORDS_UNAVAILABLE",
+          "Forwarding records could not be read.",
+          "Verify the Capture database and try again.",
+          { status: 503 }
+        );
+      }
+      const result = forwardingRecordsService.list({
+        limit,
+        before,
+        outcome: outcomeValues[0] ?? "all",
+        search: searchValues[0] ?? ""
+      });
+      sendJson(response, 200, projectForwardingRecordsPage(result, limit));
+      return;
+    }
     if (url.pathname === `${API_PREFIX}/providers` && request.method === "GET") {
       const providers = await providerService.listProviders();
       sendJson(response, 200, { providers: providers.map(projectProvider) });
@@ -1026,6 +1170,18 @@ export function createAdminServer({
       sendJson(response, 200, { modelCatalog: projectModelCatalog(modelCatalog) });
       return;
     }
+    if (providerRoute?.action === "weight" && request.method === "PATCH") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["weight"],
+        required: ["weight"]
+      });
+      if (!Number.isInteger(body.weight) || body.weight < 1 || body.weight > 1_000) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const provider = await providerService.setProviderWeight(providerRoute.id, body.weight);
+      sendJson(response, 200, { provider: projectProvider(provider) });
+      return;
+    }
     if (providerRoute?.action === "activate" && request.method === "POST") {
       await requireEmptyBody(request, maxBodyBytes);
       const activation = await runWhenCodexReady(
@@ -1099,7 +1255,7 @@ export function createAdminServer({
     }
     if (url.pathname === `${API_PREFIX}/settings` && request.method === "PATCH") {
       const patch = exactObject(await readJsonBody(request, maxBodyBytes), {
-        allowed: ["captureEnabled", "routingMode"]
+        allowed: ["autoStartEnabled", "captureEnabled", "routingMode"]
       });
       if (Object.keys(patch).length !== 1) {
         throw bodyError("API_BODY_INVALID");
@@ -1111,13 +1267,14 @@ export function createAdminServer({
         });
         return;
       }
-      if (typeof patch.captureEnabled !== "boolean") throw bodyError("API_BODY_INVALID");
-      throw new CrpError(
-        "SETTINGS_READ_ONLY",
-        "Local settings are read-only in this version.",
-        "Keep the fixed proxy settings and use a supported provider operation.",
-        { status: 409 }
-      );
+      const booleanValue = Object.hasOwn(patch, "captureEnabled")
+        ? patch.captureEnabled
+        : patch.autoStartEnabled;
+      if (typeof booleanValue !== "boolean") throw bodyError("API_BODY_INVALID");
+      sendJson(response, 200, {
+        settings: projectSettings(await settingsService.updateSettings(patch))
+      });
+      return;
     }
     if (url.pathname === `${API_PREFIX}/codex/bootstrap` && request.method === "POST") {
       await requireEmptyBody(request, maxBodyBytes);

@@ -30,6 +30,12 @@ import {
   removeStaleSupervisorState
 } from "../src/supervisor/supervisor-client.mjs";
 
+function configuredHome(environment = process.env) {
+  return typeof environment?.CRP_HOME === "string" && environment.CRP_HOME.length > 0
+    ? environment.CRP_HOME
+    : undefined;
+}
+
 const PACKAGE_ROOT = resolve(import.meta.dirname, "..");
 const {
   codexConfigPath: DEFAULT_CODEX_CONFIG_PATH,
@@ -37,7 +43,7 @@ const {
   globalHome: GLOBAL_HOME,
   statePath: STATE_FILE,
   logPath: LOG_FILE
-} = getPaths();
+} = getPaths(configuredHome());
 const BIN_DIR = resolve(GLOBAL_HOME, "bin");
 const CRP_SHIM_PATH = resolve(BIN_DIR, "crp");
 const USER_CONFIG_FILE = resolve(GLOBAL_HOME, "config.json");
@@ -2813,7 +2819,7 @@ async function main(argv = process.argv.slice(2), {
 export async function runCli(argv, {
   stdout = (text) => process.stdout.write(text),
   stderr = (text) => process.stderr.write(text),
-  paths = getPaths(),
+  paths,
   adminPort = 15101,
   ensureSupervisorImpl = ensureSupervisor,
   discoverSupervisorImpl = discoverSupervisor,
@@ -2829,6 +2835,7 @@ export async function runCli(argv, {
   shutdownTimeoutMs = 8_000,
   environment = process.env
 } = {}) {
+  paths ??= getPaths(configuredHome(environment));
   let locale = "en";
   const jsonIntent = argv.includes("--json");
   let commandName = safeCommandName(argv);

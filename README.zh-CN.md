@@ -2,11 +2,11 @@
 
 # Codex Remote Proxy 中文文档
 
-Codex Remote Proxy（CRP）让 Codex 保持 ChatGPT 登录态，同时把模型请求转发到当前选中的 OpenAI 兼容提供商。Codex 始终使用内置的 `OpenAI` 提供商身份，因此切换上游不会改变已有 OpenAI 线程的归属。
+Codex Remote Proxy（CRP）让 Codex 保持 ChatGPT 登录态，同时把模型请求调度到带权重的 OpenAI 兼容提供商池。Codex 始终使用内置的 `OpenAI` 提供商身份，因此调整上游优先级不会改变已有 OpenAI 线程的归属。
 
 [English](./README.md)
 
-> 发布状态：npm 当前版本是 `0.4.1`，已经包含 Supervisor 和 `crp ui`。`0.4.1` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布；普通更新使用 patch 版本。
+> 发布状态：npm 当前版本是 `0.4.2`。`0.4.2` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布；普通更新使用 patch 版本。
 
 ## 安装
 
@@ -28,7 +28,7 @@ crp ui
 npx @cluic/codex-remote-proxy ui
 ```
 
-`crp ui` 会启动或发现本地 Supervisor，并打开管理界面。界面首次启动始终使用 English，并可通过语言选择器切换为简体中文；浏览器只会保存用户明确选择的语言，因此选择中文后后续启动会保持中文。
+`crp ui` 会启动或发现本地 Supervisor，并打开管理界面。已保存的明确语言选择优先；否则按浏览器/系统语言偏好选择第一个受支持的中文或英文，均不匹配时默认英文。推断出的语言不会写入浏览器存储。
 
 当前开发版界面使用 `node/ui-src/` 中的 React、TypeScript 与 Vite 实现。这些工具只参与构建；发布包和 Admin Server 仍然只交付 `ui/index.html`、`ui/app.js` 与 `ui/styles.css`，不需要前端运行时服务器，也不包含远程字体、CDN、遥测、source map 或动态 chunk。
 
@@ -39,24 +39,28 @@ npx @cluic/codex-remote-proxy ui
 - 创建具名提供商；
 - 通过只写输入框填写凭据；
 - 测试 OpenAI Responses API 兼容性；
-- 直接在提供商卡片上切换符合条件的提供商；
-- 替换非当前提供商的凭据或删除非当前提供商；
+- 为每个提供商设置优先级权重，并指定同权重时优先使用的首选提供商；
+- 遇到可重试的 `429`、指定 `5xx`、超时、连接重置或明确网络故障时让提供商进入冷却，并且仅在尚未建立上游连接时回放有界 Responses 请求；
+- 替换非首选提供商的凭据或删除非首选提供商；
 - 启动、停止、重启和查看代理 Worker；
 - 在总览中查看匿名的 24 小时或 7 天请求、结果、已观测 Token、模型、Provider 与有界延迟 Metrics；
-- 查看已脱敏的控制面 Activity 和只读系统事实；
+- 查看只包含元数据的转发记录，并在该页面控制可选 Capture；
+- 在紧凑的系统页配置登录时启动、路由、Codex 集成、运行时信息和诊断；
 - 生成只包含创建状态、生成时间和已脱敏事件数量的内存诊断摘要。
 
-System 页面还会展示本机 Codex 的 ChatGPT 鉴权模式、订阅类型，以及归一化后的 5 小时/7 天额度窗口。账号快照每五分钟自动刷新，也可以手动刷新；数据通过 Codex 私有 app-server 协议读取。如果该实验性接口不可用或发生变化，CRP 会显示账号状态不可用/未知，自定义 Provider 路由仍可正常工作。
+总览会展示本机 Codex 的 ChatGPT 鉴权模式、订阅类型，以及实际返回的归一化额度窗口；系统页只保留紧凑的账号与路由状态。已知 5 小时和 7 天窗口会显示友好名称，但不会为缺失窗口伪造数据或预留空间。账号快照每五分钟自动刷新，也可以手动刷新；如果实验性的 Codex 私有 app-server 协议不可用或发生变化，自定义 Provider 路由仍可正常工作。
 
-路由默认保持 `custom_only`。在 System 中开启 `account_first` 后，运行中的 Worker 会热更新，无需重启。只有 `POST /responses` 和 `POST /v1/responses` 可以使用 ChatGPT 账号：Codex 必须已登录 ChatGPT、账号身份唯一且额度可用，否则直接使用当前自定义 Provider。账号上游首次明确返回限流时，同一请求只会向自定义 Provider 回放一次；鉴权失败、其他上游失败和网络错误会原样暴露，不会静默消耗自定义 API key。可回放请求体上限为 8 MiB。
+路由默认保持 `custom_only`。在总览或系统页开启 `account_first` 后，运行中的 Worker 会热更新，无需重启。只有 `POST /responses` 和 `POST /v1/responses` 可以优先使用 ChatGPT 账号；账号不可用或明确限流时进入自定义提供商池。池内按权重从高到低调度，同权重时首选提供商优先。可重试 HTTP 响应和已连接的传输故障会让失败提供商冷却，从下一条请求起使用其他候选；一旦请求可能已经送达，自定义 POST 就不会被自动回放。只有在上游连接尚未建立时失败的有界 Responses 请求，才会在同一请求内安全转移。非 Responses 请求绝不会回放，回放缓冲上限为 8 MiB。
 
-侧边栏会显示不可操作的 `转发记录 / 即将上线` 占位项。本 MVP 不提供转发记录路由、请求/响应查看器、Capture 控件或模拟流量数据；总览 Metrics 是独立于可选 Capture 的匿名聚合状态。24 小时和 7 天序列使用固定 UTC 小时桶。只有成功的 Responses 终态事件或已完成 JSON 响应才计为成功；如果存在丢弃的指标更新，界面会把成功率标记为不可用，而不是展示看似精确的百分比。Provider 和模型分布始终保留明确的合并余量。
+系统页可在无需管理员权限的情况下开启“登录时启动”。CRP 会写入一个带项目标记、属于当前用户的 macOS LaunchAgent、Linux systemd user unit 或 Windows Startup 命令，并在下次登录时使用同一 `CRP_HOME` 启动已安装 CLI。如果 Node 或包安装路径随后变化，系统页会把受管启动项标记为过期，用户可以明确修复或停用。停用只会通过已校验身份的文件描述符把受管 inode 改写为惰性配置，不会以存在竞态的方式删除保留路径或 Linux wants 链接。保留路径上如果已有外部普通文件、链接或其他不安全对象，页面会显示冲突；CRP 不会覆盖或删除它，也不会借机修改共享启动目录的权限。
 
-提供商切换只影响新请求。已经在处理中的请求继续使用其开始时捕获的提供商快照，包括模型策略。`passthrough` 模式保留客户端模型；`override` 模式只替换 JSON 顶层 `model` 值。显式 activation 路由同时也是生产切换操作：Worker 运行时应用新快照，Worker 停止时会启动它。首次选中有意不同：兼容性测试成功后，Setup、CLI 和普通 Providers 页面都会在尚无当前 Provider 时通过 first-wins compare-and-set 选中候选，Worker 保持停止。
+`转发记录` 已是完整的元数据页面，读取本地 Capture 数据库，支持结果筛选、有界搜索、游标分页、详情面板、汇总计数和 Capture 开关。新 Capture 行会持久保存最终路由、提供商 ID 和名称，因此后续编辑或删除提供商也不会改变历史归属；旧记录继续按 URL 做尽力推断。页面只展示时间、路由/提供商、路径、字节数、状态、ID 与已脱敏错误元数据，绝不会查询或返回请求/响应正文和鉴权请求头。总览 Metrics 仍是独立的匿名聚合状态，并继续使用固定 UTC 小时桶、语义化 Responses 完成状态和明确的 Provider/模型合并余量。
+
+调整首选提供商或权重只影响新请求。已经在处理中的请求继续使用其开始时捕获的完整提供商快照，包括模型策略。`passthrough` 模式保留客户端模型；`override` 模式只替换 JSON 顶层 `model` 值。首选项变更会向运行中的 Worker 热应用新的带权快照，并会启动已停止的 Worker；权重只能通过专用路由热更新，不会改变首选提供商。Worker 运行时不能编辑或删除已进入池的提供商，以免运行快照继续持有已经删除的配置或旧凭据；实时兼容性测试失败会返回结果，但不会让正在使用的快照失效。首次选中仍使用 first-wins compare-and-set，并保持 Worker 停止。
 
 代理透传会按背压流式转发请求和响应字节，不会自动解压请求体。模型覆盖只在 8 MiB 有界范围内改写 JSON；发生改写时会尽可能保留 gzip、deflate、Brotli 和原生 zstd 编码，并移除已经失效的正文完整性/签名头。Node 没有原生 zstd 压缩能力时，经过验证的单帧 zstd 覆盖请求会在改写后以 identity 转发；非覆盖流量中无法安全检查的 zstd 帧仍保持字节完全一致。客户端取消连接会终止对应的上游工作。
 
-可选 Capture 对请求体和响应体各自最多保存 1 MiB，同时保留实际观测总字节数。存在已配置保护值时，截断正文、已声明或检测到的压缩正文，以及包含明文或可恢复编码保护值的正文都会记录为 `empty-truncated`；能够完整筛查的文本/二进制记录仍使用明确的 UTF-8/base64 编码。配置的 API key 和额外请求头值不会进入 Capture header、正文、URL/ID 元数据或 debug 日志。Metrics 的缓冲正文检查独立限制为 8 MiB，SSE 使用有界事件做增量检查，两者都不会隐式开启 Capture。
+可选 Capture 内部对请求体和响应体各自最多保存 1 MiB，同时保留实际观测总字节数；转发记录 API 只投影元数据。存在已配置保护值时，截断正文、已声明或检测到的压缩正文，以及包含明文或可恢复编码保护值的正文都会记录为 `empty-truncated`；能够完整筛查的文本/二进制记录仍使用明确的 UTF-8/base64 编码。配置的 API key 和额外请求头值不会进入 Capture header、正文、URL/ID 元数据或 debug 日志。Metrics 的缓冲正文检查独立限制为 8 MiB，SSE 使用有界事件做增量检查，两者都不会隐式开启 Capture。
 
 ## 固定的 Codex 配置
 
@@ -145,20 +149,20 @@ CLI 发起的兼容性测试（包括 `provider add --model`）只会在当前�
 
 ## 从 0.2.2 升级
 
-当前版本会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 3。已有且有效的 schema-2 registry 会原子升级，并写入 `routingMode: "custom_only"`，因此单纯升级不会把流量改到 ChatGPT 账号。
+当前版本会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 4。已有且有效的 schema-2/schema-3 registry 会先备份再原子升级；已有提供商统一获得中性的默认权重 `100`，原有路由和 Capture 设置保持不变。Schema 检查与替换同时持有迁移锁和常规 ProviderRegistry 写锁，并在报告成功前 fsync 备份及发布目录项。
 
 1. 停止旧的托管代理。
 2. 私下备份 `~/.codex-remote-proxy/` 和 `~/.codex/config.toml`；所有备份都应视为包含敏感信息。
 3. 运行 `crp ui`。
 4. 检查迁移得到的 `Default` 提供商，运行兼容性测试，并且只在测试通过后激活。
 
-如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建 `custom_only` 模式、未激活且未测试的 schema-3 provider registry，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。schema-2 升级也会保留字节完全一致的备份；验证或发布失败时恢复原始字节。
+如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建 `custom_only` 模式、权重 `100`、未激活且未测试的 schema-4 provider registry，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。schema-2/schema-3 升级也会保留字节完全一致的备份；验证或发布失败时恢复原始字节。
 
 如果多个旧配置源包含不同凭据，迁移会在创建备份、访问凭据存储、写入 registry 或修改任一源文件之前返回 `MIGRATION_INPUT_INVALID`。CRP 不会自动选择其中一个凭据；该冲突只能在经过操作员审查的真实 HOME 迁移中解决。
 
 如果事务在提交前失败，CRP 会尝试恢复原始字节，并且只删除能够证明属于本次事务的 registry 与凭据状态；外部替换的文件不会被删除。出现 `MIGRATION_COMMITTED_DEGRADED`、`MIGRATION_COMMITTED_LOCK_DEGRADED` 或 `MIGRATION_ROLLBACK_DEGRADED`，表示最终状态不确定或需要修复：停止 CRP，不要连续重试，保留备份，并在修改文件前查看 Activity 中已脱敏的错误码。处于降级状态时，CRP 不会擅自用备份自动覆盖当前状态。
 
-回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-3 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
+回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-4 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
 
 ## 开发验证
 
@@ -199,7 +203,7 @@ npm pack --dry-run --json --ignore-scripts
 
 串行 `core-chain` 门禁会覆盖真实 CLI、Admin 服务、registry/provider service、WorkerManager、fork 出的代理 Worker、固定端口、存在进行中请求时的提供商切换、重启、关闭和密钥扫描。该门禁会有意替换为内存凭据适配器和 loopback 上游，因此不能证明原生凭据读取或真实外部提供商链路。
 
-M2E/V8 最终本地验证通过 exact `npm test` 463/463（`412` unit-core + `8` 隔离 capture + `42` 普通 integration + `1` 串行 core-chain）、Metrics 存储聚焦 6/6、33 个源文件 lint、UI 类型检查/构建/精确三文件同步验证、精确 33 文件白名单 package-content 3/3、Chromium 33/33（包含英中双语 1440/1024/390 响应式矩阵）、完整与生产依赖审计 0 漏洞，以及 `design-qa.md` 中的同状态视觉对比。测试不得触碰真实 Codex 历史、凭据或外部 provider；本机 macOS D2 原生 Keychain/真实上游结果仅是其已审查代码树的历史证据。
+发布证据必须包含 lint、UI 类型检查/构建/精确三文件同步验证、确定性 Node 测试、Chromium 英中双语响应式矩阵、精确发布包白名单、生产依赖审计，以及 `design-qa.md` 中的视觉对比。确定性 fixture 不代表真实 Codex 历史、原生凭据、登录启动执行或外部 provider 证据；这些仍属于对应发布代码树的平台/人工门禁。
 
 Supervisor 发现使用有界的 2 秒探活，普通 Admin 操作另用 30 秒超时，因此已经成功的 provider test 不会再被误报为 `SUPERVISOR_UNAVAILABLE`。代理目标通过结构化方式拼接，无论 base URL 是否带尾斜杠都只产生一个路径分隔符。
 

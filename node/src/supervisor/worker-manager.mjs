@@ -336,7 +336,7 @@ export class WorkerManager {
     if (snapshot.settings.server.host !== this.#host || snapshot.settings.server.port !== this.#port) {
       throw managerError("WORKER_START_FAILED");
     }
-    this.#rememberMetricProvider(snapshot.generation, providerId);
+    this.#rememberMetricProviders(snapshot.generation, snapshot, providerId);
 
     this.#phase = "starting";
     let child;
@@ -448,7 +448,11 @@ export class WorkerManager {
       || snapshot.settings.server.port !== this.#port) {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
-    this.#rememberMetricProvider(snapshot.generation, snapshot.providerId ?? null);
+    this.#rememberMetricProviders(
+      snapshot.generation,
+      snapshot,
+      snapshot.providerId ?? null
+    );
     const configured = await this.#sendAndWait(child, message, {
       epoch,
       requestId,
@@ -791,10 +795,16 @@ export class WorkerManager {
     }
   }
 
-  #rememberMetricProvider(generation, providerId) {
-    if (!validProviderId(providerId)) return;
+  #rememberMetricProviders(generation, snapshot, fallbackProviderId) {
+    const providerIds = Array.isArray(snapshot?.settings?.providers)
+      ? snapshot.settings.providers.map((provider) => provider?.id).filter(validProviderId)
+      : [];
+    if (providerIds.length === 0 && validProviderId(fallbackProviderId)) {
+      providerIds.push(fallbackProviderId);
+    }
+    if (providerIds.length === 0) return;
     this.#metricProviders.delete(generation);
-    this.#metricProviders.set(generation, providerId);
+    this.#metricProviders.set(generation, new Set(providerIds));
     while (this.#metricProviders.size > MAX_METRIC_GENERATIONS) {
       this.#metricProviders.delete(this.#metricProviders.keys().next().value);
     }
@@ -803,12 +813,19 @@ export class WorkerManager {
   #acceptMetric(observation) {
     const providerId = observation.route === "account"
       ? CHATGPT_METRICS_PROVIDER_ID
-      : this.#metricProviders.get(observation.generation);
-    if (!providerId) {
+      : observation.providerId;
+    const generationProviders = this.#metricProviders.get(observation.generation);
+    if (!providerId
+      || (observation.route === "custom" && !generationProviders?.has(providerId))) {
       this.#dropMetric();
       return;
     }
-    const { generation: _generation, route: _route, ...fields } = observation;
+    const {
+      generation: _generation,
+      route: _route,
+      providerId: _providerId,
+      ...fields
+    } = observation;
     try {
       const result = this.#recordMetric({ providerId, ...fields });
       if (result && typeof result.then === "function") {

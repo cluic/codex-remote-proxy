@@ -36,6 +36,7 @@ function publicProvider(overrides = {}) {
     authHeader: "authorization",
     authScheme: "Bearer",
     extraHeaders: {},
+    weight: 100,
     modelMode: "passthrough",
     modelOverride: null,
     lastTestAt: null,
@@ -91,6 +92,12 @@ function createServices() {
       calls.push(["updateProvider", id, patch, replacementSecret]);
       const current = providers.find((provider) => provider.id === id);
       Object.assign(current, patch, { updatedAt: "2026-07-13T00:01:00.000Z" });
+      return { ...current };
+    },
+    async setProviderWeight(id, weight) {
+      calls.push(["setProviderWeight", id, weight]);
+      const current = providers.find((provider) => provider.id === id);
+      current.weight = weight;
       return { ...current };
     },
     async deleteProvider(id) {
@@ -198,6 +205,10 @@ function createServices() {
         captureEnabled: false,
         routingMode: "custom_only",
         credentialBackend: "native",
+        autoStartSupported: true,
+        autoStartEnabled: false,
+        autoStartState: "disabled",
+        autoStartPlatform: "darwin",
         apiKey: SECRET
       };
     },
@@ -325,6 +336,42 @@ function createServices() {
       };
     }
   };
+  const forwardingRecordsService = {
+    list(query) {
+      calls.push(["forwardingRecords", query]);
+      return {
+        storageState: "ready",
+        records: [{
+          id: 9,
+          startedAt: "2026-07-13T00:00:00.000Z",
+          completedAt: "2026-07-13T00:00:01.000Z",
+          durationMs: 1_000,
+          requestId: "request-9",
+          sessionId: null,
+          threadId: "thread-9",
+          method: "POST",
+          incomingUrl: "/v1/responses",
+          targetUrl: "https://api.example.com/v1/responses",
+          requestBytes: 20,
+          responseStatus: 200,
+          responseBytes: 40,
+          stream: true,
+          upstreamRequestId: "upstream-9",
+          errorType: null,
+          errorMessage: null,
+          outcome: "success",
+          providerId: "provider-1",
+          providerName: "Primary",
+          route: "custom",
+          requestBody: SECRET,
+          requestHeaders: { authorization: SECRET }
+        }],
+        page: { limit: query.limit, nextBefore: null, secret: SECRET },
+        summary: { total: 1, success: 1, rejected: 0, error: 0, apiKey: SECRET },
+        apiKey: SECRET
+      };
+    }
+  };
   const accountState = {
     phase: "ready",
     authMode: "chatgpt",
@@ -368,6 +415,7 @@ function createServices() {
     codexService,
     diagnosticsService,
     metricsService,
+    forwardingRecordsService,
     accountMonitor
   };
 }
@@ -937,6 +985,7 @@ test("routes every approved Admin API operation through injected services", asyn
       patch: { name: "Backup Updated" },
       replacementCredential: SECRET
     }, 200],
+    ["PATCH", "/api/v1/providers/provider-2/weight", { weight: 250 }, 200],
     ["POST", "/api/v1/providers/provider-2/test", {
       model: "test-model",
       activateIfNone: true
@@ -950,7 +999,8 @@ test("routes every approved Admin API operation through injected services", asyn
     ["GET", "/api/v1/activity?limit=3&offset=2", undefined, 200],
     ["GET", "/api/v1/settings", undefined, 200],
     ["PATCH", "/api/v1/settings", { routingMode: "account_first" }, 200],
-    ["PATCH", "/api/v1/settings", { captureEnabled: true }, 409, "SETTINGS_READ_ONLY"],
+    ["PATCH", "/api/v1/settings", { captureEnabled: true }, 200],
+    ["PATCH", "/api/v1/settings", { autoStartEnabled: true }, 200],
     ["POST", "/api/v1/account/refresh", undefined, 200],
     ["POST", "/api/v1/codex/bootstrap", undefined, 200],
     ["POST", "/api/v1/diagnostics/export", undefined, 200],
@@ -980,7 +1030,69 @@ test("routes every approved Admin API operation through injected services", asyn
   assert.ok(harness.calls.some((call) => (
     call[0] === "updateSettings" && call[1].routingMode === "account_first"
   )));
+  assert.ok(harness.calls.some((call) => (
+    call[0] === "updateSettings" && call[1].captureEnabled === true
+  )));
+  assert.ok(harness.calls.some((call) => (
+    call[0] === "updateSettings" && call[1].autoStartEnabled === true
+  )));
   assert.ok(harness.calls.some((call) => call[0] === "refreshAccount"));
+});
+
+test("projects start-at-login state and validates its settings mutation", async (t) => {
+  const harness = await createHarness(t);
+  const headers = bearer(harness);
+  const current = await harness.request("/api/v1/settings", { headers });
+  assert.equal(current.response.status, 200, current.text);
+  assert.deepEqual(current.json.settings, {
+    proxyHost: "127.0.0.1",
+    proxyPort: 15100,
+    adminHost: "127.0.0.1",
+    adminPort: 15101,
+    captureEnabled: false,
+    routingMode: "custom_only",
+    credentialBackend: "native",
+    autoStartSupported: true,
+    autoStartEnabled: false,
+    autoStartState: "disabled",
+    autoStartPlatform: "darwin"
+  });
+
+  for (const body of [
+    {},
+    { autoStartEnabled: "yes" },
+    { autoStartEnabled: true, captureEnabled: false }
+  ]) {
+    const result = await harness.request("/api/v1/settings", {
+      method: "PATCH",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    assert.equal(result.response.status, 400, result.text);
+    assert.equal(result.json.error.code, "API_BODY_INVALID");
+    assertNoSensitiveResponse(result);
+  }
+});
+
+test("accepts only a single bounded integer provider weight", async (t) => {
+  const harness = await createHarness(t);
+  const headers = { ...bearer(harness), "content-type": "application/json" };
+  for (const body of [
+    { weight: 0 },
+    { weight: 1_001 },
+    { weight: 1.5 },
+    { weight: "100" },
+    { weight: 100, unexpected: true }
+  ]) {
+    const result = await harness.request("/api/v1/providers/provider-1/weight", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify(body)
+    });
+    assert.equal(result.response.status, 400, result.text);
+    assert.equal(result.json.error.code, "API_BODY_INVALID");
+    assertNoSensitiveResponse(result);
+  }
 });
 
 test("status and refresh expose only bounded account and quota fields", async (t) => {
@@ -1115,6 +1227,72 @@ test("metrics overview is authenticated read-only, bounded, and positively proje
     assert.equal(invalid.json.error.code, "API_BODY_INVALID");
   }
   const wrongMethod = await harness.request("/api/v1/metrics/overview", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "GET");
+});
+
+test("forwarding records are authenticated, query-bounded, and metadata-only", async (t) => {
+  const harness = await createHarness(t);
+  const unauthenticated = await harness.request("/api/v1/forwarding-records");
+  assert.equal(unauthenticated.response.status, 401);
+
+  const result = await harness.request(
+    "/api/v1/forwarding-records?limit=25&before=10&outcome=success&search=request",
+    { headers: bearer(harness) }
+  );
+  assert.equal(result.response.status, 200, result.text);
+  assertNoSensitiveResponse(result);
+  for (const forbidden of ["requestBody", "requestHeaders", "authorization", "apiKey"]) {
+    assert.equal(result.text.includes(forbidden), false);
+  }
+  assert.deepEqual(result.json, {
+    storageState: "ready",
+    records: [{
+      id: 9,
+      startedAt: "2026-07-13T00:00:00.000Z",
+      completedAt: "2026-07-13T00:00:01.000Z",
+      durationMs: 1_000,
+      requestId: "request-9",
+      sessionId: null,
+      threadId: "thread-9",
+      method: "POST",
+      incomingUrl: "/v1/responses",
+      targetUrl: "https://api.example.com/v1/responses",
+      requestBytes: 20,
+      responseStatus: 200,
+      responseBytes: 40,
+      stream: true,
+      upstreamRequestId: "upstream-9",
+      errorType: null,
+      errorMessage: null,
+      outcome: "success",
+      providerId: "provider-1",
+      providerName: "Primary",
+      route: "custom"
+    }],
+    page: { limit: 25, nextBefore: null },
+    summary: { total: 1, success: 1, rejected: 0, error: 0 }
+  });
+  assert.deepEqual(
+    harness.calls.find(([name]) => name === "forwardingRecords"),
+    ["forwardingRecords", { limit: 25, before: 10, outcome: "success", search: "request" }]
+  );
+
+  for (const path of [
+    "/api/v1/forwarding-records?limit=0",
+    "/api/v1/forwarding-records?before=1&before=2",
+    "/api/v1/forwarding-records?outcome=pending",
+    "/api/v1/forwarding-records?search=one&search=two",
+    "/api/v1/forwarding-records?unknown=1"
+  ]) {
+    const invalid = await harness.request(path, { headers: bearer(harness) });
+    assert.equal(invalid.response.status, 400, path);
+    assert.equal(invalid.json.error.code, "API_BODY_INVALID");
+  }
+  const wrongMethod = await harness.request("/api/v1/forwarding-records", {
     method: "POST",
     headers: bearer(harness)
   });
@@ -1567,6 +1745,19 @@ function supervisorDependencies(t, {
     captureEnabled: false
   } }) };
   const provider = { getStatus: async () => ({ worker: workerState() }) };
+  let autoStartEnabled = false;
+  const autoStart = {
+    getStatus: () => ({
+      supported: true,
+      enabled: autoStartEnabled,
+      state: autoStartEnabled ? "enabled" : "disabled",
+      platform: "darwin"
+    }),
+    setEnabled(enabled) {
+      autoStartEnabled = enabled;
+      return this.getStatus();
+    }
+  };
   const metrics = {
     observations: [],
     dropped: 0,
@@ -1649,6 +1840,12 @@ function supervisorDependencies(t, {
       assert.equal(input.workerManager, worker);
       return provider;
     },
+    autoStartServiceFactory: (input) => {
+      order.push("autostart");
+      assert.equal(input.crpHome, home);
+      assert.equal(input.logPath, join(paths.globalHome, "autostart.log"));
+      return autoStart;
+    },
     authFactory: ({ controlTokenPath }) => {
       order.push("auth");
       assert.equal(controlTokenPath, paths.controlTokenPath);
@@ -1689,9 +1886,13 @@ test("supervisor migrates before registry construction and writes private state 
     "metrics",
     "worker",
     "provider",
+    "autostart",
     "auth",
     "admin"
   ]);
+  const settingsService = harness.getAdminOptions().settingsService;
+  assert.equal((await settingsService.getSettings()).autoStartEnabled, false);
+  assert.equal((await settingsService.updateSettings({ autoStartEnabled: true })).autoStartEnabled, true);
 
   const listening = supervisor.listen();
   assert.equal(existsSync(harness.paths.statePath), false);

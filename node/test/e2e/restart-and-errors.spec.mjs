@@ -32,11 +32,11 @@ test("restarts immediately at zero in-flight requests and keeps the supervisor s
   await openCrp(page, crp);
   const originalWorkerPid = crp.state.worker.pid;
   const supervisorPid = crp.state.supervisorPid;
-  const headerY = await page.locator(".page-header").evaluate((element) => element.getBoundingClientRect().y);
+  const commandBarY = await page.locator(".overview-command-bar").evaluate((element) => element.getBoundingClientRect().y);
   await page.getByRole("button", { name: "Restart worker" }).click();
   await expect(page.getByRole("status")).toContainText("Worker restarted");
   await expect(page.getByTestId("global-message")).toHaveCSS("position", "fixed");
-  expect(await page.locator(".page-header").evaluate((element) => element.getBoundingClientRect().y)).toBe(headerY);
+  expect(await page.locator(".overview-command-bar").evaluate((element) => element.getBoundingClientRect().y)).toBe(commandBarY);
   expect(crp.state.worker.pid).not.toBe(originalWorkerPid);
   expect(crp.state.supervisorPid).toBe(supervisorPid);
   expect(crp.calls.filter((call) => call.operation === "restartProxy")).toHaveLength(1);
@@ -268,10 +268,10 @@ test("maps provider authentication failures to actionable copy in both locales",
   await testDialog.getByRole("button", { name: "Cancel" }).click();
 
   await page.locator("#locale-select").selectOption("zh-CN");
-  await page.getByTestId("provider-card-provider-b").getByRole("button", { name: "测试并切换" }).click();
+  await page.getByTestId("provider-card-provider-b").getByRole("button", { name: "测试并设为首选" }).click();
   testDialog = page.getByRole("dialog", { name: "测试提供商" });
   await testDialog.getByLabel("测试模型").fill("gpt-5.1-codex-mini");
-  await testDialog.getByRole("button", { name: "测试并切换" }).click();
+  await testDialog.getByRole("button", { name: "测试并设为首选" }).click();
   await expect(page.getByText("提供商认证失败")).toBeVisible();
   await expect(page.getByText("请检查 API 密钥和认证方案，然后重新测试。")).toBeVisible();
   expect(crp.state.activeProviderId).toBe("provider-a");
@@ -330,6 +330,28 @@ test("prepares Codex from System and reports bounded history-repair metadata", a
   await expect(page.getByText("No provider metadata repair was required")).toBeVisible();
   expect(requests).toEqual([{ body: null, contentType: undefined }]);
   expect(crp.state.bootstrapCount).toBe(1);
+});
+
+test("enables user-level start at login from System", async ({ page, crp }) => {
+  const requests = [];
+  page.on("request", (request) => {
+    if (request.method() === "PATCH"
+      && new URL(request.url()).pathname === "/api/v1/settings") {
+      requests.push(request.postDataJSON());
+    }
+  });
+  await openCrp(page, crp);
+  await page.getByRole("link", { name: "System" }).click();
+  const control = page.getByRole("checkbox", { name: "Start CRP at login" });
+  await expect(control).not.toBeChecked();
+  await control.check();
+  await expect(control).toBeChecked();
+  await expect(page.getByRole("status").filter({ hasText: "Start at login enabled" })).toBeVisible();
+  expect(requests).toEqual([{ autoStartEnabled: true }]);
+  expect(crp.calls.findLast((call) => call.operation === "updateAutoStart")).toEqual({
+    operation: "updateAutoStart",
+    enabled: true
+  });
 });
 
 test("folds allowlisted technical error details and omits unknown fields", async ({ page, crp }) => {
@@ -431,6 +453,7 @@ test("terminates after a second session exchange makes the open tab CSRF stale",
     }
   });
   await openCrp(page, crp);
+  await page.getByRole("button", { name: "Stop proxy" }).click();
   await page.getByRole("link", { name: "Providers" }).click();
   const editor = await openInactiveProviderEditor(page, "Provider Beta");
   await editor.getByLabel("Provider name").fill("Stale tab edit");
@@ -475,6 +498,7 @@ test("fails closed after session expiry and clears an open replacement credentia
   });
   await openCrp(page, crp);
   expect(sessionRequests).toEqual(["POST"]);
+  await page.getByRole("button", { name: "Stop proxy" }).click();
   await page.getByRole("link", { name: "Providers" }).click();
   const editor = await openInactiveProviderEditor(page, "Provider Beta");
   await editor.getByLabel("Replacement API key").fill(crp.credential);

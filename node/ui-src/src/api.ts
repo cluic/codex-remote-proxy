@@ -3,6 +3,8 @@ import type {
   AccountStatus,
   BootstrapResult,
   DiagnosticResult,
+  ForwardingRecordsPageData,
+  ForwardingRecordsQuery,
   MetricsOverview,
   MetricsWindow,
   ModelCatalog,
@@ -200,8 +202,41 @@ export class CrpApi {
     return payload.settings;
   }
 
+  async updateCaptureEnabled(captureEnabled: boolean): Promise<Settings> {
+    const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
+      method: "PATCH",
+      body: { captureEnabled }
+    });
+    return payload.settings;
+  }
+
+  async updateAutoStartEnabled(autoStartEnabled: boolean): Promise<Settings> {
+    const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
+      method: "PATCH",
+      body: { autoStartEnabled }
+    });
+    return payload.settings;
+  }
+
   async getActivity(offset = 0, signal?: AbortSignal): Promise<ActivityPageData> {
     return await this.get<ActivityPageData>(`/api/v1/activity?limit=50&offset=${offset}`, signal);
+  }
+
+  async getForwardingRecords(
+    query: ForwardingRecordsQuery = {},
+    signal?: AbortSignal
+  ): Promise<ForwardingRecordsPageData> {
+    const parameters = new URLSearchParams();
+    parameters.set("limit", String(query.limit ?? 50));
+    if (query.before !== null && query.before !== undefined) {
+      parameters.set("before", String(query.before));
+    }
+    if (query.outcome && query.outcome !== "all") parameters.set("outcome", query.outcome);
+    if (query.search) parameters.set("search", query.search);
+    return await this.get<ForwardingRecordsPageData>(
+      `/api/v1/forwarding-records?${parameters.toString()}`,
+      signal
+    );
   }
 
   async getMetrics(window: MetricsWindow, signal?: AbortSignal): Promise<MetricsOverview> {
@@ -225,6 +260,14 @@ export class CrpApi {
     const payload = await this.mutate<{ provider: Provider }>(this.providerPath(id), {
       method: "PATCH",
       body
+    });
+    return payload.provider;
+  }
+
+  async updateProviderWeight(id: string, weight: number): Promise<Provider> {
+    const payload = await this.mutate<{ provider: Provider }>(`${this.providerPath(id)}/weight`, {
+      method: "PATCH",
+      body: { weight }
     });
     return payload.provider;
   }

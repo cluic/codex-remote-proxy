@@ -2,6 +2,9 @@ import { CrpError } from "../shared/errors.mjs";
 import { validateHeaderValue } from "node:http";
 
 export const TEST_STATUSES = new Set(["untested", "passed", "failed"]);
+export const DEFAULT_PROVIDER_WEIGHT = 100;
+export const MIN_PROVIDER_WEIGHT = 1;
+export const MAX_PROVIDER_WEIGHT = 1_000;
 
 const INPUT_FIELDS = new Set([
   "name",
@@ -10,6 +13,7 @@ const INPUT_FIELDS = new Set([
   "authHeader",
   "authScheme",
   "extraHeaders",
+  "weight",
   "modelMode",
   "modelOverride"
 ]);
@@ -177,6 +181,19 @@ function normalizeExtraHeaders(value) {
   return extraHeaders;
 }
 
+function normalizeWeight(value) {
+  const weight = value === undefined ? DEFAULT_PROVIDER_WEIGHT : value;
+  if (!Number.isInteger(weight)
+    || weight < MIN_PROVIDER_WEIGHT
+    || weight > MAX_PROVIDER_WEIGHT) {
+    inputError(
+      "weight",
+      `must be an integer between ${MIN_PROVIDER_WEIGHT} and ${MAX_PROVIDER_WEIGHT}`
+    );
+  }
+  return weight;
+}
+
 function normalizeModelPolicy(modeValue, overrideValue, { allowControlCharacters = false } = {}) {
   const modelMode = modeValue === undefined ? "passthrough" : modeValue;
   if (modelMode !== "passthrough" && modelMode !== "override") {
@@ -211,6 +228,7 @@ function normalizeInput(input, options) {
     authHeader: normalizeAuthHeader(input.authHeader),
     authScheme: normalizeAuthScheme(input.authScheme),
     extraHeaders: normalizeExtraHeaders(input.extraHeaders),
+    weight: normalizeWeight(input.weight),
     ...modelPolicy
   };
 }
@@ -272,6 +290,7 @@ export function validateStoredProvider(profile) {
     authHeader: profile.authHeader,
     authScheme: profile.authScheme,
     extraHeaders: profile.extraHeaders,
+    weight: profile.weight,
     modelMode: profile.modelMode,
     modelOverride: profile.modelOverride
   }, { allowControlCharacters: true });
@@ -336,6 +355,7 @@ export function toPublicProvider(profile, credentialConfigured) {
     authHeader: profile.authHeader,
     authScheme: profile.authScheme,
     extraHeaders: { ...profile.extraHeaders },
+    weight: profile.weight,
     modelMode: profile.modelMode,
     modelOverride: profile.modelOverride,
     lastTestAt: profile.lastTestAt,

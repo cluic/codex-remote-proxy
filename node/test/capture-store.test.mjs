@@ -161,6 +161,9 @@ test("capture manager writes a complete request/response record", async () => {
     method: "POST",
     incomingUrl: "http://127.0.0.1:15100/responses",
     targetUrl: "https://example.com/responses",
+    providerId: "provider-original",
+    providerName: "Original provider",
+    route: "custom",
     requestHeaders: {
       Authorization: "Bearer super-secret",
       Accept: "application/json"
@@ -186,10 +189,93 @@ test("capture manager writes a complete request/response record", async () => {
   assert.equal(rows[0].thread_id, "thread-1");
   assert.equal(rows[0].is_stream, 1);
   assert.equal(rows[0].response_status, 200);
+  assert.equal(rows[0].provider_id, "provider-original");
+  assert.equal(rows[0].provider_name, "Original provider");
+  assert.equal(rows[0].route, "custom");
   assert.match(rows[0].request_headers_json, /REDACTED/);
   assert.match(rows[0].response_body, /event: ok/);
 
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("capture manager upgrades schema 1 and persists final provider attribution", (t) => {
+  const dir = makeTempDir("crp-capture-schema-1");
+  mkdirSync(dir, { recursive: true });
+  const runtimeConfigPath = join(dir, "proxy-config.json");
+  const dbPath = join(dir, "traffic.sqlite3");
+  writeFileSync(runtimeConfigPath, JSON.stringify({ capture: { enabled: true, dbPath } }));
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    PRAGMA user_version = 1;
+    CREATE TABLE http_transactions (
+      id INTEGER PRIMARY KEY,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      duration_ms INTEGER,
+      request_id TEXT,
+      session_id TEXT,
+      thread_id TEXT,
+      method TEXT,
+      incoming_url TEXT,
+      target_url TEXT,
+      request_headers_json TEXT NOT NULL,
+      request_body TEXT NOT NULL,
+      request_body_encoding TEXT NOT NULL,
+      request_body_bytes INTEGER NOT NULL,
+      response_status INTEGER,
+      response_headers_json TEXT NOT NULL,
+      response_body TEXT NOT NULL,
+      response_body_encoding TEXT NOT NULL,
+      response_body_bytes INTEGER NOT NULL,
+      is_stream INTEGER NOT NULL,
+      upstream_request_id TEXT,
+      error_type TEXT,
+      error_message TEXT
+    );
+  `);
+  legacy.close();
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false
+  }).start();
+  t.after(() => {
+    manager.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  manager.beginRecord().save({
+    startedAt: "2026-08-21T00:00:00.000Z",
+    completedAt: "2026-08-21T00:00:01.000Z",
+    durationMs: 1_000,
+    requestId: "schema-2-record",
+    sessionId: null,
+    threadId: null,
+    method: "POST",
+    incomingUrl: "http://127.0.0.1:15100/v1/responses",
+    targetUrl: "https://provider.example/v1/responses",
+    providerId: "provider-stable",
+    providerName: "Stable provider",
+    route: "custom",
+    requestHeaders: {},
+    requestBody: Buffer.from("{}"),
+    responseStatus: 200,
+    responseHeaders: {},
+    responseBody: Buffer.from("{}"),
+    isStream: false
+  });
+  manager.close();
+
+  const upgraded = new DatabaseSync(dbPath, { readOnly: true });
+  const columns = upgraded.prepare("PRAGMA table_info(http_transactions)").all()
+    .map(({ name }) => name);
+  const version = upgraded.prepare("PRAGMA user_version").get().user_version;
+  const row = upgraded.prepare("SELECT provider_id, provider_name, route FROM http_transactions").get();
+  upgraded.close();
+  assert.equal(version, 2);
+  assert.ok(columns.includes("provider_id"));
+  assert.equal(row.provider_id, "provider-stable");
+  assert.equal(row.provider_name, "Stable provider");
+  assert.equal(row.route, "custom");
 });
 
 test("capture manager hot-disables when runtime config changes", async (t) => {

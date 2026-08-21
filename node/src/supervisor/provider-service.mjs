@@ -136,6 +136,26 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
       "The provider was activated, but its persistence cleanup degraded.",
       "Stop CRP and repair the residual active-provider state before restarting."
     ],
+    PROVIDER_WEIGHT_UPDATE_FAILED: [
+      "The provider weight could not be updated.",
+      "Review the weight and Worker health, then try again."
+    ],
+    PROVIDER_WEIGHT_ROLLBACK_DEGRADED: [
+      "The provider weight update failed and the prior routing state could not be restored safely.",
+      "Stop CRP and repair provider routing before restarting."
+    ],
+    PROVIDER_WEIGHT_COMMITTED_DEGRADED: [
+      "The provider weight was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    PROVIDER_WEIGHT_ENDPOINT_REQUIRED: [
+      "Provider weight must be updated through the routing control.",
+      "Use the provider weight control and try again."
+    ],
+    PROVIDER_POOL_RUNNING: [
+      "This provider is part of the running routing pool.",
+      "Stop the proxy Worker before editing or deleting this provider."
+    ],
     PROXY_NOT_CONFIGURED: [
       "No active provider is configured for the proxy.",
       "Test and activate a provider before starting the proxy."
@@ -162,6 +182,18 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
     ],
     ROUTING_MODE_COMMITTED_DEGRADED: [
       "The routing mode was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    CAPTURE_SETTING_UPDATE_FAILED: [
+      "Forwarding Capture could not be updated.",
+      "Review Worker health and try the Capture change again."
+    ],
+    CAPTURE_SETTING_ROLLBACK_DEGRADED: [
+      "The Capture update failed and the prior state could not be restored safely.",
+      "Stop CRP and repair the Capture setting before restarting."
+    ],
+    CAPTURE_SETTING_COMMITTED_DEGRADED: [
+      "The Capture setting was updated, but persistence cleanup degraded.",
       "Stop CRP and repair the residual provider-registry state before restarting."
     ]
   };
@@ -322,6 +354,14 @@ export class ProviderService {
         if (this.registry.getDocument().activeProviderId === current.id) {
           throw serviceError("PROVIDER_ACTIVE", { status: 409 });
         }
+        if (patch !== null && typeof patch === "object"
+          && Object.hasOwn(patch, "weight") && patch.weight !== current.weight) {
+          throw serviceError("PROVIDER_WEIGHT_ENDPOINT_REQUIRED", { status: 400 });
+        }
+        if (current.lastTestStatus === "passed"
+          && this.workerManager.getPublicState()?.phase === "running") {
+          throw serviceError("PROVIDER_POOL_RUNNING", { status: 409 });
+        }
         if (replacementSecret !== undefined) assertSecret(replacementSecret);
         profile = replacementSecret === undefined
           ? this.registry.update(id, patch)
@@ -367,6 +407,10 @@ export class ProviderService {
           throw serviceError("PROVIDER_ACTIVE", { status: 409 });
         }
         profile = this.registry.get(id);
+        if (profile.lastTestStatus === "passed"
+          && this.workerManager.getPublicState()?.phase === "running") {
+          throw serviceError("PROVIDER_POOL_RUNNING", { status: 409 });
+        }
         oldSecret = await this.credentialStore.get(profile.credentialRef);
         try {
           credentialDeleted = await this.credentialStore.delete(profile.credentialRef);
@@ -504,6 +548,8 @@ export class ProviderService {
       if (typeof activateIfNone !== "boolean") {
         throw serviceError("PROVIDER_TEST_INPUT_INVALID", { status: 400 });
       }
+      const runningPoolMember = profile.lastTestStatus === "passed"
+        && this.workerManager.getPublicState()?.phase === "running";
       const activeProviderId = this.registry.getDocument().activeProviderId;
       if (activateIfNone && activeProviderId === null
         && this.workerManager.getPublicState()?.phase !== "stopped") {
@@ -547,13 +593,17 @@ export class ProviderService {
         result = { ok: false, code: classifyFetchError(error) };
       }
 
-      try {
-        this.registry.markTest(id, result.ok
-          ? { status: "passed" }
-          : { status: "failed", code: result.code });
-      } catch (error) {
-        if (!isCommittedError(error)) throw error;
-        throw committedServiceError("test", error);
+      let testStateCommitted = false;
+      if (!runningPoolMember || result.ok) {
+        try {
+          this.registry.markTest(id, result.ok
+            ? { status: "passed" }
+            : { status: "failed", code: result.code });
+          testStateCommitted = true;
+        } catch (error) {
+          if (!isCommittedError(error)) throw error;
+          throw committedServiceError("test", error);
+        }
       }
       try {
         await this.#record(
@@ -564,7 +614,8 @@ export class ProviderService {
           status === null ? {} : { httpStatus: status }
         );
       } catch (error) {
-        throw committedServiceError("test", error);
+        if (testStateCommitted) throw committedServiceError("test", error);
+        throw error;
       }
       let initialActivation = null;
       if (result.ok && activateIfNone) {
@@ -593,7 +644,7 @@ export class ProviderService {
       if (!Number.isSafeInteger(generation) || generation < 1) {
         throw serviceError("PROVIDER_ACTIVATION_FAILED");
       }
-      const snapshot = this.#buildSnapshot(profile, secret, generation);
+      const snapshot = await this.#buildSnapshot(profile, secret, generation);
       let activePersisted = false;
       let workerAttempted = false;
       let activeCommitWarning = null;
@@ -700,6 +751,131 @@ export class ProviderService {
     });
   }
 
+  setProviderWeight(id, weight) {
+    return this.#runExclusive(async () => {
+      const current = this.registry.get(id);
+      if (!Number.isInteger(weight) || weight < 1 || weight > 1_000) {
+        throw serviceError("PROVIDER_WEIGHT_UPDATE_FAILED", { status: 400 });
+      }
+      if (current.weight === weight) return await this.#toPublic(current);
+      const before = this.workerManager.getPublicState();
+      if (before?.phase !== "stopped" && before?.phase !== "running") {
+        throw serviceError("PROVIDER_WEIGHT_UPDATE_FAILED", { status: 409 });
+      }
+      const previousSnapshot = this.confirmedSnapshot
+        ? structuredClone(this.confirmedSnapshot)
+        : null;
+      const previousGeneration = this.confirmedGeneration;
+      let generation = previousGeneration;
+      let persisted = false;
+      let commitWarning = null;
+      let workerAttempted = false;
+      let candidateSnapshot = null;
+      let completed = false;
+      try {
+        try {
+          persisted = this.registry.setProviderWeightIfCurrent(id, current.weight, weight);
+          if (!persisted) throw new Error("provider weight changed concurrently");
+        } catch (error) {
+          if (isCommittedError(error) && this.registry.get(id).weight === weight) {
+            persisted = true;
+            commitWarning = error;
+          } else {
+            throw error;
+          }
+        }
+        const updated = this.registry.get(id);
+        if (before.phase === "running") {
+          const document = this.registry.getDocument();
+          const active = document.providers.find(
+            (provider) => provider.id === document.activeProviderId
+          );
+          if (!active || !previousSnapshot) {
+            throw serviceError("PROVIDER_WEIGHT_UPDATE_FAILED", { status: 409 });
+          }
+          const secret = await this.credentialStore.get(active.credentialRef);
+          generation += 1;
+          if (!Number.isSafeInteger(generation)) {
+            throw serviceError("PROVIDER_WEIGHT_UPDATE_FAILED");
+          }
+          candidateSnapshot = await this.#buildSnapshot(active, secret, generation);
+          workerAttempted = true;
+          const worker = await this.workerManager.applySnapshot(candidateSnapshot);
+          if (!isConfirmedWorkerState(worker, generation)
+            || await this.verifyWorkerHealth(generation, worker) !== true) {
+            throw new Error("provider weight Worker update was not confirmed");
+          }
+          this.confirmedGeneration = generation;
+          this.confirmedSnapshot = structuredClone(candidateSnapshot);
+        }
+        if (commitWarning) {
+          const committed = serviceError("PROVIDER_WEIGHT_COMMITTED_DEGRADED", {
+            cause: commitWarning,
+            details: { committed: true, degraded: true, generation }
+          });
+          await this.#recordCommitted("weight", id, committed, {
+            weight,
+            generation
+          });
+          completed = true;
+          throw committed;
+        }
+        await this.#record("weight", id, "success", null, { weight, generation });
+        return await this.#toPublic(updated);
+      } catch (error) {
+        if (completed && isCommittedError(error)) throw error;
+        let rollbackFailure = null;
+        if (persisted) {
+          try {
+            const restored = this.registry.setProviderWeightIfCurrent(
+              id,
+              weight,
+              current.weight
+            );
+            if (!restored) throw new Error("provider weight rollback lost compare-and-set");
+          } catch (caught) {
+            rollbackFailure = caught;
+          }
+        }
+        if (workerAttempted) {
+          try {
+            const observedGeneration = this.workerManager.getPublicState()?.generation;
+            const rollbackGeneration = Math.max(
+              generation,
+              previousGeneration,
+              Number.isSafeInteger(observedGeneration) ? observedGeneration : 0
+            ) + 1;
+            if (!Number.isSafeInteger(rollbackGeneration) || !previousSnapshot) {
+              throw new Error("provider weight rollback generation is invalid");
+            }
+            const rollbackSnapshot = structuredClone(previousSnapshot);
+            rollbackSnapshot.generation = rollbackGeneration;
+            const restored = await this.workerManager.applySnapshot(rollbackSnapshot);
+            if (!isConfirmedWorkerState(restored, rollbackGeneration)
+              || await this.verifyWorkerHealth(rollbackGeneration, restored) !== true) {
+              throw new Error("provider weight Worker rollback was not confirmed");
+            }
+            this.confirmedGeneration = rollbackGeneration;
+            this.confirmedSnapshot = structuredClone(rollbackSnapshot);
+          } catch (caught) {
+            rollbackFailure ??= caught;
+          }
+        }
+        if (rollbackFailure) {
+          const degraded = serviceError("PROVIDER_WEIGHT_ROLLBACK_DEGRADED", {
+            cause: rollbackFailure,
+            details: { committed: false, degraded: true }
+          });
+          await this.#safeRecordFailure("weight", id, degraded, { weight, generation });
+          throw degraded;
+        }
+        const failure = serviceError("PROVIDER_WEIGHT_UPDATE_FAILED", { cause: error });
+        await this.#safeRecordFailure("weight", id, failure, { weight, generation });
+        throw failure;
+      }
+    });
+  }
+
   startProxy() {
     return this.#runLifecycleOperation(async () => {
       const current = this.workerManager.getPublicState();
@@ -764,7 +940,7 @@ export class ProviderService {
         if (!Number.isSafeInteger(generation)) {
           throw serviceError("ROUTING_MODE_UPDATE_FAILED");
         }
-        candidateSnapshot = this.#buildSnapshot(
+        candidateSnapshot = await this.#buildSnapshot(
           profile,
           secret,
           generation,
@@ -870,6 +1046,142 @@ export class ProviderService {
         }
         const failure = serviceError("ROUTING_MODE_UPDATE_FAILED", { cause: error });
         await this.#safeRecordSettingsFailure("routing-mode", failure, { mode, generation });
+        throw failure;
+      }
+    });
+  }
+
+  setCaptureEnabled(enabled) {
+    return this.#runExclusive(async () => {
+      if (typeof enabled !== "boolean") {
+        throw serviceError("CAPTURE_SETTING_UPDATE_FAILED", { status: 400 });
+      }
+      const document = this.registry.getDocument();
+      const previousEnabled = document.settings.captureEnabled;
+      if (enabled === previousEnabled) {
+        return {
+          captureEnabled: enabled,
+          generation: this.confirmedGeneration,
+          worker: publicWorkerState(this.workerManager.getPublicState())
+        };
+      }
+      const before = this.workerManager.getPublicState();
+      if (before?.phase !== "stopped" && before?.phase !== "running") {
+        throw serviceError("CAPTURE_SETTING_UPDATE_FAILED", { status: 409 });
+      }
+      const previousGeneration = this.confirmedGeneration;
+      const previousSnapshot = this.confirmedSnapshot
+        ? structuredClone(this.confirmedSnapshot)
+        : null;
+      let generation = previousGeneration;
+      let candidateSnapshot = null;
+      if (before.phase === "running") {
+        if (!previousSnapshot) {
+          throw serviceError("CAPTURE_SETTING_UPDATE_FAILED", { status: 409 });
+        }
+        generation += 1;
+        if (!Number.isSafeInteger(generation)) {
+          throw serviceError("CAPTURE_SETTING_UPDATE_FAILED");
+        }
+        candidateSnapshot = structuredClone(previousSnapshot);
+        candidateSnapshot.generation = generation;
+        candidateSnapshot.settings.capture.enabled = enabled;
+      }
+
+      let persisted = false;
+      let commitWarning = null;
+      let workerAttempted = false;
+      let completed = false;
+      try {
+        try {
+          persisted = this.registry.setCaptureEnabledIfCurrent(previousEnabled, enabled);
+          if (!persisted) throw new Error("Capture setting changed concurrently");
+        } catch (error) {
+          if (isCommittedError(error)
+            && this.registry.getDocument().settings.captureEnabled === enabled) {
+            persisted = true;
+            commitWarning = error;
+          } else {
+            throw error;
+          }
+        }
+
+        let workerState = before;
+        if (candidateSnapshot) {
+          workerAttempted = true;
+          workerState = await this.workerManager.applySnapshot(candidateSnapshot);
+          if (!isConfirmedWorkerState(workerState, generation)
+            || await this.verifyWorkerHealth(generation, workerState) !== true) {
+            throw new Error("Capture Worker update was not confirmed");
+          }
+        }
+        if (candidateSnapshot) {
+          this.confirmedGeneration = generation;
+          this.confirmedSnapshot = structuredClone(candidateSnapshot);
+        }
+        if (commitWarning) {
+          const committed = serviceError("CAPTURE_SETTING_COMMITTED_DEGRADED", {
+            cause: commitWarning,
+            details: { committed: true, degraded: true, generation }
+          });
+          await this.#recordSettings("capture", "degraded", committed.code, {
+            enabled,
+            generation
+          });
+          completed = true;
+          throw committed;
+        }
+        await this.#recordSettings("capture", "success", null, { enabled, generation });
+        return {
+          captureEnabled: enabled,
+          generation: this.confirmedGeneration,
+          worker: publicWorkerState(workerState)
+        };
+      } catch (error) {
+        if (completed && isCommittedError(error)) throw error;
+        let rollbackFailure = null;
+        if (persisted) {
+          try {
+            const restored = this.registry.setCaptureEnabledIfCurrent(enabled, previousEnabled);
+            if (!restored) throw new Error("Capture rollback lost compare-and-set");
+          } catch (caught) {
+            rollbackFailure = caught;
+          }
+        }
+        if (workerAttempted) {
+          try {
+            const observedGeneration = this.workerManager.getPublicState()?.generation;
+            const rollbackGeneration = Math.max(
+              generation,
+              previousGeneration,
+              Number.isSafeInteger(observedGeneration) ? observedGeneration : 0
+            ) + 1;
+            if (!Number.isSafeInteger(rollbackGeneration) || !previousSnapshot) {
+              throw new Error("Capture rollback generation is invalid");
+            }
+            const rollbackSnapshot = structuredClone(previousSnapshot);
+            rollbackSnapshot.generation = rollbackGeneration;
+            const restored = await this.workerManager.applySnapshot(rollbackSnapshot);
+            if (!isConfirmedWorkerState(restored, rollbackGeneration)
+              || await this.verifyWorkerHealth(rollbackGeneration, restored) !== true) {
+              throw new Error("Capture Worker rollback was not confirmed");
+            }
+            this.confirmedGeneration = rollbackGeneration;
+            this.confirmedSnapshot = structuredClone(rollbackSnapshot);
+          } catch (caught) {
+            rollbackFailure ??= caught;
+          }
+        }
+        if (rollbackFailure) {
+          const degraded = serviceError("CAPTURE_SETTING_ROLLBACK_DEGRADED", {
+            cause: rollbackFailure,
+            details: { committed: false, degraded: true }
+          });
+          await this.#safeRecordSettingsFailure("capture", degraded, { enabled, generation });
+          throw degraded;
+        }
+        const failure = serviceError("CAPTURE_SETTING_UPDATE_FAILED", { cause: error });
+        await this.#safeRecordSettingsFailure("capture", failure, { enabled, generation });
         throw failure;
       }
     });
@@ -1027,7 +1339,7 @@ export class ProviderService {
         Number.isSafeInteger(observedGeneration) ? observedGeneration : 0
       ) + 1;
       if (!Number.isSafeInteger(generation)) throw new Error("proxy generation is invalid");
-      const snapshot = this.#buildSnapshot(profile, secret, generation);
+      const snapshot = await this.#buildSnapshot(profile, secret, generation);
       workerAttempted = true;
       const state = action === "restart"
         ? await this.workerManager.restart(snapshot)
@@ -1066,7 +1378,7 @@ export class ProviderService {
     }
   }
 
-  #buildSnapshot(profile, secret, generation, routingMode = null) {
+  async #buildSnapshot(profile, secret, generation, routingMode = null) {
     const document = this.registry.getDocument();
     const accountSnapshot = this.getAccountRoutingSnapshot();
     const runtimeConfigPath = this.paths.runtimeConfigPath;
@@ -1080,8 +1392,53 @@ export class ProviderService {
       || !isValidAccountRoutingState(accountSnapshot?.state)) {
       throw serviceError("PROVIDER_ACTIVATION_FAILED");
     }
+    const eligible = document.providers
+      .map((candidate) => candidate.id === profile.id ? profile : candidate)
+      .filter((candidate) => candidate.lastTestStatus === "passed")
+      .sort((left, right) => {
+        if (left.weight !== right.weight) return right.weight - left.weight;
+        if (left.id === profile.id && right.id !== profile.id) return -1;
+        if (right.id === profile.id && left.id !== profile.id) return 1;
+        const created = left.createdAt.localeCompare(right.createdAt);
+        return created === 0 ? left.id.localeCompare(right.id) : created;
+      });
+    const providers = [];
+    for (const candidate of eligible) {
+      let candidateSecret = candidate.id === profile.id ? secret : null;
+      if (candidateSecret === null) {
+        try {
+          if (!await this.credentialStore.has(candidate.credentialRef)) continue;
+          candidateSecret = await this.credentialStore.get(candidate.credentialRef);
+        } catch {
+          continue;
+        }
+      }
+      if (typeof candidateSecret !== "string" || candidateSecret.length === 0) continue;
+      providers.push({
+        id: candidate.id,
+        name: candidate.name,
+        weight: candidate.weight,
+        upstream: {
+          baseUrl: candidate.baseUrl,
+          apiKey: candidateSecret,
+          timeoutMs: 300_000,
+          verifySsl: true,
+          authHeader: candidate.authHeader,
+          authScheme: candidate.authScheme,
+          extraHeaders: { ...candidate.extraHeaders }
+        },
+        proxy: {
+          overrideAuthorization: true,
+          requestIdHeader: "x-client-request-id",
+          modelMode: candidate.modelMode,
+          modelOverride: candidate.modelOverride
+        }
+      });
+    }
+    if (providers.length === 0) throw serviceError("PROVIDER_ACTIVATION_FAILED");
+    const primary = providers[0];
     return {
-      providerId: profile.id,
+      providerId: primary.id,
       generation,
       settings: {
         configPath: runtimeConfigPath,
@@ -1090,21 +1447,9 @@ export class ProviderService {
           port: document.settings.proxyPort,
           logLevel: "info"
         },
-        upstream: {
-          baseUrl: profile.baseUrl,
-          apiKey: secret,
-          timeoutMs: 300_000,
-          verifySsl: true,
-          authHeader: profile.authHeader,
-          authScheme: profile.authScheme,
-          extraHeaders: { ...profile.extraHeaders }
-        },
-        proxy: {
-          overrideAuthorization: true,
-          requestIdHeader: "x-client-request-id",
-          modelMode: profile.modelMode,
-          modelOverride: profile.modelOverride
-        },
+        providers,
+        upstream: structuredClone(primary.upstream),
+        proxy: structuredClone(primary.proxy),
         capture: {
           enabled: document.settings.captureEnabled,
           dbPath: capturePath
