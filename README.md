@@ -6,7 +6,7 @@ Codex Remote Proxy (CRP) keeps Codex signed in with ChatGPT while routing model 
 
 [简体中文](./README.zh-CN.md)
 
-> Release status: npm `0.4.3` is the current release. Changes after `0.4.3` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
+> Release status: the npm `latest` dist-tag is authoritative. Ordinary product updates use patch releases; minor or major bumps require an explicit release-policy change.
 
 ## Install
 
@@ -37,6 +37,7 @@ The current development UI is implemented in `node/ui-src/` with React, TypeScri
 The local UI supports the complete daily workflow:
 
 - create named provider profiles;
+- start from maintained built-in presets, currently including OpenRouter at `https://openrouter.ai/api/v1`, or choose a custom OpenAI-compatible endpoint;
 - enter a credential through a write-only field;
 - test OpenAI Responses API compatibility;
 - assign each provider a priority weight and choose the preferred provider used to break equal-weight ties;
@@ -44,7 +45,7 @@ The local UI supports the complete daily workflow:
 - cool providers after retryable `429`, selected `5xx`, timeouts, resets, or clear network failures, and replay a bounded Responses request only when the upstream connection was never established;
 - replace a credential on a non-preferred provider or delete a non-preferred provider;
 - start, stop, restart, and inspect the proxy worker;
-- inspect ChatGPT account/routing state plus anonymous 24-hour or 7-day request, result, observed-Token, model, Provider, and bounded-latency Metrics on the compact Overview;
+- inspect ChatGPT account/routing state plus anonymous 24-hour or 7-day request, result, observed-Token, model, Provider, and bounded-latency Metrics through an interactive Overview trend explorer;
 - review metadata-only Forwarding Records, observed Token counts, and client-aborted requests, and control optional Capture from that page;
 - review localized, sanitized Activity labels for provider, routing, Capture, migration, and model-mapping operations;
 - configure user-level start at login, routing, Codex integration, runtime facts, and diagnostics from the compact System page;
@@ -56,7 +57,9 @@ Routing defaults to `custom_only`. The Overview and System toggles can hot-apply
 
 System can enable start at login without administrator privileges. CRP writes one marked, user-owned macOS LaunchAgent, Linux systemd user unit, or Windows Startup command that runs the installed CLI with the same `CRP_HOME`. The setting takes effect on the next sign-in; if the Node or package installation path later changes, System reports the managed item as stale so it can be repaired or disabled explicitly. Disabling rewrites only the identity-checked managed inode to an inert configuration; it does not race-prone delete the reserved path or Linux wants link. A foreign regular file, link, or unsafe artifact at the reserved path is reported as a conflict and is never overwritten, deleted, or used as permission to change the shared startup directory mode.
 
-`Forwarding Records` is a complete metadata-only route backed by the local Capture database. It supports outcome filters (including client-aborted requests), bounded search, keyset pagination, a detail panel, summary counts, and a Capture on/off control. New Capture rows persist the final route, provider ID/name, and input/output Token counts when Responses usage is observed; unavailable historical or upstream usage is shown as unobserved rather than zero. A downstream close after an observed `response.completed` remains successful, while a true pre-completion close is classified as aborted instead of a provider error. Legacy rows retain URL-based best-effort attribution. The API exposes timing, route/provider, model-request path, byte counts, status, IDs, Tokens, and sanitized error metadata, but never selects or returns request/response bodies or authorization headers. Overview Metrics remains an independent anonymous aggregate. Its 24-hour and 7-day series use fixed UTC hourly buckets, semantic Responses completion, explicit unavailable rates after dropped observations, and grouped Provider/model remainders.
+`Forwarding Records` is a complete metadata-only route backed by the local Capture database. Supervisor settings are its single runtime source; the legacy standalone config cannot silently disable it. The page reports whether capture is effectively active and distinguishes observed usage, upstream-unreported usage, unrecognized response protocols, non-applicable requests, and legacy rows. OpenAI `response.completed` and OpenRouter `response.done` terminal SSE events are both recognized without rewriting forwarded bytes. A close after observed semantic completion remains successful, while a true pre-completion close is classified as aborted. The API exposes timing, route/provider, path, byte counts, status, IDs, Tokens, observation status, and sanitized errors, but never request/response bodies or authorization headers.
+
+Overview Metrics remains an independent anonymous aggregate. Its trend explorer switches between request and Token views, count/share and input/output/total Token metrics, provides keyboard/hover bucket details, and renders missing Token observations as gaps instead of zero. Service reliability excludes client-aborted requests from its denominator. Model rows are expandable and separate unknown/grouped requests; the provider table shows every bounded provider returned by the API rather than silently keeping only the first few.
 
 Changing the preferred provider or a priority weight affects new requests. Requests already in flight keep the complete provider snapshot, including model policy, with which they started. In `passthrough` mode CRP preserves the client model; in `override` mode it replaces only the top-level JSON `model` value with that candidate's configured model. Explicit preference changes hot-apply a new weighted snapshot to a running Worker and start a stopped Worker; weight changes use a dedicated hot-apply route without changing the preferred provider. An eligible provider cannot be edited or deleted while the Worker is running, which prevents the runtime pool from retaining removed profiles or old credentials. A failed live compatibility probe is reported but does not invalidate that running snapshot. Initial selection remains a first-wins compare-and-set while the Worker is stopped.
 
@@ -117,8 +120,12 @@ crp status [--json]
 crp stop [--json]
 crp restart [--json]
 crp shutdown [--json]
+crp -v | crp --version
+crp version [--json]
+crp update [--check] [--json]
+crp provider presets [--json]
 crp provider list [--json]
-crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]
+crp provider add (--preset <ID> | --name <NAME> --base-url <URL>) --api-key <KEY> [--model <MODEL>] [--json]
 crp provider models (--id <ID> | --name <NAME>) [--json]
 crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]
 crp provider activate (--id <ID> | --name <NAME>) [--json]
@@ -127,7 +134,7 @@ crp provider delete (--id <ID> | --name <NAME>) [--json]
 
 The two recommended entry points are `crp ui` for guided setup and daily management, and `crp start` for headless CLI startup. `ui` starts or discovers the Supervisor and opens the management page; `start` starts or discovers the Supervisor, bootstraps the fixed Codex configuration, and starts the proxy Worker.
 
-Every human CLI path supports English and Simplified Chinese. English is the default regardless of `CRP_LOCALE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, or the terminal language. One global `--locale en|zh-CN` may appear anywhere in the command line; use `--locale zh-CN` to request Chinese for that invocation. The choice is process-local and never persisted. Locale changes human output only. With `--json`, a failure writes nothing to stdout and exactly one language-independent error document to stderr.
+Every human CLI path supports English and Simplified Chinese. Without `--locale`, CRP uses the first supported value from `CRP_LOCALE`, `LC_ALL`, `LC_MESSAGES`, or `LANG`, then falls back to English. One global `--locale en|zh-CN` may appear anywhere and always wins. The choice is process-local and never persisted. Locale changes human output only. With `--json`, a failure writes nothing to stdout and exactly one language-independent error document to stderr.
 
 ## License
 
@@ -145,7 +152,9 @@ Detached Supervisor startup uses a one-shot, strictly allowlisted IPC error. An 
 
 The former compatibility aliases `crp init`, `crp install`, and `crp setup` have been removed. They fail locally with `CLI_COMMAND_REMOVED`, perform no Supervisor discovery or mutation, and point to `crp ui` or `crp start` as the replacement. `check`, `capture on|off|status`, `guide`, and the deprecated local-shim command `install-cli` remain available; the CLI still has no provider-update, Activity, Settings, or diagnostics operation.
 
-`crp provider add` requires a write-only `--api-key` argument and supports advanced authentication and routing options. Optional `--model` is test input only; routing override remains `--model-mode override --model-override <MODEL>`. When `--model` is present, CRP saves the provider first and then runs the Responses compatibility test. The create and test steps are deliberately not one transaction: a failed compatibility result or an operational test error does not delete the saved provider, so the user can inspect and retry it. Command-line secrets may be visible in shell history or process inspection, so this path is intended only for controlled automation.
+`crp provider presets` lists maintained public defaults. `crp provider add --preset openrouter --api-key <KEY>` uses the correct OpenRouter `/api/v1` base URL and Bearer authentication while keeping the credential write-only. Custom add remains available and supports advanced authentication and routing options. Optional `--model` is test input only. Command-line secrets may be visible in shell history or process inspection, so this path is intended only for controlled automation.
+
+`-v` and `--version` print the installed version without discovering or starting CRP. `crp version` compares the installed package with the running Supervisor build. `crp update --check` only queries npm; `crp update` is intentionally limited to a verified global npm installation, installs successfully before stopping anything, binds shutdown to the exact Supervisor observed before installation, then restores whether the Supervisor and Worker were running. If the new runtime cannot be activated, CRP reinstalls the previous version and restores the previous runtime state before returning `UPDATE_ROLLED_BACK`; a failed rollback returns `UPDATE_RECOVERY_FAILED` with an explicit manual recovery command. Source checkouts and `npx` cache copies receive an actionable global-install instruction instead of being mutated.
 
 `provider test`, `activate`, `delete`, and `models` require exactly one selector: `--id` or `--name`. Names resolve by exact case-insensitive match against the unique public provider list. `provider models` performs an authenticated, no-redirect refresh from `<base-url>/models`; the Admin API also exposes a cached read separately. Discovery is bounded and rejects any model ID containing the complete credential before it can reach cache or output. It is independent from Responses compatibility testing, so a missing or incompatible model endpoint does not change provider test or activation state and a failed refresh does not erase the last good catalog.
 

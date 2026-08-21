@@ -1,5 +1,7 @@
 import {
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
   CircleOff,
   CircleUserRound,
   RefreshCw,
@@ -8,7 +10,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { ApiError } from "../api";
-import { ResultsChart, TokenChart } from "../components/Charts";
+import { TrendExplorer } from "../components/Charts";
 import {
   Button,
   EmptyState,
@@ -115,6 +117,7 @@ export function OverviewPage({
 }: OverviewProps) {
   const [prepareOpen, setPrepareOpen] = useState(false);
   const [routingSelection, setRoutingSelection] = useState(settings.routingMode);
+  const [modelsExpanded, setModelsExpanded] = useState(false);
   useEffect(() => {
     if (pending !== "routing-mode") setRoutingSelection(settings.routingMode);
   }, [pending, settings.routingMode]);
@@ -154,6 +157,8 @@ export function OverviewPage({
 
   const requests = metrics?.summary.requests ?? 0;
   const successful = metrics?.summary.results.success ?? 0;
+  const clientAborts = metrics?.summary.results.clientAbort ?? 0;
+  const reliabilityRequests = Math.max(0, requests - clientAborts);
   const coverage = metrics && successful > 0
     ? Math.min(1, Math.max(0, metrics.summary.tokens.observedRequests / successful))
     : 0;
@@ -178,10 +183,38 @@ export function OverviewPage({
   const metricsUnavailable = metricsError !== null
     || metrics === null
     || metrics.storageState === "unavailable";
-  const visibleModels = metrics?.models.slice(0, 3) ?? [];
-  const otherModelRequests = (metrics?.modelOtherRequests ?? 0)
-    + (metrics?.models.slice(3).reduce((sum, model) => sum + model.requests, 0) ?? 0);
-  const visibleProviders = metrics?.providers.slice(0, 2) ?? [];
+  const modelRows = metrics ? [
+    ...metrics.models.map((model) => ({
+      id: model.model,
+      label: model.model,
+      requests: model.requests,
+      tokens: model.tokens.input + model.tokens.output,
+      kind: "model" as const
+    })),
+    ...(metrics.dataQuality.unknownModelRequests > 0 ? [{
+      id: "unknown-model",
+      label: t("overview.unknownModel"),
+      requests: metrics.dataQuality.unknownModelRequests,
+      tokens: 0,
+      kind: "unknown" as const
+    }] : []),
+    ...(Math.max(0, metrics.modelOtherRequests - metrics.dataQuality.unknownModelRequests) > 0 ? [{
+      id: "grouped-models",
+      label: t("overview.groupedModels"),
+      requests: Math.max(0, metrics.modelOtherRequests - metrics.dataQuality.unknownModelRequests),
+      tokens: 0,
+      kind: "grouped" as const
+    }] : [])
+  ] : [];
+  const aggregateModelRows = modelRows.filter(({ kind }) => kind !== "model");
+  const displayedModels = modelsExpanded
+    ? modelRows
+    : [
+        ...modelRows.filter(({ kind }) => kind === "model")
+          .slice(0, Math.max(0, 5 - aggregateModelRows.length)),
+        ...aggregateModelRows
+      ];
+  const maximumModelRequests = Math.max(1, ...modelRows.map(({ requests: count }) => count));
 
   return (
     <div className="page-stack overview-page" data-testid="page-overview">
@@ -322,9 +355,14 @@ export function OverviewPage({
               />
               <MetricCard
                 label={t("overview.successRate")}
-                value={requests > 0 && successRateComplete ? formatPercent(locale, successful / requests) : "-"}
+                value={reliabilityRequests > 0 && successRateComplete
+                  ? formatPercent(locale, successful / reliabilityRequests)
+                  : "-"}
                 detail={successRateComplete
-                  ? `${formatNumber(locale, successful)} ${t("overview.successful").toLowerCase()}`
+                  ? t("overview.reliabilityDetail", {
+                      successful: formatNumber(locale, successful),
+                      aborted: formatNumber(locale, clientAborts)
+                    })
                   : successRateUnavailable}
                 positive={successRateComplete && successful > 0}
               />
@@ -350,80 +388,92 @@ export function OverviewPage({
               </div>
             ) : (
               <div className="overview-dashboard" data-testid="metrics-loaded">
-                <div className="overview-primary-charts">
-                  <Panel className="overview-chart-panel">
-                    <header className="overview-panel-header">
-                      <h2>{t("overview.requestTrend")}</h2>
-                      <div className="overview-chart-legend" aria-hidden="true">
-                        <span><i className="legend-success" />{t("metrics.success")}</span>
-                        <span><i className="legend-upstreamRejected" />{t("metrics.rejected")}</span>
-                        <span><i className="legend-error" />{t("metrics.errors")}</span>
-                      </div>
-                    </header>
-                    <div className="panel-content chart-content">
-                      <ResultsChart series={metrics.series} locale={locale} t={t} showLegend={false} />
+                <Panel className="overview-trend-panel">
+                  <header className="overview-panel-header">
+                    <div>
+                      <h2>{t("overview.trendExplorer")}</h2>
+                      <p>{t("overview.trendExplorerHelp")}</p>
                     </div>
-                  </Panel>
-                  <Panel className="overview-chart-panel">
-                    <header className="overview-panel-header">
-                      <h2>{t("overview.tokenTrend")}</h2>
-                      <div className="overview-chart-legend" aria-hidden="true">
-                        <span><i className="legend-input" />{t("overview.inputTokens")}</span>
-                        <span><i className="legend-output" />{t("overview.outputTokens")}</span>
-                      </div>
-                    </header>
-                    <div className="panel-content chart-content">
-                      <TokenChart series={metrics.series} locale={locale} t={t} showLegend={false} />
-                    </div>
-                  </Panel>
-                </div>
+                  </header>
+                  <div className="panel-content overview-trend-content">
+                    <TrendExplorer series={metrics.series} locale={locale} t={t} />
+                  </div>
+                </Panel>
 
                 <div className="overview-summary-grid">
                   <Panel className="overview-summary-panel overview-model-summary">
-                    <h2>{t("overview.modelDistribution")}</h2>
-                    <ul>
-                      {visibleModels.map((model, index) => (
-                        <li key={model.model}>
-                          <i className={`model-rank-${index + 1}`} aria-hidden="true" />
-                          <span title={model.model}>{model.model}</span>
-                          <strong>{formatCompactNumber(locale, model.requests)}</strong>
-                        </li>
-                      ))}
-                      {otherModelRequests > 0 ? (
-                        <li title={t("overview.otherModelsDetail", {
-                          unknown: metrics.dataQuality.unknownModelRequests,
-                          grouped: metrics.dataQuality.modelOverflowRequests
-                        })}>
-                          <i className="model-rank-other" aria-hidden="true" />
-                          <span>{t("overview.otherModels")}</span>
-                          <strong>{formatCompactNumber(locale, otherModelRequests)}</strong>
-                        </li>
-                      ) : null}
-                      {visibleModels.length === 0 && otherModelRequests === 0
-                        ? <li className="overview-summary-empty">{t("overview.noModelData")}</li>
-                        : null}
-                    </ul>
+                    <header className="overview-summary-heading">
+                      <div><h2>{t("overview.modelDistribution")}</h2><span>{t("overview.modelDistributionHelp")}</span></div>
+                      <strong>{formatNumber(locale, modelRows.length)}</strong>
+                    </header>
+                    {displayedModels.length > 0 ? (
+                      <ol className="overview-model-list">
+                        {displayedModels.map((model, index) => (
+                          <li key={model.id}>
+                            <span className="overview-model-rank">{model.kind === "model"
+                              ? index + 1
+                              : model.kind === "unknown" ? "?" : "Σ"}</span>
+                            <div className="overview-model-details">
+                              <div><code title={model.label}>{model.label}</code><strong>{formatNumber(locale, model.requests)}</strong></div>
+                              <span className="overview-model-bar"><i style={{ width: `${model.requests / maximumModelRequests * 100}%` }} /></span>
+                              <small>{t("overview.modelRowDetail", {
+                                share: requests > 0 ? Math.round(model.requests / requests * 100) : 0,
+                                tokens: model.tokens > 0 ? formatCompactNumber(locale, model.tokens) : "-"
+                              })}</small>
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : <p className="overview-summary-empty">{t("overview.noModelData")}</p>}
+                    {modelRows.length > 5 ? (
+                      <Button className="button-small overview-expand-button" variant="ghost" onClick={() => setModelsExpanded((value) => !value)}>
+                        {modelsExpanded ? t("overview.showLess") : t("overview.showAll", { count: modelRows.length })}
+                        {modelsExpanded ? <ChevronUp className="icon" aria-hidden="true" /> : <ChevronDown className="icon" aria-hidden="true" />}
+                      </Button>
+                    ) : null}
                   </Panel>
 
                   <Panel className="overview-summary-panel overview-provider-summary">
-                    <h2>{t("overview.providerPerformance")}</h2>
-                    <div className="overview-provider-items">
-                      {visibleProviders.map((provider) => (
-                        <article key={provider.providerId}>
-                          <strong title={providerNames.get(provider.providerId) ?? provider.providerId}>
-                            {providerNames.get(provider.providerId) ?? provider.providerId}
-                          </strong>
-                          <span>{formatNumber(locale, provider.requests)} {t("overview.requestsShort")}</span>
-                          <span>{successRateComplete && provider.requests > 0
-                            ? formatPercent(locale, provider.successfulRequests / provider.requests)
-                            : t("common.notAvailable")}</span>
-                          <small>{formatLatency(locale, provider.latency)} P95</small>
-                        </article>
-                      ))}
-                      {visibleProviders.length === 0
-                        ? <span className="overview-summary-empty">{t("overview.noProviderData")}</span>
-                        : null}
-                    </div>
+                    <header className="overview-summary-heading">
+                      <div><h2>{t("overview.providerPerformance")}</h2><span>{t("overview.providerPerformanceHelp")}</span></div>
+                      <strong>{formatNumber(locale, metrics.providers.length)}</strong>
+                    </header>
+                    {metrics.providers.length > 0 || metrics.providerOtherRequests > 0 ? (
+                      <div className="overview-provider-table-wrap">
+                        <table className="overview-provider-table">
+                          <thead><tr>
+                            <th>{t("forwarding.provider")}</th>
+                            <th>{t("overview.requestVolume")}</th>
+                            <th>{t("overview.successful")}</th>
+                            <th>{t("overview.tokenCoverageShort")}</th>
+                            <th>{t("overview.p95Latency")}</th>
+                          </tr></thead>
+                          <tbody>
+                            {metrics.providers.map((provider) => (
+                              <tr key={provider.providerId}>
+                                <th title={providerNames.get(provider.providerId) ?? provider.providerId}>
+                                  {providerNames.get(provider.providerId) ?? provider.providerId}
+                                </th>
+                                <td data-label={t("overview.requestVolume")}>{formatNumber(locale, provider.requests)}</td>
+                                <td data-label={t("overview.successful")}>{successRateComplete ? formatNumber(locale, provider.successfulRequests) : "-"}</td>
+                                <td data-label={t("overview.tokenCoverageShort")}>{provider.successfulRequests > 0
+                                  ? formatPercent(locale, provider.tokens.observedRequests / provider.successfulRequests)
+                                  : "-"}</td>
+                                <td data-label={t("overview.p95Latency")}>{formatLatency(locale, provider.latency)}</td>
+                              </tr>
+                            ))}
+                            {metrics.providerOtherRequests > 0 ? (
+                              <tr><th>{t("overview.otherProviders")}</th>
+                                <td data-label={t("overview.requestVolume")}>{formatNumber(locale, metrics.providerOtherRequests)}</td>
+                                <td data-label={t("overview.successful")}>-</td>
+                                <td data-label={t("overview.tokenCoverageShort")}>-</td>
+                                <td data-label={t("overview.p95Latency")}>-</td>
+                              </tr>
+                            ) : null}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : <p className="overview-summary-empty">{t("overview.noProviderData")}</p>}
                   </Panel>
                 </div>
               </div>

@@ -12,6 +12,7 @@ import type {
   ModelMappingGroupInput,
   Provider,
   ProviderInput,
+  ProviderPreset,
   ProviderTestResult,
   SafeErrorDetails,
   Settings,
@@ -181,6 +182,14 @@ export class CrpApi {
   async listProviders(signal?: AbortSignal): Promise<Provider[]> {
     const payload = await this.get<{ providers: Provider[] }>("/api/v1/providers", signal);
     return payload.providers;
+  }
+
+  async listProviderPresets(signal?: AbortSignal): Promise<ProviderPreset[]> {
+    const payload = await this.get<{ providerPresets: ProviderPreset[] }>(
+      "/api/v1/provider-presets",
+      signal
+    );
+    return payload.providerPresets;
   }
 
   async listModelMappingGroups(signal?: AbortSignal): Promise<ModelMappingGroup[]> {

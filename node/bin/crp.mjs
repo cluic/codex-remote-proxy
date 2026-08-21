@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_CAPTURE_DB_PATH } from "../src/capture-config.mjs";
 import { bootstrapCodexConfig } from "../src/codex/codex-config.mjs";
+import { getProviderPreset, listProviderPresets } from "../src/providers/provider-presets.mjs";
+import { BUILD_INFO } from "../src/shared/build-info.mjs";
 import { CrpError } from "../src/shared/errors.mjs";
 import { getPaths } from "../src/shared/paths.mjs";
 import {
@@ -58,12 +60,12 @@ const ENV_KEYS = {
   captureEnabled: "CRP_CAPTURE_ENABLED",
   captureDbPath: "CRP_CAPTURE_DB_PATH"
 };
-const BOOLEAN_OPTIONS = new Set(["json", "no-open", "capture", "no-capture", "debug"]);
+const BOOLEAN_OPTIONS = new Set(["json", "no-open", "capture", "no-capture", "debug", "check"]);
 const HELP_FLAGS = new Set(["-h", "--help"]);
-const PROVIDER_ACTIONS = new Set(["list", "add", "models", "test", "activate", "delete"]);
+const PROVIDER_ACTIONS = new Set(["presets", "list", "add", "models", "test", "activate", "delete"]);
 const SAFE_CLI_COMMANDS = new Set([
   "ui", "start", "status", "stop", "restart", "shutdown",
-  "provider", "check", "capture", "guide", "install-cli"
+  "provider", "check", "capture", "guide", "install-cli", "version", "update"
 ]);
 const REMOVED_CLI_COMMANDS = new Map([
   ["init", "crp ui"],
@@ -108,6 +110,9 @@ export const CLI_MESSAGES = Object.freeze({
     "help.option.noOpen": "  --no-open              Start management without opening a browser.",
     "help.option.locale": "  --locale <en|zh-CN>    Select human output language for this process.",
     "help.option.help": "  -h, --help              Show help without starting CRP.",
+    "help.option.version": "  -v, --version           Print the installed CRP version.",
+    "help.option.updateCheck": "  --check                 Check for an update without installing it.",
+    "help.option.provider.preset": "  --preset <ID>          Use a maintained built-in provider preset.",
     "help.option.provider.name": "  --name <NAME>          Select a provider by its unique name.",
     "help.option.provider.id": "  --id <ID>              Select a provider by its stable ID.",
     "help.option.provider.baseUrl": "  --base-url <URL>       Provider API base URL, normally ending in /v1.",
@@ -126,34 +131,41 @@ export const CLI_MESSAGES = Object.freeze({
     "help.stop": "  crp stop [--json]",
     "help.restart": "  crp restart [--json]",
     "help.shutdown": "  crp shutdown [--json]",
+    "help.version": "  crp version [--json]",
+    "help.update": "  crp update [--check] [--json]",
     "help.provider": "  crp provider <command> [options]",
     "help.guide": "  crp guide [--json]",
     "help.installCli": "  crp install-cli [--json]",
     "help.description.check": "Inspect local Codex and legacy CRP configuration.",
     "help.description.ui": "Start the Supervisor if needed and open the local management UI.",
     "help.description.start": "Ensure the Supervisor is running, bootstrap Codex if needed, and start the proxy Worker.",
-    "help.description.capture": "Inspect or change the legacy capture preference.",
+    "help.description.capture": "Inspect or change Supervisor-managed forwarding metadata capture.",
     "help.description.status": "Show Supervisor, Worker, active-provider, Codex, and proxy status.",
     "help.description.stop": "Stop the proxy Worker while the Supervisor and management UI remain running.",
     "help.description.restart": "Drain and replace the proxy Worker while keeping the Supervisor running.",
     "help.description.shutdown": "Stop the proxy Worker and Supervisor completely.",
+    "help.description.version": "Compare installed, Supervisor, and Web UI build versions.",
+    "help.description.update": "Check for or install the latest global npm release.",
     "help.description.provider": "Provider commands manage named upstream profiles.",
     "help.description.guide": "Show the recommended provider and lifecycle flow.",
     "help.description.installCli": "Install the deprecated local command shim.",
     "help.provider.list": "  crp provider list [--json]",
-    "help.provider.add": "  crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]",
+    "help.provider.presets": "  crp provider presets [--json]",
+    "help.provider.add": "  crp provider add (--preset <ID> | --name <NAME> --base-url <URL>) --api-key <KEY> [--model <MODEL>] [--json]",
     "help.provider.models": "  crp provider models (--id <ID> | --name <NAME>) [--json]",
     "help.provider.test": "  crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]",
     "help.provider.activate": "  crp provider activate (--id <ID> | --name <NAME>) [--json]",
     "help.provider.delete": "  crp provider delete (--id <ID> | --name <NAME>) [--json]",
     "help.provider.addAdvanced": "  --model runs a compatibility test after saving. Routing override: --model-mode, --model-override. Authentication: --auth-header, --auth-scheme.",
     "help.provider.description.list": "List configured providers and their non-secret status.",
+    "help.provider.description.presets": "List maintained built-in provider endpoint presets.",
     "help.provider.description.add": "Add a named provider profile and write its credential.",
     "help.provider.description.models": "Refresh and list available models for one provider.",
     "help.provider.description.test": "Test Responses API compatibility for one provider.",
     "help.provider.description.activate": "Make a tested provider the active provider for new requests.",
     "help.provider.description.delete": "Delete an inactive provider and its saved credential.",
     "help.example.providerAdd": "  crp provider add --name Primary --base-url https://api.example/v1 --api-key <KEY> --model <MODEL>",
+    "help.example.providerPreset": "  crp provider add --preset openrouter --api-key <KEY>",
     "help.example.providerModels": "  crp provider models --name Primary",
     "help.example.providerList": "  crp provider list",
     "help.example.providerTest": "  crp provider test --name Primary --model <MODEL>",
@@ -165,12 +177,16 @@ export const CLI_MESSAGES = Object.freeze({
     "validation.providerOption": "The provider command contains an unsupported option.",
     "validation.providerRequired": "The provider {name} option is required.",
     "validation.providerSelector": "Provide exactly one of --id or --name.",
+    "validation.providerPreset": "The provider preset is unknown or conflicts with custom endpoint options.",
     "validation.commandOption": "The {command} command contains an unsupported option.",
+    "validation.commandUnknown": "Unknown command. Run `crp --help` to see available commands.",
     "validation.localeDuplicate": "The --locale option may only be provided once.",
     "validation.localeRequired": "The --locale option requires en or zh-CN.",
     "validation.localeUnsupported": "The --locale option supports only en or zh-CN.",
     "validation.captureAction": "Unknown capture action.",
     "validation.captureOption": "The capture command contains an unsupported option.",
+    "validation.versionOption": "The version command contains an unsupported option.",
+    "validation.updateOption": "The update command contains an unsupported option.",
     "common.yes": "yes",
     "common.no": "no",
     "common.unknown": "(unknown)",
@@ -203,6 +219,7 @@ export const CLI_MESSAGES = Object.freeze({
     "capture.persistedDb": "Persisted capture DB: {value}",
     "capture.runtimeEnabled": "Runtime capture enabled: {value}",
     "capture.runtimeDb": "Runtime capture DB: {value}",
+    "capture.unavailable": "Capture status unavailable: the Supervisor is not running.",
     "capture.savedNextStart": "Capture preference saved. It will apply the next time the proxy starts.",
     "capture.savedRuntime": "Capture preference saved and runtime config updated.",
     "installCli.installed": "Legacy local shim installed.",
@@ -239,6 +256,9 @@ export const CLI_MESSAGES = Object.freeze({
     "provider.activate.completed": "Provider activate completed.",
     "provider.delete.completed": "Provider delete completed.",
     "provider.list.completed": "Provider list completed.",
+    "provider.presets.completed": "Provider preset list completed.",
+    "provider.presets.header": "Built-in provider presets ({count}):",
+    "provider.presets.item": "- {name} ({id}) · {baseUrl}",
     "provider.test.completed": "Provider test completed.",
     "provider.models.completed": "Provider model discovery completed.",
     "provider.models.header": "Models for {name} ({id}) ({count}):",
@@ -263,6 +283,14 @@ export const CLI_MESSAGES = Object.freeze({
     "provider.model.mapping": "mapping group -> {group}",
     "provider.credential.configured": "configured",
     "provider.credential.notConfigured": "not configured",
+    "version.installed": "Installed CRP: {version}",
+    "version.supervisor": "Running Supervisor: {version}",
+    "version.notRunning": "Running Supervisor: not running",
+    "update.current": "Installed version: {version}",
+    "update.latest": "Latest version: {version}",
+    "update.available": "Update available. Run `crp update` to install it.",
+    "update.currentAlready": "CRP is up to date.",
+    "update.completed": "CRP updated to {version} and restored the previous runtime state.",
     "command.removed": "The `{command}` command has been removed. Use `{replacement}` instead.",
     "start.ready": "Codex Remote Proxy is ready.",
     "start.historyRepairEncryptedWarning": "Warning: Some historical sessions contain encrypted content. Their provider metadata was repaired, but some messages may remain unavailable.",
@@ -299,6 +327,9 @@ export const CLI_MESSAGES = Object.freeze({
     "help.option.noOpen": "  --no-open              启动管理服务但不打开浏览器。",
     "help.option.locale": "  --locale <en|zh-CN>    选择当前进程的人类可读输出语言。",
     "help.option.help": "  -h, --help              显示帮助且不启动 CRP。",
+    "help.option.version": "  -v, --version           输出已安装的 CRP 版本。",
+    "help.option.updateCheck": "  --check                 只检查更新，不执行安装。",
+    "help.option.provider.preset": "  --preset <ID>          使用持续维护的内置提供商预设。",
     "help.option.provider.name": "  --name <NAME>          按唯一名称选择提供商。",
     "help.option.provider.id": "  --id <ID>              按稳定 ID 选择提供商。",
     "help.option.provider.baseUrl": "  --base-url <URL>       提供商 API 基础地址，通常以 /v1 结尾。",
@@ -317,34 +348,41 @@ export const CLI_MESSAGES = Object.freeze({
     "help.stop": "  crp stop [--json]",
     "help.restart": "  crp restart [--json]",
     "help.shutdown": "  crp shutdown [--json]",
+    "help.version": "  crp version [--json]",
+    "help.update": "  crp update [--check] [--json]",
     "help.provider": "  crp provider <command> [options]",
     "help.guide": "  crp guide [--json]",
     "help.installCli": "  crp install-cli [--json]",
     "help.description.check": "检查本地 Codex 和旧版 CRP 配置。",
     "help.description.ui": "按需启动监督进程并打开本地管理页面。",
     "help.description.start": "确保监督进程运行，按需引导 Codex 配置，然后启动代理工作进程。",
-    "help.description.capture": "检查或修改旧版抓取偏好。",
+    "help.description.capture": "检查或修改由监督进程管理的转发元数据记录。",
     "help.description.status": "显示监督进程、工作进程、当前提供商、Codex 和代理状态。",
     "help.description.stop": "停止代理工作进程，监督进程和管理页面继续运行。",
     "help.description.restart": "排空并替换代理工作进程，同时保持监督进程运行。",
     "help.description.shutdown": "完全停止代理工作进程和监督进程。",
+    "help.description.version": "核对已安装、监督进程和 Web UI 的构建版本。",
+    "help.description.update": "检查或安装最新的全局 npm 版本。",
     "help.description.provider": "提供商命令用于管理具名上游配置。",
     "help.description.guide": "显示推荐的提供商和生命周期流程。",
     "help.description.installCli": "安装已弃用的本地命令入口。",
     "help.provider.list": "  crp provider list [--json]",
-    "help.provider.add": "  crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]",
+    "help.provider.presets": "  crp provider presets [--json]",
+    "help.provider.add": "  crp provider add (--preset <ID> | --name <NAME> --base-url <URL>) --api-key <KEY> [--model <MODEL>] [--json]",
     "help.provider.models": "  crp provider models (--id <ID> | --name <NAME>) [--json]",
     "help.provider.test": "  crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]",
     "help.provider.activate": "  crp provider activate (--id <ID> | --name <NAME>) [--json]",
     "help.provider.delete": "  crp provider delete (--id <ID> | --name <NAME>) [--json]",
     "help.provider.addAdvanced": "  --model 会在保存后执行兼容性测试。路由覆盖：--model-mode、--model-override。认证：--auth-header、--auth-scheme。",
     "help.provider.description.list": "列出已配置的提供商及其非敏感状态。",
+    "help.provider.description.presets": "列出持续维护的内置提供商端点预设。",
     "help.provider.description.add": "添加具名提供商配置并写入凭据。",
     "help.provider.description.models": "刷新并列出一个提供商的可用模型。",
     "help.provider.description.test": "测试一个提供商的 Responses API 兼容性。",
     "help.provider.description.activate": "将已测试的提供商设为新请求的当前提供商。",
     "help.provider.description.delete": "删除一个未激活的提供商及其已保存凭据。",
     "help.example.providerAdd": "  crp provider add --name Primary --base-url https://api.example/v1 --api-key <KEY> --model <MODEL>",
+    "help.example.providerPreset": "  crp provider add --preset openrouter --api-key <KEY>",
     "help.example.providerModels": "  crp provider models --name Primary",
     "help.example.providerList": "  crp provider list",
     "help.example.providerTest": "  crp provider test --name Primary --model <MODEL>",
@@ -356,12 +394,16 @@ export const CLI_MESSAGES = Object.freeze({
     "validation.providerOption": "提供商命令包含不支持的选项。",
     "validation.providerRequired": "提供商选项 {name} 为必填项。",
     "validation.providerSelector": "必须且只能提供 --id 或 --name 其中一个选项。",
+    "validation.providerPreset": "提供商预设不存在，或与自定义端点选项冲突。",
     "validation.commandOption": "{command} 命令包含不支持的选项。",
+    "validation.commandUnknown": "未知命令。运行 `crp --help` 查看可用命令。",
     "validation.localeDuplicate": "--locale 选项只能提供一次。",
     "validation.localeRequired": "--locale 选项需要 en 或 zh-CN。",
     "validation.localeUnsupported": "--locale 选项仅支持 en 或 zh-CN。",
     "validation.captureAction": "未知的 capture 操作。",
     "validation.captureOption": "capture 命令包含不支持的选项。",
+    "validation.versionOption": "version 命令包含不支持的选项。",
+    "validation.updateOption": "update 命令包含不支持的选项。",
     "common.yes": "是",
     "common.no": "否",
     "common.unknown": "（未知）",
@@ -394,6 +436,7 @@ export const CLI_MESSAGES = Object.freeze({
     "capture.persistedDb": "持久化抓取数据库：{value}",
     "capture.runtimeEnabled": "运行时抓取已启用：{value}",
     "capture.runtimeDb": "运行时抓取数据库：{value}",
+    "capture.unavailable": "无法获取抓取状态：CRP 监督进程未运行。",
     "capture.savedNextStart": "抓取偏好已保存，将在代理下次启动时生效。",
     "capture.savedRuntime": "抓取偏好已保存，运行时配置已更新。",
     "installCli.installed": "旧版本地命令入口已安装。",
@@ -430,6 +473,9 @@ export const CLI_MESSAGES = Object.freeze({
     "provider.activate.completed": "提供商激活操作已完成。",
     "provider.delete.completed": "提供商删除操作已完成。",
     "provider.list.completed": "提供商列表操作已完成。",
+    "provider.presets.completed": "提供商预设列表操作已完成。",
+    "provider.presets.header": "内置提供商预设（{count}）：",
+    "provider.presets.item": "- {name}（{id}）· {baseUrl}",
     "provider.test.completed": "提供商测试操作已完成。",
     "provider.models.completed": "提供商模型发现操作已完成。",
     "provider.models.header": "{name}（{id}）可用模型（{count}）：",
@@ -454,6 +500,14 @@ export const CLI_MESSAGES = Object.freeze({
     "provider.model.mapping": "映射规则组 -> {group}",
     "provider.credential.configured": "已配置",
     "provider.credential.notConfigured": "未配置",
+    "version.installed": "已安装 CRP：{version}",
+    "version.supervisor": "运行中的监督进程：{version}",
+    "version.notRunning": "运行中的监督进程：未运行",
+    "update.current": "已安装版本：{version}",
+    "update.latest": "最新版本：{version}",
+    "update.available": "有可用更新。运行 `crp update` 即可安装。",
+    "update.currentAlready": "CRP 已是最新版本。",
+    "update.completed": "CRP 已更新至 {version}，并恢复更新前的运行状态。",
     "command.removed": "`{command}` 命令已移除。请改用 `{replacement}`。",
     "start.ready": "Codex Remote Proxy 已就绪。",
     "start.historyRepairEncryptedWarning": "警告：部分历史会话包含加密内容。提供商元数据已修复，但部分消息可能仍不可用。",
@@ -497,7 +551,7 @@ function cliInputError(messageKey, values = {}) {
   return error;
 }
 
-function resolveCliLocale(argv) {
+function resolveCliLocale(argv, environment = process.env) {
   const stripped = [];
   let explicit = null;
   for (let index = 0; index < argv.length; index += 1) {
@@ -518,7 +572,13 @@ function resolveCliLocale(argv) {
     if (locale === null) throw cliInputError("validation.localeUnsupported");
     return { argv: stripped, locale, explicit: true };
   }
-  return { argv: stripped, locale: "en", explicit: false };
+  const detected = [
+    environment?.CRP_LOCALE,
+    environment?.LC_ALL,
+    environment?.LC_MESSAGES,
+    environment?.LANG
+  ].map(normalizeLocale).find(Boolean);
+  return { argv: stripped, locale: detected ?? "en", explicit: false };
 }
 
 function cliMessage(locale, key, values = {}) {
@@ -709,38 +769,40 @@ function printHelpKeys(keys, writeLine, locale) {
 }
 
 function printHelp(writeLine = (line) => console.log(line), locale = "en") {
+  const commands = [
+    ["help.ui", "help.description.ui"],
+    ["help.start", "help.description.start"],
+    ["help.status", "help.description.status"],
+    ["help.stop", "help.description.stop"],
+    ["help.restart", "help.description.restart"],
+    ["help.shutdown", "help.description.shutdown"],
+    ["help.provider", "help.description.provider"],
+    ["help.capture", "help.description.capture"],
+    ["help.version", "help.description.version"],
+    ["help.update", "help.description.update"],
+    ["help.check", "help.description.check"],
+    ["help.guide", "help.description.guide"]
+  ].map(([syntaxKey, descriptionKey]) => [
+    cliMessage(locale, syntaxKey).trim(),
+    cliMessage(locale, descriptionKey)
+  ]);
+  const width = Math.max(...commands.map(([syntax]) => syntax.length));
+  writeLine(cliMessage(locale, "help.usage"));
+  writeLine(cliMessage(locale, "help.rootSyntax"));
+  writeLine("");
+  writeLine(cliMessage(locale, "help.commands"));
+  for (const [syntax, description] of commands) {
+    writeLine(`  ${syntax.padEnd(width)}  ${description}`);
+  }
+  writeLine("");
   printHelpKeys([
-    "help.usage",
-    "help.rootSyntax",
-    "help.commands",
-    "help.ui",
-    "help.description.ui",
-    "help.start",
-    "help.description.start",
-    "help.status",
-    "help.description.status",
-    "help.stop",
-    "help.description.stop",
-    "help.restart",
-    "help.description.restart",
-    "help.shutdown",
-    "help.description.shutdown",
-    "help.provider",
-    "help.description.provider",
-    "help.check",
-    "help.description.check",
-    "help.capture",
-    "help.description.capture",
-    "help.guide",
-    "help.description.guide",
-    "help.installCli",
-    "help.description.installCli",
     "help.options",
     "help.option.json",
     "help.option.locale",
+    "help.option.version",
     "help.option.help",
     "help.examples",
-    "help.example.providerAdd",
+    "help.example.providerPreset",
     "help.example.status",
     "help.hint"
   ], writeLine, locale);
@@ -773,6 +835,7 @@ function printCommandHelp(command, writeLine, locale) {
     "help.options"
   ];
   if (command === "ui") keys.push("help.option.noOpen");
+  if (command === "update") keys.push("help.option.updateCheck");
   keys.push("help.option.json", "help.option.locale", "help.option.help");
   keys.push("help.examples", `help.${command === "install-cli" ? "installCli" : command}`);
   printHelpKeys(keys, writeLine, locale);
@@ -784,6 +847,7 @@ function printProviderHelp(writeLine, locale) {
     "help.provider",
     "help.description.provider",
     "help.commands",
+    "help.provider.presets",
     "help.provider.list",
     "help.provider.add",
     "help.provider.models",
@@ -812,6 +876,7 @@ function printProviderActionHelp(action, writeLine, locale) {
   }
   if (action === "add") {
     keys.push(
+      "help.option.provider.preset",
       "help.option.provider.name",
       "help.option.provider.baseUrl",
       "help.option.provider.apiKey",
@@ -826,6 +891,7 @@ function printProviderActionHelp(action, writeLine, locale) {
   }
   keys.push("help.option.json", "help.option.locale", "help.option.help", "help.examples");
   keys.push({
+    presets: "help.example.providerPreset",
     list: "help.example.providerList",
     add: "help.example.providerAdd",
     models: "help.example.providerModels",
@@ -872,26 +938,6 @@ function readJson(path) {
 
 function loadUserConfig() {
   return readJson(USER_CONFIG_FILE);
-}
-
-function writeUserConfig(config) {
-  ensureStateDirs();
-  writeFileSync(USER_CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-  try {
-    chmodSync(USER_CONFIG_FILE, 0o600);
-  } catch {
-    // Best effort only.
-  }
-}
-
-function applyUserConfigPatch(patch) {
-  const current = loadUserConfig();
-  const next = {
-    ...current,
-    ...patch
-  };
-  writeUserConfig(next);
-  return next;
 }
 
 function loadRuntimeProxyConfig() {
@@ -1734,112 +1780,6 @@ async function statusCommand(options) {
   }
 }
 
-async function captureCommand(options, action, locale, stdout) {
-  if (action === "status") {
-    const runtime = loadRuntimeProxyConfig();
-    const state = loadManagedState();
-    const supervisorState = readSupervisorState({ path: STATE_FILE, adminPort: 15101 });
-    const payload = {
-      ok: true,
-      running: supervisorState
-        ? isProcessAlive(supervisorState.supervisorPid)
-        : Boolean(state?.pid && isProcessAlive(state.pid)),
-      managedBySupervisor: supervisorState !== null,
-      persistedConfig: {
-        captureEnabled: loadUserConfig().captureEnabled === true,
-        captureDbPath: loadUserConfig().captureDbPath ?? null
-      },
-      runtimeConfig: runtime?.capture ? {
-        enabled: runtime.capture.enabled === true,
-        dbPath: runtime.capture.dbPath ?? null
-      } : null
-    };
-    if (state?.proxyUrl && payload.running) {
-      try {
-        payload.health = await waitForHealthyProxy(state.proxyUrl, 2000);
-      } catch (error) {
-        payload.healthError = error.message;
-      }
-    }
-    if (!maybePrintJson(options, payload, stdout)) {
-      const yesNo = (enabled) => cliMessage(locale, enabled ? "common.yes" : "common.no");
-      stdout(`${cliMessage(locale, "capture.running", { value: yesNo(payload.running) })}\n`);
-      stdout(`${cliMessage(locale, "capture.persistedEnabled", {
-        value: yesNo(payload.persistedConfig.captureEnabled)
-      })}\n`);
-      stdout(`${cliMessage(locale, "capture.persistedDb", {
-        value: payload.persistedConfig.captureDbPath || DEFAULT_CAPTURE_DB_PATH
-      })}\n`);
-      if (payload.runtimeConfig) {
-        stdout(`${cliMessage(locale, "capture.runtimeEnabled", {
-          value: yesNo(payload.runtimeConfig.enabled)
-        })}\n`);
-        stdout(`${cliMessage(locale, "capture.runtimeDb", {
-          value: payload.runtimeConfig.dbPath || DEFAULT_CAPTURE_DB_PATH
-        })}\n`);
-      }
-    }
-    return;
-  }
-
-  if (readSupervisorState({ path: STATE_FILE, adminPort: 15101 })) {
-    throw new Error("Capture settings are read-only in this version.");
-  }
-  const enabled = action === "on";
-  const persistedConfig = applyUserConfigPatch({
-    captureEnabled: enabled,
-    captureDbPath: ensureCaptureDbPath(loadUserConfig().captureDbPath)
-  });
-
-  const payload = {
-    ok: true,
-    action,
-    persistedConfig: {
-      captureEnabled: persistedConfig.captureEnabled === true,
-      captureDbPath: persistedConfig.captureDbPath ?? null
-    },
-    runtimeUpdated: false,
-    message: ""
-  };
-
-  const managedState = loadManagedState();
-  const running = Boolean(managedState?.pid && isProcessAlive(managedState.pid));
-  if (!running) {
-    payload.message = "Capture preference saved. It will apply the next time the proxy starts.";
-    if (!maybePrintJson(options, payload, stdout)) {
-      stdout(`${cliMessage(locale, "capture.savedNextStart")}\n`);
-    }
-    return;
-  }
-
-  const runtimeConfig = loadRuntimeProxyConfig();
-  if (!runtimeConfig) {
-    throw new Error(`Runtime proxy config not found: ${NODE_RUNTIME_CONFIG_PATH}`);
-  }
-  runtimeConfig.capture = {
-    enabled,
-    dbPath: ensureCaptureDbPath(
-      runtimeConfig.capture?.dbPath || persistedConfig.captureDbPath || DEFAULT_CAPTURE_DB_PATH
-    )
-  };
-  writeProxyConfig(NODE_RUNTIME_CONFIG_PATH, runtimeConfig);
-  payload.runtimeUpdated = true;
-  payload.message = "Capture preference saved and runtime config updated.";
-
-  if (managedState.proxyUrl) {
-    try {
-      const health = await waitForHealthyProxy(managedState.proxyUrl, 4000);
-      payload.health = health;
-    } catch (error) {
-      payload.healthError = error.message;
-    }
-  }
-
-  if (!maybePrintJson(options, payload, stdout)) {
-    stdout(`${cliMessage(locale, "capture.savedRuntime")}\n`);
-  }
-}
-
 async function stopCommand(options) {
   const result = stopManagedService(loadManagedState());
   const payload = { ok: true, stopped: result.stopped, reason: result.reason };
@@ -2079,6 +2019,18 @@ function writeHumanProviderList(providers, activeProviderId, locale, stdout) {
   stdout(`${lines.join("\n")}\n`);
 }
 
+function writeHumanProviderPresets(presets, locale, stdout) {
+  const visible = Array.isArray(presets) ? presets : [];
+  stdout(`${cliMessage(locale, "provider.presets.header", { count: visible.length })}\n`);
+  for (const preset of visible) {
+    stdout(`${cliMessage(locale, "provider.presets.item", {
+      name: preset.name,
+      id: preset.id,
+      baseUrl: preset.baseUrl
+    })}\n`);
+  }
+}
+
 function writeHumanProviderModels(result, selector, locale, stdout) {
   const catalog = result?.modelCatalog && typeof result.modelCatalog === "object"
     ? result.modelCatalog
@@ -2231,10 +2183,12 @@ function parseProviderOptions(argv, locale) {
   }
   const { options } = parseCommandLine(["provider", ...argv.slice(2)], locale);
   const allowed = {
+    presets: new Set(["json"]),
     list: new Set(["json"]),
     add: new Set([
       "json",
       "name",
+      "preset",
       "base-url",
       "api-key",
       "model",
@@ -2352,10 +2306,28 @@ async function dispatchProviderCommand(argv, dependencies) {
   let addTestModel = null;
   let selector = null;
   if (action === "add") {
-    const provider = {
-      name: requiredOption(options, "name", dependencies.locale),
-      baseUrl: requiredOption(options, "base-url", dependencies.locale)
-    };
+    const presetId = typeof options.preset === "string"
+      ? requiredOption(options, "preset", dependencies.locale)
+      : null;
+    const preset = presetId === null ? null : getProviderPreset(presetId);
+    if (presetId !== null && (preset === null
+      || ["base-url", "auth-header", "auth-scheme"].some((field) => Object.hasOwn(options, field)))) {
+      throw cliInputError("validation.providerPreset");
+    }
+    const provider = preset === null
+      ? {
+          name: requiredOption(options, "name", dependencies.locale),
+          baseUrl: requiredOption(options, "base-url", dependencies.locale)
+        }
+      : {
+          name: typeof options.name === "string" && options.name.trim().length > 0
+            ? options.name.trim()
+            : preset.name,
+          baseUrl: preset.baseUrl,
+          authHeader: preset.authHeader,
+          authScheme: preset.authScheme,
+          extraHeaders: preset.extraHeaders
+        };
     for (const [option, field] of [
       ["auth-header", "authHeader"],
       ["auth-scheme", "authScheme"],
@@ -2371,8 +2343,18 @@ async function dispatchProviderCommand(argv, dependencies) {
     if (Object.hasOwn(options, "model")) {
       addTestModel = requiredOption(options, "model", dependencies.locale);
     }
-  } else if (action !== "list") {
+  } else if (action !== "list" && action !== "presets") {
     selector = providerSelector(options, dependencies.locale);
+  }
+
+  if (action === "presets") {
+    const presets = listProviderPresets();
+    if (options.json) {
+      writePayload(options, { ok: true, action, providerPresets: presets }, dependencies.stdout, "");
+    } else {
+      writeHumanProviderPresets(presets, dependencies.locale, dependencies.stdout);
+    }
+    return;
   }
 
   const context = await dependencies.ensureSupervisorImpl({
@@ -2482,6 +2464,424 @@ function parseCaptureOptions(argv, locale) {
   return { action, options };
 }
 
+function parseVersionOptions(argv, locale) {
+  const { options } = parseCommandLine(argv, locale);
+  if (Object.keys(options).some((field) => field !== "json")) {
+    throw cliInputError("validation.versionOption");
+  }
+  return options;
+}
+
+function parseUpdateOptions(argv, locale) {
+  const { options } = parseCommandLine(argv, locale);
+  if (Object.keys(options).some((field) => field !== "json" && field !== "check")) {
+    throw cliInputError("validation.updateOption");
+  }
+  return options;
+}
+
+function updateError(code, message, action, cause) {
+  return new CrpError(code, message, action, { status: 500, cause });
+}
+
+function validPackageVersion(value) {
+  return typeof value === "string"
+    && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+}
+
+function comparePackageVersions(left, right) {
+  const parse = (value) => {
+    const [withoutBuild] = value.split("+", 1);
+    const [core, prerelease = ""] = withoutBuild.split("-", 2);
+    return { core: core.split(".").map(Number), prerelease };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return a.core[index] > b.core[index] ? 1 : -1;
+  }
+  if (a.prerelease === b.prerelease) return 0;
+  if (a.prerelease === "") return 1;
+  if (b.prerelease === "") return -1;
+  return a.prerelease.localeCompare(b.prerelease, "en", { numeric: true });
+}
+
+function npmCommand(spawnSyncImpl, args, environment, code) {
+  const result = spawnSyncImpl("npm", args, {
+    encoding: "utf8",
+    env: environment,
+    maxBuffer: 1024 * 1024,
+    windowsHide: true
+  });
+  if (result?.error || result?.status !== 0) {
+    throw updateError(
+      code,
+      "CRP could not complete the npm update operation.",
+      "Verify npm and registry access, then try again.",
+      result?.error
+    );
+  }
+  return typeof result.stdout === "string" ? result.stdout.trim() : "";
+}
+
+function latestPublishedVersion(spawnSyncImpl, environment) {
+  const output = npmCommand(
+    spawnSyncImpl,
+    ["view", BUILD_INFO.name, "version", "--json"],
+    environment,
+    "UPDATE_CHECK_FAILED"
+  );
+  let parsed;
+  try {
+    parsed = JSON.parse(output);
+  } catch (cause) {
+    throw updateError(
+      "UPDATE_RESPONSE_INVALID",
+      "The npm registry returned an invalid package version.",
+      "Retry the update check after verifying the configured npm registry.",
+      cause
+    );
+  }
+  const version = Array.isArray(parsed) ? parsed.at(-1) : parsed;
+  if (!validPackageVersion(version)) {
+    throw updateError(
+      "UPDATE_RESPONSE_INVALID",
+      "The npm registry returned an invalid package version.",
+      "Retry the update check after verifying the configured npm registry."
+    );
+  }
+  return version;
+}
+
+function globalPackageLocation(spawnSyncImpl, environment) {
+  const globalRoot = npmCommand(
+    spawnSyncImpl,
+    ["root", "--global"],
+    environment,
+    "UPDATE_INSTALLATION_CHECK_FAILED"
+  );
+  const expectedPackageRoot = resolve(globalRoot, BUILD_INFO.name);
+  let installedRoot;
+  let expectedRoot;
+  try {
+    installedRoot = realpathSync(PACKAGE_ROOT);
+    expectedRoot = realpathSync(expectedPackageRoot);
+  } catch (cause) {
+    throw updateError(
+      "UPDATE_REQUIRES_GLOBAL_INSTALL",
+      "This CRP copy is not a global npm installation.",
+      `Run \`npm install -g ${BUILD_INFO.name}@latest\` to update it.`,
+      cause
+    );
+  }
+  if (installedRoot !== expectedRoot) {
+    throw updateError(
+      "UPDATE_REQUIRES_GLOBAL_INSTALL",
+      "This CRP copy is not a global npm installation.",
+      `Run \`npm install -g ${BUILD_INFO.name}@latest\` to update it.`
+    );
+  }
+  return { globalRoot, packageRoot: expectedRoot };
+}
+
+function readInstalledPackageVersion(packageRoot) {
+  const version = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8")).version;
+  if (!validPackageVersion(version)) throw new Error("installed package version is invalid");
+  return version;
+}
+
+function runInstalledCli(packageRoot, args, dependencies) {
+  return dependencies.spawnSyncImpl(
+    process.execPath,
+    [resolve(packageRoot, "bin", "crp.mjs"), ...args],
+    {
+      env: dependencies.environment,
+      stdio: "ignore",
+      windowsHide: true
+    }
+  );
+}
+
+function runtimeRestored(context, version, workerRequired) {
+  return context?.status?.build?.version === version
+    && (!workerRequired || context?.status?.worker?.phase === "running"
+      && context.status.worker?.state?.listening === true);
+}
+
+async function shutdownForUpdate(expectedIdentity, dependencies) {
+  await dispatchSupervisorCommand(["shutdown", "--json"], {
+    ...dependencies,
+    expectedSupervisorIdentity: expectedIdentity,
+    stdout: () => {}
+  });
+}
+
+function updateRuntimeStateUncertain(cause) {
+  return updateError(
+    "UPDATE_RUNTIME_STATE_UNCERTAIN",
+    "CRP could not prove that the previous runtime stopped safely.",
+    "Run `crp status`, then retry the update after resolving Supervisor state.",
+    cause
+  );
+}
+
+function remainingUpdateState(dependencies) {
+  const existingStatePaths = [
+    dependencies.paths.statePath,
+    `${dependencies.paths.statePath}.stale`
+  ].filter((path) => existsSync(path));
+  if (existingStatePaths.length > 1) return { uncertain: true, state: null };
+  if (existingStatePaths.length === 0) return { uncertain: false, state: null };
+  const state = dependencies.readSupervisorStateImpl({
+    path: existingStatePaths[0],
+    adminPort: dependencies.adminPort
+  });
+  return { uncertain: state === null, state };
+}
+
+function updateRuntimePids(context) {
+  return new Set([
+    context.state.supervisorPid,
+    context.state.worker?.pid,
+    context.status?.worker?.pid
+  ].filter((pid) => Number.isSafeInteger(pid) && pid > 0));
+}
+
+async function loopbackPortIdle(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return false;
+  return await new Promise((resolveIdle, rejectIdle) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", (error) => {
+      if (["EADDRINUSE", "EACCES"].includes(error?.code)) {
+        resolveIdle(false);
+        return;
+      }
+      rejectIdle(error);
+    });
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      server.close((error) => error ? rejectIdle(error) : resolveIdle(true));
+    });
+  });
+}
+
+async function updatePortsIdle({ adminPort, proxyPort = 15100 }) {
+  const ports = [...new Set([adminPort, proxyPort])];
+  const results = await Promise.all(ports.map(loopbackPortIdle));
+  return results.every(Boolean);
+}
+
+async function assertUpdateRuntimeGone(context, dependencies, cause) {
+  const remaining = remainingUpdateState(dependencies);
+  if (remaining.uncertain) throw updateRuntimeStateUncertain(cause);
+  if (remaining.state !== null && !sameSupervisorIdentity(remaining.state, context.state)) {
+    throw shutdownIdentityError();
+  }
+  if ([...updateRuntimePids(context)].some((pid) => dependencies.isProcessAliveImpl(pid))) {
+    throw cause ?? updateRuntimeStateUncertain();
+  }
+  let portsIdle = false;
+  try {
+    portsIdle = await dependencies.updatePortsIdleImpl({
+      adminPort: dependencies.adminPort,
+      proxyPort: 15100
+    });
+  } catch {
+    throw updateRuntimeStateUncertain(cause);
+  }
+  if (!portsIdle) throw updateRuntimeStateUncertain(cause);
+}
+
+async function stopRuntimeForUpdate(context, dependencies) {
+  try {
+    await dependencies.shutdownForUpdateImpl(context.state, dependencies);
+    return;
+  } catch (error) {
+    if (error?.code === "SUPERVISOR_IDENTITY_CHANGED") throw error;
+    let current;
+    try {
+      current = await dependencies.discoverSupervisorImpl({
+        paths: dependencies.paths,
+        adminPort: dependencies.adminPort
+      });
+    } catch {
+      throw error;
+    }
+    if (current !== null) {
+      if (!sameSupervisorIdentity(current.state, context.state)) throw shutdownIdentityError();
+      throw error;
+    }
+    await assertUpdateRuntimeGone(context, dependencies, error);
+  }
+}
+
+function installGlobalPackageVersion(version, installation, dependencies, {
+  installCode = "UPDATE_INSTALL_FAILED",
+  verifyCode = "UPDATE_VERIFY_FAILED"
+} = {}) {
+  npmCommand(
+    dependencies.spawnSyncImpl,
+    ["install", "--global", `${BUILD_INFO.name}@${version}`, "--no-fund", "--no-audit"],
+    dependencies.environment,
+    installCode
+  );
+  let installedVersion;
+  try {
+    installedVersion = dependencies.readInstalledPackageVersionImpl(installation.packageRoot);
+  } catch (cause) {
+    throw updateError(
+      verifyCode,
+      "CRP was installed but its version could not be verified.",
+      "Run `crp version`, then restore CRP manually if needed.",
+      cause
+    );
+  }
+  if (installedVersion !== version) {
+    throw updateError(
+      verifyCode,
+      "CRP was installed but its version could not be verified.",
+      "Run `crp version`, then restore CRP manually if needed."
+    );
+  }
+}
+
+async function versionCommand(options, dependencies) {
+  const context = await dependencies.discoverSupervisorImpl({
+    paths: dependencies.paths,
+    adminPort: dependencies.adminPort
+  });
+  const payload = {
+    ok: true,
+    installed: BUILD_INFO,
+    supervisor: context?.status?.build ?? null,
+    workerRunning: context?.status?.worker?.phase === "running"
+      && context.status.worker?.state?.listening === true
+  };
+  if (options.json) {
+    writePayload(options, payload, dependencies.stdout, "");
+    return;
+  }
+  dependencies.stdout(`${cliMessage(dependencies.locale, "version.installed", {
+    version: BUILD_INFO.version
+  })}\n`);
+  dependencies.stdout(`${context?.status?.build?.version
+    ? cliMessage(dependencies.locale, "version.supervisor", {
+        version: context.status.build.version
+      })
+    : cliMessage(dependencies.locale, "version.notRunning")}\n`);
+}
+
+async function updateCommand(options, dependencies) {
+  const latest = latestPublishedVersion(dependencies.spawnSyncImpl, dependencies.environment);
+  const available = comparePackageVersions(latest, BUILD_INFO.version) > 0;
+  if (options.check || !available) {
+    const payload = {
+      ok: true,
+      currentVersion: BUILD_INFO.version,
+      latestVersion: latest,
+      updateAvailable: available
+    };
+    if (options.json) {
+      writePayload(options, payload, dependencies.stdout, "");
+    } else {
+      dependencies.stdout(`${cliMessage(dependencies.locale, "update.current", {
+        version: BUILD_INFO.version
+      })}\n`);
+      dependencies.stdout(`${cliMessage(dependencies.locale, "update.latest", { version: latest })}\n`);
+      dependencies.stdout(`${cliMessage(
+        dependencies.locale,
+        available ? "update.available" : "update.currentAlready"
+      )}\n`);
+    }
+    return;
+  }
+
+  const installation = dependencies.globalPackageLocationImpl(
+    dependencies.spawnSyncImpl,
+    dependencies.environment
+  );
+  const before = await dependencies.discoverSupervisorImpl({
+    paths: dependencies.paths,
+    adminPort: dependencies.adminPort
+  });
+  const workerWasRunning = before?.status?.worker?.phase === "running"
+    && before.status.worker?.state?.listening === true;
+  const restoreArgs = workerWasRunning
+    ? ["start", "--json"]
+    : ["ui", "--no-open", "--json"];
+  installGlobalPackageVersion(latest, installation, dependencies);
+
+  if (before !== null) {
+    await stopRuntimeForUpdate(before, dependencies);
+    const restored = runInstalledCli(installation.packageRoot, restoreArgs, dependencies);
+    if (restored?.error || restored?.status !== 0) {
+      const observed = await dependencies.discoverSupervisorImpl({
+        paths: dependencies.paths,
+        adminPort: dependencies.adminPort
+      });
+      if (!runtimeRestored(observed, latest, workerWasRunning)) {
+        try {
+          if (observed !== null) {
+            if (observed.status?.build?.version !== latest) {
+              throw new Error("a different Supervisor appeared during update recovery");
+            }
+            await stopRuntimeForUpdate(observed, dependencies);
+          } else {
+            await assertUpdateRuntimeGone(
+              before,
+              dependencies,
+              new Error("runtime state changed while activating the update")
+            );
+          }
+          installGlobalPackageVersion(BUILD_INFO.version, installation, dependencies, {
+            installCode: "UPDATE_ROLLBACK_INSTALL_FAILED",
+            verifyCode: "UPDATE_ROLLBACK_VERIFY_FAILED"
+          });
+          const rolledBack = runInstalledCli(
+            installation.packageRoot,
+            restoreArgs,
+            dependencies
+          );
+          if (rolledBack?.error || rolledBack?.status !== 0) {
+            const rollbackObserved = await dependencies.discoverSupervisorImpl({
+              paths: dependencies.paths,
+              adminPort: dependencies.adminPort
+            });
+            if (!runtimeRestored(rollbackObserved, BUILD_INFO.version, workerWasRunning)) {
+              throw rolledBack?.error ?? new Error("rollback runtime restoration failed");
+            }
+          }
+        } catch (cause) {
+          throw updateError(
+            "UPDATE_RECOVERY_FAILED",
+            "CRP was updated, but neither the new nor previous runtime could be restored safely.",
+            `Run \`npm install -g ${BUILD_INFO.name}@${BUILD_INFO.version}\`, then run \`crp ${workerWasRunning ? "start" : "ui --no-open"}\`.`,
+            cause
+          );
+        }
+        throw updateError(
+          "UPDATE_ROLLED_BACK",
+          "CRP could not activate the update, so the previous version and runtime state were restored.",
+          "Review CRP Activity and retry the update later.",
+          restored?.error
+        );
+      }
+    }
+  }
+  const payload = {
+    ok: true,
+    previousVersion: BUILD_INFO.version,
+    version: latest,
+    supervisorRestored: before !== null,
+    workerRestored: workerWasRunning
+  };
+  writePayload(options, payload, dependencies.stdout, cliMessage(
+    dependencies.locale,
+    "update.completed",
+    { version: latest }
+  ));
+}
+
 async function dispatchSupervisorCommand(argv, dependencies) {
   const supervisorCommands = new Set([
     "ui",
@@ -2490,11 +2890,62 @@ async function dispatchSupervisorCommand(argv, dependencies) {
     "stop",
     "restart",
     "shutdown",
-    "provider"
+    "provider",
+    "capture",
+    "version",
+    "update"
   ]);
   if (!supervisorCommands.has(argv[0])) return false;
   if (argv[0] === "provider") {
     await dispatchProviderCommand(argv, dependencies);
+    return true;
+  }
+  if (argv[0] === "version") {
+    await versionCommand(parseVersionOptions(argv, dependencies.locale), dependencies);
+    return true;
+  }
+  if (argv[0] === "update") {
+    await updateCommand(parseUpdateOptions(argv, dependencies.locale), dependencies);
+    return true;
+  }
+  if (argv[0] === "capture") {
+    const { action, options } = parseCaptureOptions(argv, dependencies.locale);
+    const discoveryOptions = { paths: dependencies.paths, adminPort: dependencies.adminPort };
+    if (action === "status") {
+      const context = await dependencies.discoverSupervisorImpl(discoveryOptions);
+      const payload = {
+        ok: true,
+        running: context !== null,
+        capture: context?.status?.capture ?? null
+      };
+      if (options.json) {
+        writePayload(options, payload, dependencies.stdout, "");
+      } else {
+        dependencies.stdout(`${cliMessage(dependencies.locale, "capture.running", {
+          value: cliMessage(dependencies.locale,
+            context?.status?.capture?.active === true ? "common.yes" : "common.no")
+        })}\n`);
+        if (context?.status?.capture == null) {
+          dependencies.stdout(`${cliMessage(dependencies.locale, "capture.unavailable")}\n`);
+        } else {
+          dependencies.stdout(`${cliMessage(dependencies.locale, "capture.persistedEnabled", {
+            value: cliMessage(dependencies.locale,
+              context.status?.capture?.configured === true ? "common.yes" : "common.no")
+          })}\n`);
+        }
+      }
+      return true;
+    }
+    const context = await dependencies.ensureSupervisorImpl(discoveryOptions);
+    const enabled = action === "on";
+    const result = await context.client.request("PATCH", "/settings", {
+      captureEnabled: enabled
+    });
+    writePayload(options, {
+      ok: true,
+      action,
+      captureEnabled: result?.settings?.captureEnabled === true
+    }, dependencies.stdout, cliMessage(dependencies.locale, "capture.savedRuntime"));
     return true;
   }
   const { command, options } = parseSupervisorOptions(argv, dependencies.locale);
@@ -2513,7 +2964,8 @@ async function dispatchSupervisorCommand(argv, dependencies) {
     openManagementUrlImpl,
     readSupervisorStateImpl,
     readSupervisorStateSnapshotImpl,
-    removeStaleSupervisorStateImpl
+    removeStaleSupervisorStateImpl,
+    expectedSupervisorIdentity = null
   } = dependencies;
   const discoveryOptions = { paths, adminPort };
 
@@ -2572,6 +3024,10 @@ async function dispatchSupervisorCommand(argv, dependencies) {
       adminPort
     });
     const context = await discoverSupervisorImpl(discoveryOptions);
+    if (expectedSupervisorIdentity !== null
+      && (context === null || !sameSupervisorIdentity(context.state, expectedSupervisorIdentity))) {
+      throw shutdownIdentityError();
+    }
     if (context === null) {
       let cleanupSnapshot = stateSnapshot;
       let staleState = readSupervisorStateImpl({ path: paths.statePath, adminPort });
@@ -2811,11 +3267,6 @@ async function main(argv = process.argv.slice(2), {
   locale = "en",
   stdout = (text) => process.stdout.write(text)
 } = {}) {
-  if (argv[0] === "capture") {
-    const { action, options } = parseCaptureOptions(argv, locale);
-    return await captureCommand(options, action, locale, stdout);
-  }
-
   const { command, options } = parseCommandLine(argv, locale);
   if (command === "check") return checkCommand(options, locale, stdout);
   if (command === "guide") return guideCommand(options, locale, stdout);
@@ -2823,7 +3274,7 @@ async function main(argv = process.argv.slice(2), {
   if (command === "status") return await statusCommand(options);
   if (command === "stop") return await stopCommand(options);
   if (command === "install-cli") return await installCliCommand(options, locale, stdout);
-  throw new Error("Unknown command.");
+  throw cliInputError("validation.commandUnknown");
 }
 
 export async function runCli(argv, {
@@ -2843,21 +3294,29 @@ export async function runCli(argv, {
   wait = (milliseconds) => delay(milliseconds),
   now = () => Date.now(),
   shutdownTimeoutMs = 8_000,
-  environment = process.env
+  environment = process.env,
+  spawnSyncImpl = spawnSync,
+  globalPackageLocationImpl = globalPackageLocation,
+  readInstalledPackageVersionImpl = readInstalledPackageVersion,
+  shutdownForUpdateImpl = shutdownForUpdate,
+  updatePortsIdleImpl = updatePortsIdle
 } = {}) {
   paths ??= getPaths(configuredHome(environment));
   let locale = "en";
   const jsonIntent = argv.includes("--json");
   let commandName = safeCommandName(argv);
   try {
-    const resolved = resolveCliLocale(argv);
+    const resolved = resolveCliLocale(argv, environment);
     argv = resolved.argv;
     locale = resolved.locale;
     commandName = safeCommandName(argv);
+    if (argv.length === 1 && ["-v", "--version"].includes(argv[0])) {
+      stdout(`${BUILD_INFO.version}\n`);
+      return 0;
+    }
     const helpRequest = resolveHelpRequest(argv);
     if (helpRequest !== null) {
-      const helpLocale = resolved.explicit ? locale : "en";
-      printResolvedHelp(helpRequest, (line) => stdout(`${line}\n`), helpLocale);
+      printResolvedHelp(helpRequest, (line) => stdout(`${line}\n`), locale);
       return 0;
     }
     if (REMOVED_CLI_COMMANDS.has(argv[0])) {
@@ -2879,7 +3338,13 @@ export async function runCli(argv, {
       readSupervisorStateSnapshotImpl,
       removeStaleSupervisorStateImpl,
       openManagementUrlImpl,
-      locale
+      locale,
+      environment,
+      spawnSyncImpl,
+      globalPackageLocationImpl,
+      readInstalledPackageVersionImpl,
+      shutdownForUpdateImpl,
+      updatePortsIdleImpl
     });
     if (!handled) await main(argv, { locale, stdout });
     return 0;

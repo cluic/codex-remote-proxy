@@ -778,11 +778,22 @@ function createSseInspector() {
     try {
       const payload = JSON.parse(data);
       const type = typeof payload?.type === "string" ? payload.type : eventName;
-      if (type === "response.completed") {
+      if (type === "response.completed" || type === "response.done") {
+        const completed = payload?.response && typeof payload.response === "object"
+          ? payload.response
+          : payload;
+        const status = typeof completed?.status === "string"
+          ? completed.status
+          : payload?.status;
+        const failed = completed?.error != null
+          || payload?.error != null
+          || ["failed", "incomplete", "cancelled"].includes(status);
         if (terminal !== "failure") {
-          terminal = payload?.response?.error == null ? "success" : "failure";
+          terminal = failed ? "failure" : "success";
         }
-        usage = normalizeMetricUsage(payload?.response?.usage) ?? usage;
+        usage = normalizeMetricUsage(completed?.usage)
+          ?? normalizeMetricUsage(payload?.usage)
+          ?? usage;
       } else if (type === "response.failed" || type === "response.incomplete" || type === "error") {
         terminal = "failure";
       }
@@ -1426,6 +1437,7 @@ function saveCaptureRecord(captureContext, fields) {
     upstreamRequestId: fields.upstreamRequestId ?? null,
     inputTokens: fields.inputTokens ?? null,
     outputTokens: fields.outputTokens ?? null,
+    usageObservationStatus: fields.usageObservationStatus ?? "not_applicable",
     errorType: fields.errorType ?? null,
     errorMessage: fields.errorMessage ?? null
   });
@@ -1982,7 +1994,8 @@ export function createServer(settings, {
           isStream: inspected.stream,
           upstreamRequestId: responseState.upstreamRequestId,
           inputTokens: inspected.usage?.inputTokens ?? null,
-          outputTokens: inspected.usage?.outputTokens ?? null
+          outputTokens: inspected.usage?.outputTokens ?? null,
+          usageObservationStatus: inspected.usage ? "observed" : "upstream_unreported"
         });
         finalizeMetric("success", inspected.usage);
         return;
@@ -2038,7 +2051,14 @@ export function createServer(settings, {
         isStream: inspected.stream,
         upstreamRequestId: responseState.upstreamRequestId,
         inputTokens: inspected.usage?.inputTokens ?? null,
-        outputTokens: inspected.usage?.outputTokens ?? null
+        outputTokens: inspected.usage?.outputTokens ?? null,
+        usageObservationStatus: inspected.usage
+          ? "observed"
+          : responsesRequest
+            ? inspected.semantic === "success"
+              ? "upstream_unreported"
+              : "protocol_unrecognized"
+            : "not_applicable"
       });
       finalizeMetric(inspected.result, inspected.usage);
       logFn("info", "Proxied request", {
@@ -2379,6 +2399,7 @@ export function createApp(settings = loadConfig(), {
   const captureManager = createCaptureManager({
     configPath: settings.configPath,
     capture: settings.capture,
+    watchRuntimeConfig: settingsSource === undefined,
     log: (level, message, fields = {}) => log(
       level,
       message,

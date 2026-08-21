@@ -466,6 +466,9 @@ async function createHarness(t, overrides = {}) {
     auth,
     ...services,
     getSupervisorState: () => ({ pid: 9001, startedAt: "2026-07-13T00:00:00.000Z", apiKey: SECRET }),
+    fetchImpl: async () => {
+      throw new Error("network disabled in Admin integration fixture");
+    },
     uiDir,
     host: "127.0.0.1",
     port: 0,
@@ -1134,6 +1137,17 @@ test("status and refresh expose only bounded account and quota fields", async (t
     method: "POST",
     headers: bearer(harness)
   });
+  assert.match(status.json.build.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(status.json.build.repositoryUrl, "https://github.com/cluic/codex-remote-proxy");
+  assert.deepEqual(status.json.capture, {
+    configured: false,
+    workerAvailable: false,
+    active: false,
+    state: "unavailable",
+    synchronized: null,
+    failedWriteCount: 0,
+    lastWriteErrorAt: null
+  });
 
   for (const result of [status, refreshed]) {
     assert.equal(result.response.status, 200, result.text);
@@ -1300,6 +1314,7 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
       upstreamRequestId: "upstream-9",
       inputTokens: null,
       outputTokens: null,
+      usageObservationStatus: "legacy",
       errorType: null,
       errorMessage: null,
       outcome: "success",
@@ -1552,6 +1567,33 @@ test("provider tests opt into initial selection explicitly and project only safe
     assert.equal(invalid.response.status, 400, invalid.text);
     assert.equal(invalid.json.error.code, "API_BODY_INVALID");
   }
+});
+
+test("provider presets expose only maintained public configuration", async (t) => {
+  const harness = await createHarness(t);
+  const result = await harness.request("/api/v1/provider-presets", {
+    headers: bearer(harness)
+  });
+  assert.equal(result.response.status, 200, result.text);
+  assertNoSensitiveResponse(result);
+  assert.deepEqual(result.json, {
+    providerPresets: [{
+      id: "openrouter",
+      name: "OpenRouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+      extraHeaders: {},
+      homepageUrl: "https://openrouter.ai",
+      documentationUrl: "https://openrouter.ai/docs/api-reference/overview"
+    }]
+  });
+  const wrongMethod = await harness.request("/api/v1/provider-presets", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "GET");
 });
 
 test("model catalog routes distinguish cached reads from refreshes with strict projections", async (t) => {

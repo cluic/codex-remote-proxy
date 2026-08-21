@@ -17,6 +17,7 @@ import {
   EmptyState,
   ErrorNotice,
   IconButton,
+  Notice,
   PageHeader,
   Panel,
   StatusBadge,
@@ -28,13 +29,15 @@ import type {
   ForwardingRecord,
   ForwardingRecordsPageData,
   ForwardingRecordsQuery,
-  Locale
+  Locale,
+  StatusResponse
 } from "../types";
 
 type ForwardingRecordsProps = {
   locale: Locale;
   t: Translator;
   captureEnabled: boolean;
+  captureStatus: StatusResponse["capture"];
   readOnly: boolean;
   pending: string | null;
   onLoad: (
@@ -61,9 +64,15 @@ function displayPath(record: ForwardingRecord): string {
   return record.incomingUrl ?? record.targetUrl ?? "-";
 }
 
-function tokenLabel(locale: Locale, input: number | null, output: number | null): string {
-  if (input === null || output === null) return "-";
-  return formatNumber(locale, input + output);
+function usageStatusLabel(record: ForwardingRecord, t: Translator): string {
+  return t(`forwarding.usage.${record.usageObservationStatus}`);
+}
+
+function tokenLabel(locale: Locale, record: ForwardingRecord, t: Translator): string {
+  if (record.inputTokens === null || record.outputTokens === null) {
+    return usageStatusLabel(record, t);
+  }
+  return formatNumber(locale, record.inputTokens + record.outputTokens);
 }
 
 function RecordDetails({
@@ -94,6 +103,7 @@ function RecordDetails({
     [t("forwarding.totalTokens"), record.inputTokens === null || record.outputTokens === null
       ? t("forwarding.notObserved")
       : formatNumber(locale, record.inputTokens + record.outputTokens)],
+    [t("forwarding.usageStatus"), usageStatusLabel(record, t)],
     [t("forwarding.transfer"), `${byteLabel(locale, record.requestBytes)} → ${byteLabel(locale, record.responseBytes)}`],
     [t("forwarding.stream"), record.stream ? t("common.yes") : t("common.no")]
   ] as const;
@@ -139,6 +149,7 @@ export function ForwardingRecordsPage({
   locale,
   t,
   captureEnabled,
+  captureStatus,
   readOnly,
   pending,
   onLoad,
@@ -261,6 +272,11 @@ export function ForwardingRecordsPage({
           ><RefreshCw className={loading ? "spin" : undefined} aria-hidden="true" /></IconButton>
         </div>
       </Panel>
+      {captureStatus.configured && captureStatus.state !== "stopped" && !captureStatus.active ? (
+        <Notice title={t("forwarding.captureMismatchTitle")} tone="warning">
+          <p>{t("forwarding.captureMismatchHelp")}</p>
+        </Notice>
+      ) : null}
 
       <div className="forwarding-workspace">
         <Panel className="records-panel">
@@ -342,10 +358,12 @@ export function ForwardingRecordsPage({
                         </span>
                       </td>
                       <td><span className="record-duration"><Clock3 aria-hidden="true" />{formatDuration(locale, record.durationMs)}</span></td>
-                      <td><span className="record-tokens" title={t("forwarding.tokensBreakdown", {
-                        input: record.inputTokens ?? "-",
-                        output: record.outputTokens ?? "-"
-                      })}>{tokenLabel(locale, record.inputTokens, record.outputTokens)}</span></td>
+                      <td><span className="record-tokens" title={record.usageObservationStatus === "observed"
+                        ? t("forwarding.tokensBreakdown", {
+                            input: record.inputTokens ?? "-",
+                            output: record.outputTokens ?? "-"
+                          })
+                        : usageStatusLabel(record, t)}>{tokenLabel(locale, record, t)}</span></td>
                       <td><span className="record-transfer">{byteLabel(locale, record.requestBytes)}<ArrowRight aria-hidden="true" />{byteLabel(locale, record.responseBytes)}</span></td>
                     </tr>
                   ))}

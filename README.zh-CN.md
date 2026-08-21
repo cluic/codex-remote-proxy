@@ -6,7 +6,7 @@ Codex Remote Proxy（CRP）让 Codex 保持 ChatGPT 登录态，同时把模型�
 
 [English](./README.md)
 
-> 发布状态：npm 当前版本是 `0.4.3`。`0.4.3` 之后的变更仍需通过确定性测试、平台门禁和人工审查才会发布；普通更新使用 patch 版本。
+> 发布状态：以 npm 的 `latest` dist-tag 为准。普通产品更新使用 patch 版本；minor 或 major 版本必须先明确调整发布策略。
 
 ## 安装
 
@@ -37,6 +37,7 @@ npx @cluic/codex-remote-proxy ui
 本地管理界面覆盖完整的日常流程：
 
 - 创建具名提供商；
+- 使用持续维护的内置预设（当前包含 `https://openrouter.ai/api/v1` 的 OpenRouter），或选择自定义 OpenAI 兼容端点；
 - 通过只写输入框填写凭据；
 - 测试 OpenAI Responses API 兼容性；
 - 为每个提供商设置优先级权重，并指定同权重时优先使用的首选提供商；
@@ -44,7 +45,7 @@ npx @cluic/codex-remote-proxy ui
 - 遇到可重试的 `429`、指定 `5xx`、超时、连接重置或明确网络故障时让提供商进入冷却，并且仅在尚未建立上游连接时回放有界 Responses 请求；
 - 替换非首选提供商的凭据或删除非首选提供商；
 - 启动、停止、重启和查看代理 Worker；
-- 在总览中查看匿名的 24 小时或 7 天请求、结果、已观测 Token、模型、Provider 与有界延迟 Metrics；
+- 通过可交互的总览趋势分析器查看匿名的 24 小时或 7 天请求、结果、已观测 Token、模型、Provider 与有界延迟 Metrics；
 - 查看只包含元数据的转发记录、已观测 Token 数与客户端中止请求，并在该页面控制可选 Capture；
 - 查看提供商、路由、Capture、迁移和模型映射操作对应的本地化、已脱敏活动名称；
 - 在紧凑的系统页配置登录时启动、路由、Codex 集成、运行时信息和诊断；
@@ -56,7 +57,9 @@ npx @cluic/codex-remote-proxy ui
 
 系统页可在无需管理员权限的情况下开启“登录时启动”。CRP 会写入一个带项目标记、属于当前用户的 macOS LaunchAgent、Linux systemd user unit 或 Windows Startup 命令，并在下次登录时使用同一 `CRP_HOME` 启动已安装 CLI。如果 Node 或包安装路径随后变化，系统页会把受管启动项标记为过期，用户可以明确修复或停用。停用只会通过已校验身份的文件描述符把受管 inode 改写为惰性配置，不会以存在竞态的方式删除保留路径或 Linux wants 链接。保留路径上如果已有外部普通文件、链接或其他不安全对象，页面会显示冲突；CRP 不会覆盖或删除它，也不会借机修改共享启动目录的权限。
 
-`转发记录` 已是完整的元数据页面，读取本地 Capture 数据库，支持包括客户端中止在内的结果筛选、有界搜索、游标分页、详情面板、汇总计数和 Capture 开关。新 Capture 行会持久保存最终路由、提供商 ID/名称，以及 Responses usage 中实际观测到的输入/输出 Token；历史记录或上游未提供 usage 时显示“未观测”，不会伪装成 0。已经观测到 `response.completed` 后客户端再关闭连接仍记为成功，真正发生在完成前的关闭记为“中止”，不再算作提供商错误。旧记录继续按 URL 做尽力归属推断。页面只展示时间、路由/提供商、路径、字节数、状态、ID、Token 与已脱敏错误元数据，绝不会查询或返回请求/响应正文和鉴权请求头。总览 Metrics 仍是独立的匿名聚合状态，并继续使用固定 UTC 小时桶、语义化 Responses 完成状态和明确的 Provider/模型合并余量。
+`转发记录` 已是完整的元数据页面，并以 Supervisor 设置作为唯一运行时开关；旧版 standalone 配置不会再把它静默关闭。页面会展示 Capture 是否实际生效，并区分“已观测、上游未返回、协议未识别、不适用、历史版本未记录”。OpenAI 的 `response.completed` 与 OpenRouter 的 `response.done` SSE 终止事件都会被识别，且不改写任何转发字节。已经观测到语义完成后客户端再关闭仍记为成功，真正发生在完成前的关闭才记为“中止”。API 只展示时间、路由/提供商、路径、字节数、状态、ID、Token、观测状态与已脱敏错误，绝不会返回正文和鉴权请求头。
+
+总览 Metrics 仍是独立的匿名聚合状态。趋势分析器可在请求/Token、数量/占比以及输入/输出/总 Token 之间切换，支持鼠标和键盘查看精确时间桶；Token 未观测时显示断点而不是伪造为 0。服务可靠率会从分母中排除客户端中止。模型列表可展开并单独展示未知/归组请求；提供商表格会展示 API 返回的全部受限维度行，不再静默只保留前几项。
 
 调整首选提供商或权重只影响新请求。已经在处理中的请求继续使用其开始时捕获的完整提供商快照，包括模型策略。`passthrough` 模式保留客户端模型；`override` 模式只替换 JSON 顶层 `model` 值。首选项变更会向运行中的 Worker 热应用新的带权快照，并会启动已停止的 Worker；权重只能通过专用路由热更新，不会改变首选提供商。Worker 运行时不能编辑或删除已进入池的提供商，以免运行快照继续持有已经删除的配置或旧凭据；实时兼容性测试失败会返回结果，但不会让正在使用的快照失效。首次选中仍使用 first-wins compare-and-set，并保持 Worker 停止。
 
@@ -117,8 +120,12 @@ crp status [--json]
 crp stop [--json]
 crp restart [--json]
 crp shutdown [--json]
+crp -v | crp --version
+crp version [--json]
+crp update [--check] [--json]
+crp provider presets [--json]
 crp provider list [--json]
-crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]
+crp provider add (--preset <ID> | --name <NAME> --base-url <URL>) --api-key <KEY> [--model <MODEL>] [--json]
 crp provider models (--id <ID> | --name <NAME>) [--json]
 crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]
 crp provider activate (--id <ID> | --name <NAME>) [--json]
@@ -127,7 +134,7 @@ crp provider delete (--id <ID> | --name <NAME>) [--json]
 
 正式推荐的入口只有两个：普通设置和日常管理使用 `crp ui`，无界面 CLI 启动使用 `crp start`。`ui` 会启动或发现 Supervisor 并打开管理页面；`start` 会启动或发现 Supervisor、引导固定的 Codex 配置，并启动代理 Worker。
 
-所有 CLI 人类可读路径都支持 English 和简体中文。无论 `CRP_LOCALE`、`LC_ALL`、`LC_MESSAGES`、`LANG` 或终端语言是什么，默认始终输出 English。一个全局 `--locale en|zh-CN` 可以出现在命令行任意位置；只有显式提供 `--locale zh-CN` 时才输出中文。选择只对当前进程生效且不会持久化。语言只影响人类可读输出。使用 `--json` 时，失败不会写入 stdout，并且只向 stderr 写入一个语言无关的错误文档。
+所有 CLI 人类可读路径都支持 English 和简体中文。没有 `--locale` 时，CRP 依次从 `CRP_LOCALE`、`LC_ALL`、`LC_MESSAGES`、`LANG` 选择第一个受支持语言，其余情况默认英文。命令行任意位置的全局 `--locale en|zh-CN` 始终优先。选择只对当前进程生效且不会持久化。使用 `--json` 时，失败不会写入 stdout，并且只向 stderr 写入一个语言无关的错误文档。
 
 ## 许可证
 
@@ -145,7 +152,9 @@ Detached Supervisor 启动只使用一次性、严格白名单化的 IPC 错误�
 
 原兼容别名 `crp init`、`crp install` 和 `crp setup` 已删除。它们会在本地以 `CLI_COMMAND_REMOVED` 失败，不发现 Supervisor、不执行任何修改，并提示改用 `crp ui` 或 `crp start`。`check`、`capture on|off|status`、`guide` 和已弃用的本地入口命令 `install-cli` 仍可用；CLI 依然没有 provider update、Activity、Settings 或 diagnostics 操作。
 
-`crp provider add` 要求使用只写的 `--api-key` 参数，并支持高级鉴权和路由选项。可选 `--model` 只作为测试输入；路由覆盖仍使用 `--model-mode override --model-override <MODEL>`。提供 `--model` 时，CRP 会先保存 provider，再执行 Responses 兼容性测试。这两个阶段有意不组成单一事务：兼容性结果失败或测试操作发生错误，都不会删除已保存的 provider，用户可以查看后重试。命令行密钥可能出现在 shell 历史或进程检查中，因此该路径仅适合受控自动化。
+`crp provider presets` 会列出持续维护的公开默认值。`crp provider add --preset openrouter --api-key <KEY>` 使用正确的 OpenRouter `/api/v1` 基础地址和 Bearer 认证，凭据仍保持只写。自定义 add 与高级鉴权/路由选项继续可用；`--model` 只作为测试输入。命令行密钥可能出现在 shell 历史或进程检查中，因此该路径仅适合受控自动化。
+
+`-v` 和 `--version` 只输出已安装版本，不发现或启动 CRP。`crp version` 会核对已安装包与运行中 Supervisor 的版本。`crp update --check` 只查询 npm；`crp update` 仅允许在已验证的全局 npm 安装中执行，先完成安装，再只关闭安装前确认的同一个 Supervisor，最后恢复更新前 Supervisor/Worker 是否运行。如果新版本无法恢复运行状态，CRP 会重新安装旧版本并恢复原状态，然后返回 `UPDATE_ROLLED_BACK`；回滚本身失败才返回带明确手动恢复命令的 `UPDATE_RECOVERY_FAILED`。源码目录和 `npx` 缓存不会被原地修改，而会收到明确的全局安装提示。
 
 `provider test`、`activate`、`delete` 和 `models` 必须且只能提供一个选择器：`--id` 或 `--name`。名称通过公开 provider 列表做精确的大小写不敏感匹配。`provider models` 会向 `<base-url>/models` 发起带鉴权、禁止重定向的刷新；Admin API 另提供独立的缓存读取。模型发现有界，并会在进入缓存或输出前拒绝任何包含完整 credential 的模型 ID。它独立于 Responses 兼容性测试，因此模型端点缺失或不兼容不会修改 provider 的测试或激活状态，刷新失败也不会清除最后一次成功目录。
 

@@ -10,6 +10,12 @@ const MAX_ID_CODE_POINTS = 256;
 const MAX_ERROR_CODE_POINTS = 512;
 const MAX_TOKEN_COUNT = 100_000_000;
 const OUTCOMES = new Set(["all", "success", "rejected", "aborted", "error"]);
+const USAGE_OBSERVATION_STATUSES = new Set([
+  "observed",
+  "upstream_unreported",
+  "protocol_unrecognized",
+  "not_applicable"
+]);
 
 function serviceError(cause) {
   return new CrpError(
@@ -101,6 +107,13 @@ function projectRow(row, providers) {
         route: persistedRoute
       };
   const outcome = rowOutcome(row);
+  const inputTokens = safeInteger(row.input_tokens, { maximum: MAX_TOKEN_COUNT });
+  const outputTokens = safeInteger(row.output_tokens, { maximum: MAX_TOKEN_COUNT });
+  const usageObservationStatus = inputTokens !== null && outputTokens !== null
+    ? "observed"
+    : USAGE_OBSERVATION_STATUSES.has(row.usage_observation_status)
+      ? row.usage_observation_status
+      : "legacy";
   return {
     id: safeInteger(row.id, { minimum: 1 }),
     startedAt: boundedText(row.started_at, MAX_ID_CODE_POINTS),
@@ -117,8 +130,9 @@ function projectRow(row, providers) {
     responseBytes: safeInteger(row.response_body_bytes) ?? 0,
     stream: row.is_stream === 1,
     upstreamRequestId: boundedText(row.upstream_request_id, MAX_ID_CODE_POINTS),
-    inputTokens: safeInteger(row.input_tokens, { maximum: MAX_TOKEN_COUNT }),
-    outputTokens: safeInteger(row.output_tokens, { maximum: MAX_TOKEN_COUNT }),
+    inputTokens,
+    outputTokens,
+    usageObservationStatus,
     errorType: boundedText(row.error_type, MAX_ID_CODE_POINTS),
     errorMessage: boundedText(row.error_message, MAX_ERROR_CODE_POINTS),
     outcome,
@@ -238,6 +252,7 @@ export class ForwardingRecordsService {
         .every((column) => columns.has(column));
       const hasTokenColumns = ["input_tokens", "output_tokens"]
         .every((column) => columns.has(column));
+      const hasUsageObservationStatus = columns.has("usage_observation_status");
       const where = buildWhere(options, { providerColumns: hasProviderColumns });
       const providerColumns = hasProviderColumns
         ? "provider_id, provider_name, route,"
@@ -245,13 +260,16 @@ export class ForwardingRecordsService {
       const tokenColumns = hasTokenColumns
         ? "input_tokens, output_tokens,"
         : "NULL AS input_tokens, NULL AS output_tokens,";
+      const usageObservationColumn = hasUsageObservationStatus
+        ? "usage_observation_status,"
+        : "NULL AS usage_observation_status,";
       const rows = database.prepare(`
         SELECT
           id, started_at, completed_at, duration_ms,
           request_id, session_id, thread_id, method,
           incoming_url, target_url, ${providerColumns} request_body_bytes,
           response_status, response_body_bytes, is_stream,
-          upstream_request_id, ${tokenColumns} error_type, error_message
+          upstream_request_id, ${tokenColumns} ${usageObservationColumn} error_type, error_message
         FROM http_transactions
         ${where.sql}
         ORDER BY id DESC

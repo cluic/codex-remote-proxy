@@ -196,13 +196,14 @@ test("capture manager writes a complete request/response record", async () => {
   assert.equal(rows[0].route, "custom");
   assert.equal(rows[0].input_tokens, 23);
   assert.equal(rows[0].output_tokens, 7);
+  assert.equal(rows[0].usage_observation_status, "observed");
   assert.match(rows[0].request_headers_json, /REDACTED/);
   assert.match(rows[0].response_body, /event: ok/);
 
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("capture manager upgrades schema 1 and persists provider attribution plus token columns", (t) => {
+test("capture manager upgrades schema 1 and persists provider attribution plus usage columns", (t) => {
   const dir = makeTempDir("crp-capture-schema-1");
   mkdirSync(dir, { recursive: true });
   const runtimeConfigPath = join(dir, "proxy-config.json");
@@ -275,10 +276,11 @@ test("capture manager upgrades schema 1 and persists provider attribution plus t
   const version = upgraded.prepare("PRAGMA user_version").get().user_version;
   const row = upgraded.prepare("SELECT provider_id, provider_name, route FROM http_transactions").get();
   upgraded.close();
-  assert.equal(version, 3);
+  assert.equal(version, 4);
   assert.ok(columns.includes("provider_id"));
   assert.ok(columns.includes("input_tokens"));
   assert.ok(columns.includes("output_tokens"));
+  assert.ok(columns.includes("usage_observation_status"));
   assert.equal(row.provider_id, "provider-stable");
   assert.equal(row.provider_name, "Stable provider");
   assert.equal(row.route, "custom");

@@ -1707,6 +1707,7 @@ test("preserves a discoverable replacement when pending changes during clear", a
   const rolloutPath = join(harness.codexRoot, "sessions", "rollout-clear-replacement.jsonl");
   writeRollout(rolloutPath, `${rolloutLine("legacy.provider", "clear-replacement")}\n`);
   let replaced = false;
+  const displacedPath = `${clearingPath(harness.codexRoot)}.displaced`;
 
   await assert.rejects(
     () => executeTransition(harness, sourceBytes, {
@@ -1718,7 +1719,7 @@ test("preserves a discoverable replacement when pending changes during clear", a
           if (!replaced && source === pendingPath(harness.codexRoot)
             && destination === clearingPath(harness.codexRoot)) {
             const bytes = readFileSync(destination);
-            unlinkSync(destination);
+            realFileOperations.renameSync(destination, displacedPath);
             writePrivate(destination, bytes);
             replaced = true;
           }

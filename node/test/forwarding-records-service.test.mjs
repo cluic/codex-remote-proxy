@@ -169,6 +169,7 @@ test("lists bounded metadata with keyset paging, filtering, and provider project
     upstreamRequestId: null,
     inputTokens: null,
     outputTokens: null,
+    usageObservationStatus: "legacy",
     errorType: "proxy_upstream_error",
     errorMessage: "connection refused",
     outcome: "error",
@@ -225,6 +226,7 @@ test("projects token counts and separates client aborts from forwarding errors",
   const success = page.records.find(({ id }) => id === 1);
   assert.equal(success.inputTokens, 31);
   assert.equal(success.outputTokens, 12);
+  assert.equal(success.usageObservationStatus, "observed");
   assert.deepEqual(
     service.list({ outcome: "aborted" }).records.map(({ id, outcome }) => ({ id, outcome })),
     [{ id: 3, outcome: "aborted" }]

@@ -157,7 +157,7 @@ test("does not expose an untested provider as a sidebar route", async ({ page, c
   expect(crp.calls.filter((call) => call.operation === "activate")).toHaveLength(0);
 });
 
-test("renders populated Metrics and changes the aggregate window without stale data", async ({ page, crp }) => {
+test("renders populated Metrics and changes the aggregate window without stale data", async ({ page, crp }, testInfo) => {
   crp.state.metrics.summary.responseStart = {
     p50UpperBoundMs: 250,
     p95UpperBoundMs: null,
@@ -199,10 +199,18 @@ test("renders populated Metrics and changes the aggregate window without stale d
   await expect(requests.locator("strong")).toHaveText("128");
   const responseStart = page.locator(".metric-card").filter({ hasText: "P95 response start" });
   await expect(responseStart.locator("strong")).toHaveText("> 300 s");
-  await expect(page.getByRole("img", { name: "Request results" })).toBeVisible();
-  await expect(page.getByRole("img", { name: "Token trend" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Stacked request results over time" })).toBeVisible();
+  await page.getByRole("button", { name: "Tokens", exact: true }).click();
+  await expect(page.getByRole("img", { name: "Observed token usage over time with gaps for unobserved buckets" })).toBeVisible();
   await expect(page.locator(".overview-model-summary")).toContainText("gpt-5.1-codex-mini");
   await expect(page.locator(".overview-provider-summary")).toContainText("Provider Alpha");
+  await page.getByRole("button", { name: "Requests", exact: true }).click();
+  const screenshotPath = testInfo.outputPath("overview-hardening-1440x900.png");
+  await page.screenshot({ path: screenshotPath });
+  await testInfo.attach("overview-hardening-1440x900", {
+    path: screenshotPath,
+    contentType: "image/png"
+  });
 
   await page.getByRole("button", { name: "7 days" }).click();
   await expect(page.getByRole("button", { name: "7 days" })).toHaveAttribute("aria-pressed", "true");
@@ -233,11 +241,11 @@ test("discloses incomplete Metrics rates and conserves the visible model remaind
   };
 
   await openCrp(page, crp);
-  const successRate = page.locator(".metric-card").filter({ hasText: "Success rate" });
+  const successRate = page.locator(".metric-card").filter({ hasText: "Service reliability" });
   await expect(successRate.locator("strong")).toHaveText("-");
   await expect(successRate).toContainText("Unavailable because 2 metric updates were dropped");
-  await expect(page.locator(".overview-provider-summary"))
-    .toContainText("Not available");
+  await expect(page.locator(".overview-provider-summary tbody td").filter({ hasText: /^-$/ }).first())
+    .toBeVisible();
 
   const quality = page.getByRole("complementary", { name: "Data quality" });
   await expect(quality).toContainText("These counters are independent signals and may overlap.");
@@ -248,8 +256,12 @@ test("discloses incomplete Metrics rates and conserves the visible model remaind
   await expect(page.getByText("Data quality: 14")).toHaveCount(0);
 
   const distribution = page.locator(".overview-model-summary");
-  await expect(distribution).toContainText("Other models");
-  await expect(distribution.locator("li").filter({ hasText: "Other models" }).locator("strong")).toHaveText("101");
+  await expect(distribution).toContainText("Unknown model");
+  await expect(distribution).toContainText("Other grouped models");
+  await expect(distribution.locator("li").filter({ hasText: "Unknown model" }).locator("strong")).toHaveText("5");
+  await expect(distribution.locator("li").filter({ hasText: "Other grouped models" }).locator("strong")).toHaveText("71");
+  await distribution.getByRole("button", { name: "Show all 10" }).click();
+  await expect(distribution).toContainText("visible-model-8");
   await expect(page.getByText("This view contains 24 UTC hourly buckets, including the current partial hour."))
     .toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
@@ -293,6 +305,18 @@ test("isolates a Metrics API failure from the rest of the workspace", async ({ p
   await expect(page.getByTestId("metrics-empty")).toHaveCount(0);
   await expect(page.locator(".overview-routing-segment")).toContainText("Provider Alpha");
   expect(crp.calls.filter((call) => call.operation === "getStatus").length).toBeGreaterThan(0);
+});
+
+test("OpenRouter built-in preset fills the maintained v1 endpoint", async ({ page, crp }) => {
+  await openCrp(page, crp);
+  await navigate(page, "Providers");
+  await page.getByRole("button", { name: "Add provider" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add provider" });
+  await dialog.getByLabel("Provider type").selectOption("openrouter");
+  await expect(dialog.getByLabel("Provider name")).toHaveValue("OpenRouter");
+  await expect(dialog.getByLabel("Base URL")).toHaveValue("https://openrouter.ai/api/v1");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await assertNoSecrets(page, crp);
 });
 
 test("creates, discovers models, tests, switches, edits, and deletes a provider safely", async ({ page, crp }) => {

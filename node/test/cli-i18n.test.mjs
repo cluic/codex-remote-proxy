@@ -68,11 +68,11 @@ test("explicit locale works anywhere and normalizes common Chinese tags", async 
   }
 });
 
-test("CLI defaults to English regardless of process locale variables", async () => {
+test("CLI follows supported system locale variables and falls back to English", async () => {
   const cases = [
     [{ CRP_LOCALE: "en_US.UTF-8", LC_ALL: "zh_CN", LC_MESSAGES: "zh_CN", LANG: "zh_CN" }, "CRP supervisor is not running.\n"],
-    [{ CRP_LOCALE: "fr-FR", LC_ALL: "zh_CN.UTF-8", LC_MESSAGES: "en_US", LANG: "en_US" }, "CRP supervisor is not running.\n"],
-    [{ CRP_LOCALE: "fr", LC_ALL: "de", LC_MESSAGES: "zh-Hans", LANG: "en_US" }, "CRP supervisor is not running.\n"],
+    [{ CRP_LOCALE: "fr-FR", LC_ALL: "zh_CN.UTF-8", LC_MESSAGES: "en_US", LANG: "en_US" }, "CRP 监督进程未运行。\n"],
+    [{ CRP_LOCALE: "fr", LC_ALL: "de", LC_MESSAGES: "zh-Hans", LANG: "en_US" }, "CRP 监督进程未运行。\n"],
     [{ CRP_LOCALE: "fr", LC_ALL: "de", LC_MESSAGES: "ja", LANG: "en_GB@calendar" }, "CRP supervisor is not running.\n"],
     [{ CRP_LOCALE: "fr", LC_ALL: "de", LC_MESSAGES: "ja", LANG: "ko" }, "CRP supervisor is not running.\n"]
   ];
@@ -98,7 +98,7 @@ test("explicit locale selects Chinese and invalid explicit input fails before di
 
   const defaultResult = await invokeCli(["status"], dependencies);
   assert.equal(defaultResult.status, 0, defaultResult.stderr);
-  assert.equal(defaultResult.stdout, "CRP supervisor is not running.\n");
+  assert.equal(defaultResult.stdout, "CRP 监督进程未运行。\n");
   assert.equal(discoveryCalls, 1);
 
   discoveryCalls = 0;
@@ -120,7 +120,7 @@ test("explicit locale selects Chinese and invalid explicit input fails before di
   }
 });
 
-test("CLI validation errors remain English unless Chinese is explicitly selected", async () => {
+test("CLI validation errors follow the detected locale and explicit locale wins", async () => {
   const dependencies = {
     environment: { CRP_LOCALE: "zh-CN", LC_ALL: "zh_CN.UTF-8", LANG: "zh_CN.UTF-8" },
     ensureSupervisorImpl: async () => {
@@ -134,7 +134,7 @@ test("CLI validation errors remain English unless Chinese is explicitly selected
   const english = await invokeCli(["status", "--unsupported"], dependencies);
   assert.equal(english.status, 1);
   assert.equal(english.stdout, "");
-  assert.equal(english.stderr, "Error: The status command contains an unsupported option.\n");
+  assert.equal(english.stderr, "错误：status 命令包含不支持的选项。\n");
 
   const chinese = await invokeCli(["status", "--unsupported", "--locale", "zh-CN"], dependencies);
   assert.equal(chinese.status, 1);
@@ -184,7 +184,7 @@ test("English and Chinese CLI dictionaries have exact non-empty key parity", () 
 
 test("help and validation output are bilingual while commands remain literal", async () => {
   const english = await invokeCli(["--help"], {
-    environment: { CRP_LOCALE: "zh-CN", LANG: "zh_CN.UTF-8" }
+    environment: { CRP_LOCALE: "en", LANG: "zh_CN.UTF-8" }
   });
   const chinese = await invokeCli(["--locale", "zh-CN", "--help"]);
   assert.equal(english.status, 0, english.stderr);
@@ -245,6 +245,7 @@ test("layered command help is bilingual and exits before discovery or Admin requ
     }
   };
   const providerActions = [
+    ["presets", "crp provider presets [--json]", /built-in provider/i, /内置提供商/],
     ["list", "crp provider list [--json]", /configured providers/i, /已配置.*提供商/],
     ["add", "crp provider add", /provider profile/i, /提供商配置/],
     ["models", "crp provider models", /available models/i, /可用模型/],

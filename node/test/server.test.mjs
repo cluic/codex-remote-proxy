@@ -1277,6 +1277,31 @@ test("server writes proxied request and response to sqlite", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("Supervisor settings remain the sole Capture source when legacy runtime config disagrees", (t) => {
+  const dir = makeTempDir("crp-supervisor-capture-source");
+  mkdirSync(dir, { recursive: true });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configPath = join(dir, "proxy-config.json");
+  const dbPath = join(dir, "traffic.sqlite3");
+  writeFileSync(configPath, JSON.stringify({ capture: { enabled: false, dbPath } }));
+  const settings = makeSettings({
+    baseUrl: "https://provider.example/v1",
+    captureEnabled: true
+  });
+  settings.configPath = configPath;
+  settings.capture.dbPath = dbPath;
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 1, settings });
+
+  const app = createApp(settings, { settingsSource: source });
+  const state = app.captureManager.getPublicState();
+  app.captureManager.close();
+
+  assert.equal(state.captureConfigured, true);
+  assert.equal(state.captureActive, true);
+  assert.equal(state.captureState, "enabled");
+});
+
 test("large Capture bodies preserve totals while omitting prefixes that cannot be fully screened", async (t) => {
   const dir = makeTempDir("crp-server-large-capture");
   mkdirSync(dir, { recursive: true });
@@ -2085,7 +2110,7 @@ test("metrics and Capture detect headerless SSE usage while screening credential
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (payload.stream === true) {
         res.end(`data: ${JSON.stringify({
-          type: "response.completed",
+          type: "response.done",
           response: { usage: { input_tokens: 21, output_tokens: 8 } }
         })}\n\ndata: [DONE]\n\n`);
         return;
@@ -2165,6 +2190,7 @@ test("metrics and Capture detect headerless SSE usage while screening credential
   const streamCapture = captureManager.records.find((record) => record.inputTokens === 21);
   assert.equal(streamCapture?.isStream, true);
   assert.equal(streamCapture?.outputTokens, 8);
+  assert.equal(streamCapture?.usageObservationStatus, "observed");
   assert.deepEqual(metrics.map(({ generation, result, model, inputTokens, outputTokens }) => ({
     generation,
     result,
@@ -2246,6 +2272,17 @@ test("Responses metrics reject semantic JSON and SSE failures plus missing termi
         ].join(""));
         return;
       }
+      if (scenario === "done-incomplete") {
+        res.end(`data: ${JSON.stringify({
+          type: "response.done",
+          response: {
+            status: "incomplete",
+            error: null,
+            usage: { input_tokens: 7, output_tokens: 3 }
+          }
+        })}\n\n`);
+        return;
+      }
       res.end(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "partial" })}\n\n`);
     });
   });
@@ -2273,6 +2310,7 @@ test("Responses metrics reject semantic JSON and SSE failures plus missing termi
     ["json-failed", false],
     ["invalid-json", false],
     ["failed-then-completed", true],
+    ["done-incomplete", true],
     ["missing-terminal", true]
   ]) {
     const response = await fetch(`http://127.0.0.1:${proxyPort}/responses?case=${scenario}`, {
@@ -2289,6 +2327,7 @@ test("Responses metrics reject semantic JSON and SSE failures plus missing termi
     inputTokens,
     outputTokens
   })), [
+    { result: "upstreamError", inputTokens: null, outputTokens: null },
     { result: "upstreamError", inputTokens: null, outputTokens: null },
     { result: "upstreamError", inputTokens: null, outputTokens: null },
     { result: "upstreamError", inputTokens: null, outputTokens: null },

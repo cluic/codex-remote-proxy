@@ -19,12 +19,14 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "src/credentials/file-credential-store.mjs",
   "src/credentials/native-keyring.mjs",
   "src/providers/provider-model-cache.mjs",
+  "src/providers/provider-presets.mjs",
   "src/providers/provider-registry.mjs",
   "src/providers/provider-schema.mjs",
   "src/routing/account-routing.mjs",
   "src/routing/provider-scheduler.mjs",
   "src/server.mjs",
   "src/shared/errors.mjs",
+  "src/shared/build-info.mjs",
   "src/shared/paths.mjs",
   "src/supervisor/activity-store.mjs",
   "src/supervisor/account-monitor.mjs",
@@ -158,7 +160,7 @@ test("npm pack invocation uses an explicit command interpreter only on Windows",
 
 test("exact package path comparison detects every extra and missing path", () => {
   const reviewed = [...REVIEWED_PACKAGE_PATHS];
-  assert.equal(REVIEWED_PACKAGE_PATHS.size, 40);
+  assert.equal(REVIEWED_PACKAGE_PATHS.size, 42);
   assert.deepEqual(comparePackagePaths(reviewed), { missing: [], unexpected: [] });
 
   const runtimeExtras = [

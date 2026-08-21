@@ -11,6 +11,12 @@ const WATCH_INTERVAL_MS = 500;
 const WATCH_DEBOUNCE_MS = 100;
 const REDACTED_VALUE = "[REDACTED]";
 const MAX_CAPTURE_TOKENS = 100_000_000;
+const USAGE_OBSERVATION_STATUSES = new Set([
+  "observed",
+  "upstream_unreported",
+  "protocol_unrecognized",
+  "not_applicable"
+]);
 const HEADER_REDACTION_NAMES = new Set([
   "authorization",
   "proxy-authorization",
@@ -203,6 +209,7 @@ function createInsertStatement(db) {
       upstream_request_id,
       input_tokens,
       output_tokens,
+      usage_observation_status,
       error_type,
       error_message
     ) VALUES (
@@ -231,6 +238,7 @@ function createInsertStatement(db) {
       @upstream_request_id,
       @input_tokens,
       @output_tokens,
+      @usage_observation_status,
       @error_type,
       @error_message
     )
@@ -268,6 +276,7 @@ function initializeDatabase(db) {
       upstream_request_id TEXT,
       input_tokens INTEGER,
       output_tokens INTEGER,
+      usage_observation_status TEXT,
       error_type TEXT,
       error_message TEXT
     );
@@ -280,7 +289,8 @@ function initializeDatabase(db) {
     ["provider_name", "TEXT"],
     ["route", "TEXT"],
     ["input_tokens", "INTEGER"],
-    ["output_tokens", "INTEGER"]
+    ["output_tokens", "INTEGER"],
+    ["usage_observation_status", "TEXT"]
   ]) {
     if (!columns.has(name)) db.exec(`ALTER TABLE http_transactions ADD COLUMN ${name} ${type}`);
   }
@@ -293,7 +303,7 @@ function initializeDatabase(db) {
       ON http_transactions (thread_id);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_response_status
       ON http_transactions (response_status);
-    PRAGMA user_version = 3;
+    PRAGMA user_version = 4;
   `);
 }
 
@@ -563,6 +573,11 @@ export class CaptureManager {
         && record.outputTokens <= MAX_CAPTURE_TOKENS
         ? record.outputTokens
         : null;
+      const usageObservationStatus = inputTokens !== null && outputTokens !== null
+        ? "observed"
+        : USAGE_OBSERVATION_STATUSES.has(record.usageObservationStatus)
+          ? record.usageObservationStatus
+          : "not_applicable";
       this.insertStatement.run({
         started_at: record.startedAt,
         completed_at: record.completedAt,
@@ -589,6 +604,7 @@ export class CaptureManager {
         upstream_request_id: record.upstreamRequestId ?? null,
         input_tokens: inputTokens,
         output_tokens: outputTokens,
+        usage_observation_status: usageObservationStatus,
         error_type: record.errorType ?? null,
         error_message: record.errorMessage ?? null
       });

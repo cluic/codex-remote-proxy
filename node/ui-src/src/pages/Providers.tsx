@@ -43,13 +43,15 @@ import type {
   ModelCatalog,
   ModelMappingGroup,
   Provider,
-  ProviderInput
+  ProviderInput,
+  ProviderPreset
 } from "../types";
 
 type ProvidersProps = {
   locale: Locale;
   t: Translator;
   providers: Provider[];
+  providerPresets: ProviderPreset[];
   modelMappingGroups: ModelMappingGroup[];
   activeProviderId: string | null;
   workerRunning: boolean;
@@ -115,6 +117,10 @@ function validateProviderInput(
   if (parsed.username || parsed.password || parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopback(parsed.hostname))) {
     return { error: t("providers.invalidUrl") };
   }
+  if (parsed.hostname.toLowerCase() === "openrouter.ai"
+    && parsed.pathname.replace(/\/+$/, "") !== "/api/v1") {
+    return { error: t("providers.invalidOpenRouterUrl") };
+  }
   if (values.modelMode === "override" && !values.modelOverride?.trim()) {
     return { error: t("providers.invalidForm") };
   }
@@ -159,6 +165,7 @@ function ProviderForm({
   provider,
   purpose,
   initialName,
+  providerPresets,
   modelMappingGroups,
   pending,
   t,
@@ -167,12 +174,14 @@ function ProviderForm({
   provider?: Provider;
   purpose: FormPurpose;
   initialName?: string;
+  providerPresets: ProviderPreset[];
   modelMappingGroups: ModelMappingGroup[];
   pending: boolean;
   t: Translator;
   onSubmit: (input: ProviderInput, secret?: string) => Promise<boolean>;
 }) {
   const editing = purpose === "edit";
+  const [presetId, setPresetId] = useState("");
   const [name, setName] = useState(initialName ?? provider?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "https://");
   const [credential, setCredential] = useState("");
@@ -214,6 +223,32 @@ function ProviderForm({
     <form id="provider-form" className="provider-form" onSubmit={submit} noValidate>
       {formError ? <FormError>{formError}</FormError> : null}
       <div className="form-grid">
+        {purpose === "create" ? (
+          <SelectField
+            className="form-field-wide"
+            id="provider-preset"
+            name="preset"
+            label={t("providers.preset")}
+            help={t("providers.presetHelp")}
+            value={presetId}
+            onChange={(event) => {
+              const nextId = event.target.value;
+              setPresetId(nextId);
+              const preset = providerPresets.find(({ id }) => id === nextId);
+              if (!preset) return;
+              setName(preset.name);
+              setBaseUrl(preset.baseUrl);
+              setAuthHeader(preset.authHeader);
+              setAuthScheme(preset.authScheme);
+              setExtraHeadersText(JSON.stringify(preset.extraHeaders, null, 2));
+            }}
+          >
+            <option value="">{t("providers.presetCustom")}</option>
+            {providerPresets.map((preset) => (
+              <option key={preset.id} value={preset.id}>{preset.name}</option>
+            ))}
+          </SelectField>
+        ) : null}
         <Field
           id="provider-name"
           name="name"
@@ -346,6 +381,7 @@ export function ProvidersPage({
   locale,
   t,
   providers,
+  providerPresets,
   modelMappingGroups,
   activeProviderId,
   workerRunning,
@@ -466,6 +502,7 @@ export function ProvidersPage({
             const active = provider.id === activeProviderId;
             const eligible = provider.lastTestStatus === "passed" && provider.credentialConfigured;
             const poolLocked = workerRunning && provider.lastTestStatus === "passed";
+            const preset = providerPresets.find(({ baseUrl }) => baseUrl === provider.baseUrl);
             return (
               <article
                 key={provider.id}
@@ -479,6 +516,7 @@ export function ProvidersPage({
                     <code>{provider.baseUrl}</code>
                   </div>
                   {active ? <StatusBadge tone="success"><Check aria-hidden="true" />{t("providers.preferred")}</StatusBadge> : null}
+                  {preset ? <StatusBadge tone="neutral">{t("providers.builtIn")}</StatusBadge> : null}
                 </header>
                 <dl className="provider-card-facts">
                   <div><dt>{t("providers.testStatus")}</dt><dd><StatusBadge tone={testTone(provider.lastTestStatus)}>{testLabel(provider, t)}</StatusBadge></dd></div>
@@ -584,6 +622,7 @@ export function ProvidersPage({
         {mode === "create" ? (
           <ProviderForm
             purpose="create"
+            providerPresets={providerPresets}
             modelMappingGroups={modelMappingGroups}
             pending={pending !== null}
             t={t}
@@ -618,6 +657,7 @@ export function ProvidersPage({
             provider={selected}
             purpose="duplicate"
             initialName={duplicateName(selected)}
+            providerPresets={providerPresets}
             modelMappingGroups={modelMappingGroups}
             pending={pending !== null}
             t={t}
@@ -651,6 +691,7 @@ export function ProvidersPage({
           <ProviderForm
             provider={selected}
             purpose="edit"
+            providerPresets={providerPresets}
             modelMappingGroups={modelMappingGroups}
             pending={pending !== null}
             t={t}
