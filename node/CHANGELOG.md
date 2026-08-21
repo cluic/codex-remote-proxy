@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.4
+
+### Patch Changes
+
+- a6ff3ee: Add reusable provider model-mapping groups, persist observed forwarding Token metadata, distinguish completed streams from client aborts, and localize newly supported Activity operations.
+
 ## 0.4.3
 
 ### Patch Changes
