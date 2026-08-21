@@ -380,7 +380,14 @@ export function Shell({
             </select>
           </label>
           <div className="sidebar-meta">
-            <span>{t("access.local")}</span>
+            {status.build.repositoryUrl ? (
+              <a
+                href={status.build.repositoryUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={t("brand.github")}
+              ><GitFork aria-hidden="true" /><span>v{status.build.version}</span></a>
+            ) : <span>v{status.build.version}</span>}
             <span>{accessMode === "writable" ? t("access.manage") : t("access.readOnly")}</span>
           </div>
         </div>

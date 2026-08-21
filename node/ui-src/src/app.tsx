@@ -131,15 +131,16 @@ export function App() {
     const controller = new AbortController();
     loadControllerRef.current = controller;
     try {
-      const [status, providers, modelMappingGroups, settings, nextActivity] = await Promise.all([
+      const [status, providers, providerPresets, modelMappingGroups, settings, nextActivity] = await Promise.all([
         api.getStatus(controller.signal),
         api.listProviders(controller.signal),
+        api.listProviderPresets(controller.signal),
         api.listModelMappingGroups(controller.signal),
         api.getSettings(controller.signal),
         api.getActivity(0, controller.signal)
       ]);
       if (controller.signal.aborted || sequence !== loadSequenceRef.current) return null;
-      const nextWorkspace = { status, providers, modelMappingGroups, settings };
+      const nextWorkspace = { status, providers, providerPresets, modelMappingGroups, settings };
       setWorkspace(nextWorkspace);
       setActivity(nextActivity);
       setLoadError(null);
@@ -516,6 +517,34 @@ export function App() {
     });
   }, [api]);
 
+  useEffect(() => {
+    if (route !== "overview" || accessMode === "initializing"
+      || accessMode === "terminal" || accessMode === "stopped") return undefined;
+    let controller: AbortController | null = null;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      controller?.abort();
+      controller = new AbortController();
+      const sequence = ++metricsSequenceRef.current;
+      void api.getMetrics(metricsWindowRef.current, controller.signal).then((nextMetrics) => {
+        if (sequence !== metricsSequenceRef.current) return;
+        setMetrics(nextMetrics);
+        setMetricsError(null);
+      }).catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          // Keep the last valid chart during a transient background refresh failure.
+        }
+      });
+    };
+    const interval = window.setInterval(refresh, 30_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refresh);
+      controller?.abort();
+    };
+  }, [accessMode, api, route]);
+
   const loadActivityPage = useCallback((offset: number) => {
     if (activityLoadingRef.current) return;
     activityLoadingRef.current = true;
@@ -677,6 +706,7 @@ export function App() {
         <ProvidersPage
           locale={locale}
           {...sharedProviderProps}
+          providerPresets={workspace.providerPresets}
           modelMappingGroups={workspace.modelMappingGroups}
           workerRunning={workspace.status.worker?.phase === "running"
             && workspace.status.worker.state?.listening === true}
@@ -705,6 +735,7 @@ export function App() {
           locale={locale}
           t={t}
           captureEnabled={workspace.settings.captureEnabled}
+          captureStatus={workspace.status.capture}
           readOnly={accessMode !== "writable"}
           pending={pending}
           onLoad={loadForwardingRecords}

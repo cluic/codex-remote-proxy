@@ -37,6 +37,17 @@ export interface ProviderInput {
   modelMappingGroupId: string | null;
 }
 
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  baseUrl: string;
+  authHeader: string;
+  authScheme: string;
+  extraHeaders: Record<string, string>;
+  homepageUrl: string;
+  documentationUrl: string;
+}
+
 export interface ModelMappingRule {
   sourceModel: string;
   targetModel: string;
@@ -113,6 +124,13 @@ export interface AccountStatus {
 }
 
 export interface StatusResponse {
+  build: {
+    name: string;
+    version: string;
+    repositoryUrl: string | null;
+    homepageUrl: string | null;
+    issuesUrl: string | null;
+  };
   supervisor: { pid: number | null; startedAt: string | null };
   activeProviderId: string | null;
   activeProvider: Provider | null;
@@ -125,6 +143,15 @@ export interface StatusResponse {
     proxyUrl: string | null;
   };
   account: AccountStatus;
+  capture: {
+    configured: boolean;
+    workerAvailable: boolean;
+    active: boolean;
+    state: "stopped" | "unavailable" | "unknown" | "disabled" | "enabling" | "enabled" | "disabling" | "error";
+    synchronized: boolean | null;
+    failedWriteCount: number;
+    lastWriteErrorAt: string | null;
+  };
 }
 
 export interface Settings {
@@ -176,6 +203,7 @@ export interface ForwardingRecord {
   upstreamRequestId: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  usageObservationStatus: "observed" | "upstream_unreported" | "protocol_unrecognized" | "not_applicable" | "legacy";
   errorType: string | null;
   errorMessage: string | null;
   outcome: Exclude<ForwardingOutcome, "all">;
@@ -302,6 +330,7 @@ export interface MetricsOverview {
 export interface WorkspaceData {
   status: StatusResponse;
   providers: Provider[];
+  providerPresets: ProviderPreset[];
   modelMappingGroups: ModelMappingGroup[];
   settings: Settings;
 }

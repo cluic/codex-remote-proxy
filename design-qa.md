@@ -75,4 +75,17 @@ The start-at-login setting exposes its platform/user-level boundary directly, an
 - The management flow creates a group, assigns it through Provider settings, edits its target, and prevents deletion while referenced. The final screenshot has no overlay, clipping, overlap, or horizontal overflow at 1440 × 900.
 - Full Chromium E2E matrix: 52/52 passed across English/Chinese and 1440/1024/390 layout checks.
 
+## Product Hardening QA
+
+- Browser-rendered Overview: `output/playwright/task11/provider-switch-renders-po-5f507-e-window-without-stale-data-chromium/overview-hardening-1440x900.png`
+- Verified state: 1440 × 900 English writable session with populated 24-hour Metrics, ChatGPT account routing controls, both request and Token trend modes, exact model usage, and bounded Provider performance.
+- The former static chart pair is replaced by one full-width explorer. Requests can switch between count and share; Tokens can switch among total, input, and output. Hover and keyboard focus expose an exact time bucket, and unobserved Token buckets render as gaps rather than fabricated zeroes.
+- Model usage always identifies unknown and grouped remainder traffic, with an explicit expand control for exact names. Provider performance shows all bounded rows, successful requests, Token usage coverage, and P95 response-start latency; the mobile layout changes to readable cards instead of a compressed table.
+- Service reliability excludes client disconnects from the denominator and discloses that exclusion. Forwarding Records distinguish observed usage, upstream-unreported usage, unrecognized protocols, non-applicable requests, and legacy rows.
+- OpenRouter was visually verified as a maintained built-in Provider that fills the `/api/v1` endpoint while preserving passthrough for custom Providers.
+- Full Chromium E2E matrix: 53/53 passed, including English/Chinese and 1440/1024/390 layout checks. UI typecheck, source lint, generated-build verification, and production UI build passed.
+- Deterministic backend groups passed before the fixed-port real-chain gate: unit-core 557/557, Capture 10/10, and integration 57/57. The L3 lifecycle review additionally verified identity-bound update shutdown, automatic previous-version recovery, post-shutdown cleanup failure recovery, fail-closed state/PID/port checks, locale/version aliases, effective Capture status, and semantic `response.done` failures. The local real-chain invocation could not claim `127.0.0.1:15100` because the user's installed CRP instance was intentionally left running; CI runs this isolated fixed-port gate on a free runner.
+
+No actionable P0, P1, or P2 visual findings remain in the final 1440 × 900 evidence.
+
 final result: passed

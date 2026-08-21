@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 import { sanitizeActivityValue } from "./activity-store.mjs";
+import { listProviderPresets } from "../providers/provider-presets.mjs";
+import { getPublicBuildInfo } from "../shared/build-info.mjs";
 import { CrpError, toPublicError } from "../shared/errors.mjs";
 
 const API_PREFIX = "/api/v1";
@@ -371,6 +373,57 @@ function projectSettings(settings) {
   };
 }
 
+async function projectCaptureState(worker, settings, fetchImpl) {
+  const configured = settings?.captureEnabled === true;
+  const listening = worker?.phase === "running" && worker?.state?.listening === true;
+  if (!listening) {
+    return {
+      configured,
+      workerAvailable: false,
+      active: false,
+      state: "stopped",
+      synchronized: null,
+      failedWriteCount: 0,
+      lastWriteErrorAt: null
+    };
+  }
+  try {
+    const listenPort = Number.isInteger(worker?.state?.listenPort)
+      && worker.state.listenPort >= 1 && worker.state.listenPort <= 65_535
+      ? worker.state.listenPort
+      : 15100;
+    const response = await fetchImpl(`http://127.0.0.1:${listenPort}/_proxy/health`, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(750)
+    });
+    if (!response?.ok) throw new Error("health unavailable");
+    const health = await response.json();
+    const runtimeConfigured = health?.captureConfigured === true;
+    return {
+      configured,
+      workerAvailable: true,
+      active: health?.captureActive === true,
+      state: ["disabled", "enabling", "enabled", "disabling", "error"]
+        .includes(health?.captureState) ? health.captureState : "unknown",
+      synchronized: runtimeConfigured === configured,
+      failedWriteCount: Number.isSafeInteger(health?.failedWriteCount)
+        && health.failedWriteCount >= 0 ? health.failedWriteCount : 0,
+      lastWriteErrorAt: isIsoTimestamp(health?.lastWriteErrorAt)
+        ? health.lastWriteErrorAt : null
+    };
+  } catch {
+    return {
+      configured,
+      workerAvailable: false,
+      active: false,
+      state: "unavailable",
+      synchronized: null,
+      failedWriteCount: 0,
+      lastWriteErrorAt: null
+    };
+  }
+}
+
 function projectAccountWindow(window) {
   if (!isPlainObject(window)
     || (window.kind !== "primary" && window.kind !== "secondary")
@@ -619,6 +672,13 @@ function projectForwardingRecord(record) {
     upstreamRequestId: projectMetricText(record?.upstreamRequestId, 256),
     inputTokens: boundedTokenCount(record?.inputTokens),
     outputTokens: boundedTokenCount(record?.outputTokens),
+    usageObservationStatus: [
+      "observed",
+      "upstream_unreported",
+      "protocol_unrecognized",
+      "not_applicable",
+      "legacy"
+    ].includes(record?.usageObservationStatus) ? record.usageObservationStatus : "legacy",
     errorType: projectMetricText(record?.errorType, 256),
     errorMessage: projectMetricText(record?.errorMessage, 512),
     outcome,
@@ -795,6 +855,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/metrics/overview`, ["GET"]],
     [`${API_PREFIX}/forwarding-records`, ["GET"]],
     [`${API_PREFIX}/model-mappings`, ["GET", "POST"]],
+    [`${API_PREFIX}/provider-presets`, ["GET"]],
     [`${API_PREFIX}/providers`, ["GET", "POST"]],
     [`${API_PREFIX}/proxy/start`, ["POST"]],
     [`${API_PREFIX}/proxy/stop`, ["POST"]],
@@ -866,10 +927,12 @@ export function createAdminServer({
   host = "127.0.0.1",
   port = 15101,
   maxBodyBytes = 64 * 1_024,
+  fetchImpl = globalThis.fetch,
   createRequestId = () => randomBytes(12).toString("base64url")
 } = {}) {
   if (host !== "127.0.0.1" || !Number.isInteger(port) || port < 0 || port > 65_535
     || !Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1
+    || typeof fetchImpl !== "function"
     || !auth || !providerService || !accountMonitor) {
     throw new TypeError("Admin server options are invalid.");
   }
@@ -1063,16 +1126,23 @@ export function createAdminServer({
     });
 
     if (url.pathname === `${API_PREFIX}/status` && request.method === "GET") {
-      const [providerStatus, codexStatus] = await Promise.all([
+      const [providerStatus, codexStatus, settings] = await Promise.all([
         providerService.getStatus(),
-        codexService?.getStatus?.() ?? { configured: false }
+        codexService?.getStatus?.() ?? { configured: false },
+        settingsService.getSettings()
       ]);
       sendJson(response, 200, {
+        build: getPublicBuildInfo(),
         supervisor: projectSupervisorState(getSupervisorState()),
         ...projectProviderStatus(providerStatus),
         codex: projectCodexState(codexStatus),
-        account: projectAccountState(accountMonitor.getState())
+        account: projectAccountState(accountMonitor.getState()),
+        capture: await projectCaptureState(providerStatus?.worker, settings, fetchImpl)
       });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/provider-presets` && request.method === "GET") {
+      sendJson(response, 200, { providerPresets: listProviderPresets() });
       return;
     }
     if (url.pathname === `${API_PREFIX}/account/refresh` && request.method === "POST") {

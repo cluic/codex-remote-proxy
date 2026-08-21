@@ -1,6 +1,7 @@
 import {
   Database,
   FileJson,
+  GitFork,
   KeyRound,
   LockKeyhole,
   Network,
@@ -65,6 +66,13 @@ function platformLabel(platform: string | null, t: Translator): string {
   if (platform === "linux") return t("system.platformLinux");
   if (platform === "win32") return t("system.platformWin32");
   return platform ?? t("common.unknown");
+}
+
+function captureLabel(status: StatusResponse["capture"], t: Translator): string {
+  if (!status.configured) return t("system.captureOff");
+  if (status.active) return t("system.captureActive");
+  if (status.state === "stopped") return t("system.captureWaiting");
+  return t("system.captureAttention");
 }
 
 export function SystemPage({
@@ -303,8 +311,35 @@ export function SystemPage({
                       {storageLabel(metrics?.storageState ?? null, t)}
                     </StatusBadge>
                   )
+                },
+                {
+                  label: t("system.forwardingCapture"),
+                  value: (
+                    <StatusBadge tone={status.capture.active
+                      ? "success"
+                      : status.capture.configured && status.capture.state !== "stopped"
+                        ? "warning"
+                        : "neutral"}>
+                      {captureLabel(status.capture, t)}
+                    </StatusBadge>
+                  )
                 }
               ]} />
+            </div>
+          </Panel>
+
+          <Panel>
+            <PanelHeader title={t("system.about")} description={t("system.aboutHelp")} />
+            <div className="panel-content system-about-body">
+              <div>
+                <span>{t("system.version")}</span>
+                <strong>CRP v{status.build.version}</strong>
+              </div>
+              {status.build.repositoryUrl ? (
+                <a href={status.build.repositoryUrl} target="_blank" rel="noreferrer">
+                  <GitFork aria-hidden="true" />{t("system.openGithub")}
+                </a>
+              ) : null}
             </div>
           </Panel>
 

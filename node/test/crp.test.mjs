@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { getPaths } from "../src/shared/paths.mjs";
 import { CrpError } from "../src/shared/errors.mjs";
+import { BUILD_INFO } from "../src/shared/build-info.mjs";
 import {
   discoverSupervisor,
   SupervisorClient,
@@ -387,9 +388,9 @@ test("executes help through an npm-style POSIX bin symlink without making import
   assert.equal(imported.stdout, "imported\n");
 });
 
-test("prints mature English-default CLI help without discovery", async () => {
+test("prints mature English CLI help without discovery", async () => {
   let discovered = false;
-  const result = await invokeCli(["--help"], {
+  const result = await invokeCli(["--help", "--locale", "en"], {
     environment: { CRP_LOCALE: "zh-CN", LANG: "zh_CN.UTF-8" },
     discoverSupervisorImpl: async () => { discovered = true; },
     ensureSupervisorImpl: async () => { discovered = true; }
@@ -410,6 +411,366 @@ test("prints mature English-default CLI help without discovery", async () => {
   }
   assert.doesNotMatch(result.stdout, /^\s*(?:crp\s+)?(?:init|install|setup)(?:\s|$)/m);
   assert.equal(discovered, false);
+});
+
+test("version aliases are side-effect free and version reports the running Supervisor build", async () => {
+  for (const args of [
+    ["-v"],
+    ["--version"],
+    ["-v", "--locale", "zh-CN"],
+    ["--locale", "en", "--version"]
+  ]) {
+    const result = await invokeCli(args, {
+      discoverSupervisorImpl: async () => { throw new Error("version alias must not discover"); },
+      ensureSupervisorImpl: async () => { throw new Error("version alias must not start"); }
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `${BUILD_INFO.version}\n`);
+  }
+  const status = {
+    ...adminStatus(),
+    build: { ...BUILD_INFO }
+  };
+  const result = await invokeCli(["version", "--json"], {
+    discoverSupervisorImpl: async () => discoveredContext({}, status)
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.installed.version, BUILD_INFO.version);
+  assert.equal(payload.supervisor.version, BUILD_INFO.version);
+});
+
+test("update check queries npm without installing or touching the Supervisor", async () => {
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const calls = [];
+  const result = await invokeCli(["update", "--check", "--json"], {
+    spawnSyncImpl(command, args) {
+      calls.push([command, args]);
+      return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+    },
+    discoverSupervisorImpl: async () => { throw new Error("update check must not discover"); },
+    ensureSupervisorImpl: async () => { throw new Error("update check must not start"); }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(calls, [["npm", ["view", BUILD_INFO.name, "version", "--json"]]]);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    currentVersion: BUILD_INFO.version,
+    latestVersion: latest,
+    updateAvailable: true
+  });
+});
+
+test("update refuses non-global copies before installation or Supervisor changes", async () => {
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const calls = [];
+  let discoveries = 0;
+  const result = await invokeCli(["update", "--json"], {
+    spawnSyncImpl(command, args) {
+      calls.push([command, args]);
+      if (args[0] === "view") return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+      if (args[0] === "root") return { status: 0, stdout: "/path/that/does/not/exist", stderr: "" };
+      throw new Error("update must not install a non-global copy");
+    },
+    discoverSupervisorImpl: async () => { discoveries += 1; return null; }
+  });
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.code, "UPDATE_REQUIRES_GLOBAL_INSTALL");
+  assert.equal(calls.some(([, args]) => args[0] === "install"), false);
+  assert.equal(discoveries, 0);
+});
+
+test("update binds shutdown to the Supervisor observed before installation", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const beforeStatus = { ...adminStatus(), build: { ...BUILD_INFO } };
+  const before = discoveredContext({ request: async () => assert.fail("old Supervisor must not be called") }, beforeStatus);
+  const replacementStatus = { ...beforeStatus, supervisor: { ...beforeStatus.supervisor, pid: 5252 } };
+  const replacement = discoveredContext({
+    request: async () => assert.fail("replacement Supervisor must not be shut down")
+  }, replacementStatus);
+  let discoveries = 0;
+  const processCalls = [];
+  const result = await invokeCli(["update", "--json"], {
+    paths,
+    globalPackageLocationImpl: () => ({ packageRoot: "/virtual/global/crp" }),
+    readInstalledPackageVersionImpl: () => latest,
+    discoverSupervisorImpl: async () => (++discoveries === 1 ? before : replacement),
+    spawnSyncImpl(command, args) {
+      if (command === "npm" && args[0] === "view") {
+        return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+      }
+      if (command === "npm" && args[0] === "install") {
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      processCalls.push([command, args]);
+      return { status: 0, stdout: "", stderr: "" };
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.code, "SUPERVISOR_IDENTITY_CHANGED");
+  assert.equal(discoveries, 2);
+  assert.deepEqual(processCalls, []);
+});
+
+test("update restores the new runtime when shutdown stopped the Supervisor before cleanup failed", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const beforeStatus = { ...adminStatus(), build: { ...BUILD_INFO } };
+  const before = discoveredContext({ request: async () => {} }, beforeStatus);
+  let discoveries = 0;
+  const installTargets = [];
+  const runtimeCalls = [];
+  const result = await invokeCli(["update", "--json"], {
+    paths,
+    globalPackageLocationImpl: () => ({ packageRoot: "/virtual/global/crp" }),
+    readInstalledPackageVersionImpl: () => latest,
+    discoverSupervisorImpl: async () => (++discoveries === 1 ? before : null),
+    shutdownForUpdateImpl: async () => {
+      throw new CrpError(
+        "SUPERVISOR_STATE_CLEANUP_FAILED",
+        "The Supervisor stopped but cleanup failed.",
+        "Retry cleanup."
+      );
+    },
+    isProcessAlive: () => false,
+    updatePortsIdleImpl: async () => true,
+    spawnSyncImpl(command, args) {
+      if (command === "npm" && args[0] === "view") {
+        return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+      }
+      if (command === "npm" && args[0] === "install") {
+        installTargets.push(args[2]);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      runtimeCalls.push([command, args]);
+      return { status: 0, stdout: "", stderr: "" };
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).version, latest);
+  assert.deepEqual(installTargets, [`${BUILD_INFO.name}@${latest}`]);
+  assert.equal(runtimeCalls.length, 1);
+  assert.deepEqual(runtimeCalls[0][1].slice(-3), ["ui", "--no-open", "--json"]);
+});
+
+test("update never restores over a previous Worker that remains alive after shutdown failure", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const worker = {
+    phase: "running",
+    pid: 4343,
+    generation: 3,
+    state: { listening: true }
+  };
+  const beforeStatus = { ...adminStatus(4242, worker), build: { ...BUILD_INFO } };
+  const before = discoveredContext({ request: async () => {} }, beforeStatus);
+  let discoveries = 0;
+  const processCalls = [];
+  const result = await invokeCli(["update", "--json"], {
+    paths,
+    globalPackageLocationImpl: () => ({ packageRoot: "/virtual/global/crp" }),
+    readInstalledPackageVersionImpl: () => latest,
+    discoverSupervisorImpl: async () => (++discoveries === 1 ? before : null),
+    shutdownForUpdateImpl: async () => {
+      throw new CrpError(
+        "SUPERVISOR_STATE_CLEANUP_FAILED",
+        "The Supervisor shutdown was incomplete.",
+        "Retry shutdown."
+      );
+    },
+    isProcessAlive: (pid) => pid === worker.pid,
+    spawnSyncImpl(command, args) {
+      if (command === "npm" && args[0] === "view") {
+        return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+      }
+      if (command === "npm" && args[0] === "install") {
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      processCalls.push([command, args]);
+      return { status: 0, stdout: "", stderr: "" };
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.code, "SUPERVISOR_STATE_CLEANUP_FAILED");
+  assert.deepEqual(processCalls, []);
+});
+
+test("update rolls back the package and restores the prior runtime when activation fails", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const worker = {
+    phase: "running",
+    pid: 4343,
+    generation: 3,
+    state: { listening: true }
+  };
+  const beforeStatus = { ...adminStatus(4242, worker), build: { ...BUILD_INFO } };
+  const before = discoveredContext({ request: async () => {} }, beforeStatus);
+  let discoveries = 0;
+  let installedVersion = BUILD_INFO.version;
+  const installTargets = [];
+  const runtimeCalls = [];
+  const shutdownIdentities = [];
+  const result = await invokeCli(["update", "--json"], {
+    paths,
+    globalPackageLocationImpl: () => ({ packageRoot: "/virtual/global/crp" }),
+    readInstalledPackageVersionImpl: () => installedVersion,
+    discoverSupervisorImpl: async () => (++discoveries === 1 ? before : null),
+    shutdownForUpdateImpl: async (identity) => { shutdownIdentities.push(identity); },
+    isProcessAlive: () => false,
+    updatePortsIdleImpl: async () => true,
+    spawnSyncImpl(command, args) {
+      if (command === "npm" && args[0] === "view") {
+        return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+      }
+      if (command === "npm" && args[0] === "install") {
+        const target = args[2];
+        installedVersion = target.endsWith(`@${latest}`) ? latest : BUILD_INFO.version;
+        installTargets.push(target);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      runtimeCalls.push([command, args]);
+      return { status: runtimeCalls.length === 1 ? 1 : 0, stdout: "", stderr: "" };
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.code, "UPDATE_ROLLED_BACK");
+  assert.deepEqual(installTargets, [
+    `${BUILD_INFO.name}@${latest}`,
+    `${BUILD_INFO.name}@${BUILD_INFO.version}`
+  ]);
+  assert.deepEqual(shutdownIdentities, [before.state]);
+  assert.equal(runtimeCalls.length, 2);
+  for (const [command, args] of runtimeCalls) {
+    assert.equal(command, process.execPath);
+    assert.deepEqual(args.slice(-2), ["start", "--json"]);
+  }
+});
+
+test("update recovery never replaces a newly appeared undiscoverable Supervisor", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = prepareSupervisorFiles(homeDir);
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const beforeStatus = { ...adminStatus(), build: { ...BUILD_INFO } };
+  const before = discoveredContext({ request: async () => {} }, beforeStatus);
+  const replacement = supervisorState(6262);
+  let discoveries = 0;
+  const installTargets = [];
+  const result = await invokeCli(["update", "--json"], {
+    paths,
+    globalPackageLocationImpl: () => ({ packageRoot: "/virtual/global/crp" }),
+    readInstalledPackageVersionImpl: () => latest,
+    discoverSupervisorImpl: async () => (++discoveries === 1 ? before : null),
+    shutdownForUpdateImpl: async () => {},
+    isProcessAlive: () => false,
+    spawnSyncImpl(command, args) {
+      if (command === "npm" && args[0] === "view") {
+        return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+      }
+      if (command === "npm" && args[0] === "install") {
+        installTargets.push(args[2]);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      writeFileSync(paths.statePath, `${JSON.stringify(replacement)}\n`, { mode: 0o600 });
+      return { status: 1, stdout: "", stderr: "" };
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.code, "UPDATE_RECOVERY_FAILED");
+  assert.deepEqual(installTargets, [`${BUILD_INFO.name}@${latest}`]);
+});
+
+test("update recovery refuses rollback while either fixed loopback port remains occupied", async (t) => {
+  const homeDir = makeTempHome();
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
+  const paths = getPaths(homeDir);
+  const [major, minor, patch] = BUILD_INFO.version.split(".").map(Number);
+  const latest = `${major}.${minor}.${patch + 1}`;
+  const beforeStatus = { ...adminStatus(), build: { ...BUILD_INFO } };
+  const before = discoveredContext({ request: async () => {} }, beforeStatus);
+  let discoveries = 0;
+  const installTargets = [];
+  const result = await invokeCli(["update", "--json"], {
+    paths,
+    globalPackageLocationImpl: () => ({ packageRoot: "/virtual/global/crp" }),
+    readInstalledPackageVersionImpl: () => latest,
+    discoverSupervisorImpl: async () => (++discoveries === 1 ? before : null),
+    shutdownForUpdateImpl: async () => {},
+    isProcessAlive: () => false,
+    updatePortsIdleImpl: async () => false,
+    spawnSyncImpl(command, args) {
+      if (command === "npm" && args[0] === "view") {
+        return { status: 0, stdout: JSON.stringify(latest), stderr: "" };
+      }
+      if (command === "npm" && args[0] === "install") {
+        installTargets.push(args[2]);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return { status: 1, stdout: "", stderr: "" };
+    }
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stderr).error.code, "UPDATE_RECOVERY_FAILED");
+  assert.deepEqual(installTargets, [`${BUILD_INFO.name}@${latest}`]);
+});
+
+test("provider presets are local and OpenRouter add sends maintained non-secret defaults", async () => {
+  let starts = 0;
+  const listed = await invokeCli(["provider", "presets", "--json"], {
+    ensureSupervisorImpl: async () => { starts += 1; }
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(starts, 0);
+  assert.equal(JSON.parse(listed.stdout).providerPresets[0].baseUrl,
+    "https://openrouter.ai/api/v1");
+
+  const calls = [];
+  const client = {
+    async request(method, path, body) {
+      calls.push([method, path, body]);
+      return { provider: { id: "openrouter-1", name: "OpenRouter", credentialConfigured: true } };
+    }
+  };
+  const result = await invokeCli([
+    "provider", "add", "--preset", "openrouter", "--api-key", "write-only-test-key", "--json"
+  ], {
+    ensureSupervisorImpl: async () => discoveredContext(client)
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(calls, [["POST", "/providers", {
+    provider: {
+      name: "OpenRouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+      extraHeaders: {}
+    },
+    credential: "write-only-test-key"
+  }]]);
+  assert.equal(result.stdout.includes("write-only-test-key"), false);
 });
 
 test("positional argument errors never echo the original value", async () => {
@@ -445,7 +806,7 @@ test("positional argument errors never echo the original value", async () => {
   assert.equal(discoverCalls, 0);
 
   for (const [args, expectedError] of [
-    [[secret], "Error: CRP could not complete the command. Review CRP activity and try again.\n"],
+    [[secret], "Error: Unknown command. Run `crp --help` to see available commands.\n"],
     [["capture", secret], "Error: Unknown capture action.\n"]
   ]) {
     const result = await invokeCli(args);
@@ -530,7 +891,6 @@ test("legacy human commands render English and Chinese without changing technica
   for (const [args, englishSignal, chineseSignal, literal] of [
     [["check"], "Codex config path:", "Codex 配置路径：", "model_providers.OpenAI"],
     [["guide"], "CRP V1 guide:", "CRP V1 指南：", "crp start --json"],
-    [["capture", "status"], "Capture running:", "抓取功能运行中：", ".codex-remote-proxy"],
     [["install-cli"], "Legacy local shim installed.", "旧版本地命令入口已安装。", "npm install -g @cluic/codex-remote-proxy"]
   ]) {
     const homeDir = makeTempHome();
@@ -1785,21 +2145,44 @@ test("check and capture JSON positively project legacy config without complete k
   }
 });
 
-test("capture mutation refuses a V1 supervisor state without modifying legacy config", () => {
+test("capture mutation uses Supervisor settings without modifying legacy config", async () => {
   const homeDir = makeTempHome();
   try {
-    const paths = prepareSupervisorFiles(homeDir, { state: supervisorState(process.pid) });
+    const paths = getPaths(homeDir);
+    mkdirSync(paths.globalHome, { recursive: true });
     const configPath = join(paths.globalHome, "config.json");
     const original = '{"captureEnabled":false}\n';
     writeFileSync(configPath, original, { mode: 0o600 });
 
-    const result = runCrp(["capture", "on", "--json"], makeHomeEnv(homeDir));
-    assert.equal(result.status, 1);
-    assert.equal(JSON.parse(result.stderr).error.code, "CLI_COMMAND_FAILED");
+    const calls = [];
+    const client = {
+      async request(method, path, body) {
+        calls.push([method, path, body]);
+        return { settings: { captureEnabled: true } };
+      }
+    };
+    const result = await invokeCli(["capture", "on", "--json", "--locale", "en"], {
+      paths,
+      ensureSupervisorImpl: async () => discoveredContext(client)
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(calls, [["PATCH", "/settings", { captureEnabled: true }]]);
+    assert.equal(JSON.parse(result.stdout).captureEnabled, true);
     assert.equal(readFileSync(configPath, "utf8"), original);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
+});
+
+test("capture status does not report a false disabled preference without a Supervisor", async () => {
+  const result = await invokeCli(["capture", "status", "--locale", "en"], {
+    discoverSupervisorImpl: async () => null
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Capture running: no/);
+  assert.match(result.stdout, /Capture status unavailable/);
+  assert.doesNotMatch(result.stdout, /Persisted capture enabled:/);
 });
 
 test("reads only the exact fixed-loopback supervisor state and private canonical token", (t) => {

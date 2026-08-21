@@ -346,6 +346,7 @@ function createServices({ upstream }) {
         upstreamRequestId: "fallback-upstream-4",
         inputTokens: null,
         outputTokens: null,
+        usageObservationStatus: "not_applicable",
         errorType: "proxy_client_abort",
         errorMessage: "Client closed connection",
         outcome: "aborted",
@@ -371,6 +372,7 @@ function createServices({ upstream }) {
         upstreamRequestId: "chatgpt-upstream-3",
         inputTokens: 128,
         outputTokens: 42,
+        usageObservationStatus: "observed",
         errorType: null,
         errorMessage: null,
         outcome: "success",
@@ -396,6 +398,7 @@ function createServices({ upstream }) {
         upstreamRequestId: null,
         inputTokens: null,
         outputTokens: null,
+        usageObservationStatus: "not_applicable",
         errorType: null,
         errorMessage: null,
         outcome: "rejected",
@@ -421,6 +424,7 @@ function createServices({ upstream }) {
         upstreamRequestId: null,
         inputTokens: null,
         outputTokens: null,
+        usageObservationStatus: "not_applicable",
         errorType: "proxy_upstream_error",
         errorMessage: "connection refused",
         outcome: "error",
@@ -1219,6 +1223,16 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       getSupervisorState: () => ({
         pid: services.state.supervisorPid,
         startedAt: services.state.supervisorStartedAt
+      }),
+      fetchImpl: async () => new Response(JSON.stringify({
+        captureConfigured: services.state.captureEnabled,
+        captureActive: services.state.captureEnabled,
+        captureState: services.state.captureEnabled ? "enabled" : "disabled",
+        failedWriteCount: 0,
+        lastWriteErrorAt: null
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
       }),
       uiDir: uiRoot,
       host: "127.0.0.1",

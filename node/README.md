@@ -2,7 +2,7 @@
 
 `@cluic/codex-remote-proxy` keeps Codex signed in with ChatGPT while routing model requests through a weighted pool of OpenAI-compatible providers.
 
-> Release status: npm `0.4.3` is current. Changes after `0.4.3` remain unreleased until their deterministic, platform, and human-review gates pass. Ordinary updates use patch releases.
+> Release status: the npm `latest` dist-tag is authoritative. Ordinary product updates use patch releases; minor or major bumps require an explicit policy change.
 
 ## Requirements and Install
 
@@ -24,6 +24,12 @@ npx @cluic/codex-remote-proxy ui
 The current development source is a responsive React + TypeScript SPA under `ui-src/`, built with Vite. Build tools and source are not shipped: the package contains exactly `ui/index.html`, `ui/app.js`, and `ui/styles.css` for the existing same-origin Admin server.
 
 ## Product Behavior
+
+Provider creation can start from maintained public presets or a custom OpenAI-compatible endpoint. The initial catalog includes OpenRouter with the required `https://openrouter.ai/api/v1` base URL and Bearer authentication defaults; credentials remain write-only.
+
+`GET /api/v1/status` includes sanitized build and effective Capture state, while `GET /api/v1/provider-presets` exposes only maintained public defaults. Supervisor settings are the sole Capture source for managed Workers, so legacy standalone config cannot silently override the current setting. Forwarding rows distinguish observed, upstream-unreported, unrecognized-protocol, non-applicable, and legacy usage. OpenAI `response.completed` and OpenRouter `response.done` terminal SSE events are both recognized without changing forwarded bytes.
+
+Overview uses one interactive trend explorer for requests and Tokens. It supports count/share plus total/input/output Token metrics, keyboard/hover bucket inspection, and gaps for missing usage instead of false zeroes. Reliability excludes client aborts; model rows are expandable and separate unknown/grouped traffic; the provider table displays every bounded row returned by the API.
 
 The UI can create, test, prioritize, prefer, update, and delete named providers; create reusable exact model-mapping groups and assign one per provider; start, stop, and restart the proxy worker; inspect ChatGPT account/routing state and anonymous 24-hour/7-day Metrics on Overview; review metadata-only Forwarding Records and localized sanitized Activity; configure start at login and routing on System; and generate bounded in-memory diagnostics. A provider must pass an OpenAI Responses compatibility test before it enters the runtime pool. Higher weights route first and the preferred provider breaks equal-weight ties. Retryable responses or connected transport failures cool a provider for subsequent requests; only a bounded Responses request that fails before an upstream connection exists is replayed in the same request. Preference changes apply a new snapshot to a running Worker and start a stopped Worker; weight changes use a dedicated hot-apply route without changing preference. Eligible provider edits and deletion require a stopped Worker so the pool cannot retain removed profiles or stale credentials; failed live probes do not invalidate the current snapshot. First-provider compare-and-set selection never starts or reconfigures the Worker.
 
@@ -72,8 +78,12 @@ crp status [--json]
 crp stop [--json]
 crp restart [--json]
 crp shutdown [--json]
+crp -v | crp --version
+crp version [--json]
+crp update [--check] [--json]
+crp provider presets [--json]
 crp provider list [--json]
-crp provider add --name <NAME> --base-url <URL> --api-key <KEY> [--model <MODEL>] [--json]
+crp provider add (--preset <ID> | --name <NAME> --base-url <URL>) --api-key <KEY> [--model <MODEL>] [--json]
 crp provider models (--id <ID> | --name <NAME>) [--json]
 crp provider test (--id <ID> | --name <NAME>) --model <MODEL> [--json]
 crp provider activate (--id <ID> | --name <NAME>) [--json]
@@ -83,7 +93,9 @@ crp guide [--json]
 
 Use `crp ui` for guided setup and daily management, or `crp start` for headless CLI startup. These are the two supported setup/start entry points.
 
-Human CLI output supports `en` and `zh-CN`. English is the default regardless of process or terminal locale variables. A single global `--locale en|zh-CN` may appear anywhere; Chinese requires explicit `--locale zh-CN` and is never persisted. JSON keys, codes, enums, messages, and actions remain stable English contracts. JSON failures leave stdout empty and write exactly one parseable envelope to stderr.
+Human CLI output supports `en` and `zh-CN`. Without `--locale`, CRP uses the first supported value from `CRP_LOCALE`, `LC_ALL`, `LC_MESSAGES`, or `LANG`, then falls back to English. A single global `--locale en|zh-CN` may appear anywhere and always wins; the choice is process-local and never persisted. JSON keys, codes, enums, messages, and actions remain stable English contracts. JSON failures leave stdout empty and write exactly one parseable envelope to stderr.
+
+`crp update` only mutates a canonical global npm installation. It installs and verifies the target package before an identity-bound Supervisor shutdown, restores the prior Supervisor/Worker state with the new CLI, and automatically reinstalls and restores the previous version if activation fails. `UPDATE_ROLLED_BACK` means the old runtime is healthy; `UPDATE_RECOVERY_FAILED` includes the bounded manual recovery command.
 
 ## License
 
@@ -101,7 +113,9 @@ Detached Supervisor startup uses a one-shot, strictly allowlisted IPC error. An 
 
 The former `init`, `install`, and `setup` compatibility aliases are removed. Each returns `CLI_COMMAND_REMOVED` locally without Supervisor discovery or mutation and points to `crp ui` or `crp start`. `check`, `capture on|off|status`, `guide`, and the deprecated `install-cli` shim command remain; there are no provider-update, Activity, Settings, or diagnostics CLI commands.
 
-Optional `provider add --model <MODEL>` uses that value only for the follow-up Responses test; routing override remains `--model-mode override --model-override <MODEL>`. It saves the profile first, then tests, and creation remains committed when the compatibility result fails or the second-stage request cannot complete. `provider test`, `activate`, `delete`, and `models` require exactly one of `--id` or case-insensitive exact `--name`. `provider models` refreshes the authenticated, no-redirect `<base-url>/models` catalog and rejects a complete credential reflected in any model ID before cache or output; discovery failure preserves the last good cache and does not change provider test or activation state.
+`provider presets` is local and side-effect free; `provider add --preset openrouter` applies the maintained `/api/v1` endpoint and Bearer defaults. Optional `provider add --model <MODEL>` uses that value only for the follow-up Responses test; routing override remains `--model-mode override --model-override <MODEL>`. It saves the profile first, then tests, and creation remains committed when the compatibility result fails or the second-stage request cannot complete. `provider test`, `activate`, `delete`, and `models` require exactly one of `--id` or case-insensitive exact `--name`. `provider models` refreshes the authenticated, no-redirect `<base-url>/models` catalog and rejects a complete credential reflected in any model ID before cache or output; discovery failure preserves the last good cache and does not change provider test or activation state.
+
+`-v` and `--version` print the installed version without discovery. `version` compares installed and running builds. `update --check` only queries npm; `update` requires a verified global npm installation, installs before shutdown, and restores the previous Supervisor/Worker running state. Source checkouts and `npx` cache copies are never mutated in place.
 
 CLI tests and ordinary Web Providers-page tests request `activateIfNone` so the first successfully tested Provider is selected through a first-wins compare-and-set while the Worker is stopped. That initial selection never starts or reconfigures the Worker, never calls the readiness-gated explicit activation route, and is confirmed from refreshed server state; `crp start` remains explicit. Admin calls default `activateIfNone` to false. Conditional Web Setup also opts in and runs `save -> test and CAS select -> Codex bootstrap/history repair -> Worker start`.
 
@@ -147,11 +161,11 @@ node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs tes
 npm pack --dry-run --json --ignore-scripts
 ```
 
-The current package-content test requires the exact reviewed 40-file allowlist, including the provider scheduler, Forwarding Records service, start-at-login service, and exactly three generated UI assets. It rejects UI development source, runtime state, credentials, tests, Changesets, logs, databases, and generated output outside the reviewed UI files. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
+The current package-content test requires the exact reviewed 42-file allowlist, including provider presets/build metadata, the provider scheduler, Forwarding Records service, start-at-login service, and exactly three generated UI assets. It rejects UI development source, runtime state, credentials, tests, Changesets, logs, databases, and generated output outside the reviewed UI files. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
 
 The serial `core-chain` group uses the production CLI/Admin/registry/provider/WorkerManager/forked-worker path and proves switching, in-flight snapshots, restart, shutdown, cleanup, and secret scans. Its injected memory credential adapter and loopback upstreams do not satisfy the separate real native-keyring/external-provider gate.
 
-Release evidence must include lint, UI typecheck/build/exact-output verification, deterministic Node tests, Chromium English/Chinese responsive coverage, the exact 40-file package allowlist, runtime audit, and the comparison recorded in `../design-qa.md`. Deterministic fixtures do not prove real native-keyring, login-start execution, or external-upstream behavior; those remain platform/human gates.
+Release evidence must include lint, UI typecheck/build/exact-output verification, deterministic Node tests, Chromium English/Chinese responsive coverage, the exact 42-file package allowlist, runtime audit, and the comparison recorded in `../design-qa.md`. Deterministic fixtures do not prove real native-keyring, login-start execution, or external-upstream behavior; those remain platform/human gates.
 
 Supervisor discovery applies a 2-second liveness probe and returns a client with a separate 30-second operation timeout. Proxy forwarding joins base and incoming URLs structurally, preserving base paths and query parameters while avoiding duplicate path separators. The retained `provider add --api-key <KEY>` behavior and broader child-environment minimization remain explicit future follow-up work and do not block local core completion.
 
