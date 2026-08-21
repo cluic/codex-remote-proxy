@@ -260,6 +260,7 @@ export const CLI_MESSAGES = Object.freeze({
     "provider.test.failedCode": "failed ({code})",
     "provider.model.passthrough": "passthrough",
     "provider.model.override": "override -> {model}",
+    "provider.model.mapping": "mapping group -> {group}",
     "provider.credential.configured": "configured",
     "provider.credential.notConfigured": "not configured",
     "command.removed": "The `{command}` command has been removed. Use `{replacement}` instead.",
@@ -450,6 +451,7 @@ export const CLI_MESSAGES = Object.freeze({
     "provider.test.failedCode": "失败（{code}）",
     "provider.model.passthrough": "透传",
     "provider.model.override": "覆盖为 {model}",
+    "provider.model.mapping": "映射规则组 -> {group}",
     "provider.credential.configured": "已配置",
     "provider.credential.notConfigured": "未配置",
     "command.removed": "`{command}` 命令已移除。请改用 `{replacement}`。",
@@ -2012,6 +2014,14 @@ function humanProviderTest(provider, locale) {
 }
 
 function humanProviderModel(provider, locale) {
+  if (typeof provider?.modelMappingGroupId === "string" && provider.modelMappingGroupId.length > 0) {
+    return cliMessage(locale, "provider.model.mapping", {
+      group: terminalSafeText(provider.modelMappingGroupId, {
+        maxCodePoints: 128,
+        fallback: cliMessage(locale, "common.unknown")
+      })
+    });
+  }
   if (provider?.modelMode === "passthrough") {
     return cliMessage(locale, "provider.model.passthrough");
   }

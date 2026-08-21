@@ -609,6 +609,7 @@ test("provider list human output is bilingual, useful, active-aware, and termina
       baseUrl: `https://primary.example/v1?token=${querySentinel}#${fragmentSentinel}`,
       modelMode: "passthrough",
       modelOverride: null,
+      modelMappingGroupId: null,
       lastTestStatus: "passed",
       credentialConfigured: true,
       credentialRef: privateSentinel,
@@ -621,9 +622,20 @@ test("provider list human output is bilingual, useful, active-aware, and termina
       baseUrl: "https://backup.example/v1",
       modelMode: "override",
       modelOverride: "backup-model",
+      modelMappingGroupId: null,
       lastTestStatus: "failed",
       lastTestCode: longTestCode,
       credentialConfigured: false
+    },
+    {
+      id: "provider-3",
+      name: "Mapped provider",
+      baseUrl: "https://mapped.example/v1",
+      modelMode: "passthrough",
+      modelOverride: null,
+      modelMappingGroupId: "mapping-openrouter",
+      lastTestStatus: "passed",
+      credentialConfigured: true
     }
   ];
   const client = {
@@ -638,7 +650,7 @@ test("provider list human output is bilingual, useful, active-aware, and termina
     [
       "en",
       [
-        /Providers.*2/i,
+        /Providers.*3/i,
         /Primary\$&\\u001b\[31m\\u0085\\u061c\\u200e\\u200f\\u202e\\u206a\\nLine.*\(active\)/i,
         /ID:.*provider-1/,
         /Base URL:.*https:\/\/primary\.example\/v1/,
@@ -648,13 +660,15 @@ test("provider list human output is bilingual, useful, active-aware, and termina
         /Backup-/,
         /ID:.*provider-2/,
         /Test: failed(?:\n|$)/i,
-        /Model:.*override.*backup-model/i
+        /Model:.*override.*backup-model/i,
+        /Mapped provider/,
+        /Model:.*mapping group.*mapping-openrouter/i
       ]
     ],
     [
       "zh-CN",
       [
-        /提供商.*2/,
+        /提供商.*3/,
         /Primary\$&\\u001b\[31m\\u0085\\u061c\\u200e\\u200f\\u202e\\u206a\\nLine（当前）/,
         /ID：.*provider-1/,
         /基础地址：.*https:\/\/primary\.example\/v1/,
@@ -664,7 +678,9 @@ test("provider list human output is bilingual, useful, active-aware, and termina
         /Backup-/,
         /ID：.*provider-2/,
         /测试：失败(?:\n|$)/,
-        /模型：.*覆盖.*backup-model/
+        /模型：.*覆盖.*backup-model/,
+        /Mapped provider/,
+        /模型：.*映射规则组.*mapping-openrouter/
       ]
     ]
   ];

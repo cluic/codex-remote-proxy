@@ -49,6 +49,7 @@ function providerProfile(id, name, baseUrl, overrides = {}) {
     extraHeaders: {},
     modelMode: "passthrough",
     modelOverride: null,
+    modelMappingGroupId: null,
     lastTestAt: null,
     lastTestStatus: "untested",
     lastTestCode: null,

@@ -182,7 +182,7 @@ function makeHarness(t, overrides = {}) {
     now: () => NOW
   });
   const credentials = new MemoryCredentials();
-  const activity = new MemoryActivity();
+  const activity = overrides.activityStore ?? new MemoryActivity();
   const workerManager = new FakeWorkerManager();
   const modelCache = overrides.modelCache ?? new MemoryModelCache();
   let credentialIndex = 0;
@@ -274,6 +274,141 @@ test("CRUD returns only public provider fields and removes inactive credentials"
   assert.equal(credentials.values.size, 0);
   assert.deepEqual(activity.events.map((event) => event.action), ["create", "update", "delete"]);
   assert.equal(JSON.stringify(activity.events).includes(secret), false);
+});
+
+test("model mapping groups project usage and resolve exact rules into Worker snapshots", async (t) => {
+  const { registry, activity, workerManager, service } = makeHarness(t);
+  const group = await service.createModelMappingGroup({
+    name: "OpenRouter",
+    rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5" }]
+  });
+  const provider = await service.createProvider({
+    ...providerInput(),
+    modelMappingGroupId: group.id
+  }, makeSecret("mapping"));
+  assert.deepEqual(service.listModelMappingGroups()[0].providerIds, [provider.id]);
+
+  registry.markTest(provider.id, { status: "passed" });
+  await service.activate(provider.id);
+  assert.deepEqual(workerManager.calls.at(-1)[1].settings.proxy.modelMappings, [
+    { sourceModel: "gpt-5", targetModel: "openai/gpt-5" }
+  ]);
+  await assert.rejects(
+    () => service.updateModelMappingGroup(group.id, {
+      name: "OpenRouter",
+      rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5.1" }]
+    }),
+    (error) => error?.code === "MODEL_MAPPING_POOL_RUNNING" && error.status === 409
+  );
+
+  await service.stopProxy();
+  const updated = await service.updateModelMappingGroup(group.id, {
+    name: "OpenRouter exact",
+    rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5.1" }]
+  });
+  assert.deepEqual(updated.providerIds, [provider.id]);
+  await assert.rejects(
+    () => service.deleteModelMappingGroup(group.id),
+    (error) => error?.code === "MODEL_MAPPING_IN_USE" && error.status === 409
+  );
+
+  registry.setActive(null);
+  await service.updateProvider(provider.id, { modelMappingGroupId: null });
+  assert.equal(await service.deleteModelMappingGroup(group.id).then(({ id }) => id), group.id);
+  assert.deepEqual(
+    activity.events
+      .filter(({ action }) => action.startsWith("model-mapping-"))
+      .map(({ action, result }) => ({ action, result })),
+    [
+      { action: "model-mapping-create", result: "success" },
+      { action: "model-mapping-update", result: "failed" },
+      { action: "model-mapping-update", result: "success" },
+      { action: "model-mapping-delete", result: "failed" },
+      { action: "model-mapping-delete", result: "success" }
+    ]
+  );
+});
+
+test("reports committed model mapping mutations as degraded without rolling them back", async (t) => {
+  await t.test("registry create", async (t) => {
+    const { registry, activity, service } = makeHarness(t);
+    const originalCreate = registry.createModelMappingGroup.bind(registry);
+    registry.createModelMappingGroup = (input) => {
+      originalCreate(input);
+      throw committedError("PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED");
+    };
+    await assert.rejects(
+      () => service.createModelMappingGroup({
+        name: "Committed create",
+        rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5" }]
+      }),
+      (error) => error?.code === "MODEL_MAPPING_CREATE_COMMITTED_DEGRADED"
+        && error.details.committed === true
+    );
+    assert.equal(registry.listModelMappingGroups().length, 1);
+    assert.equal(activity.events.at(-1).result, "degraded");
+  });
+
+  await t.test("registry update and delete", async (t) => {
+    const { registry, service } = makeHarness(t);
+    const group = await service.createModelMappingGroup({
+      name: "Mutable",
+      rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5" }]
+    });
+    const originalUpdate = registry.updateModelMappingGroup.bind(registry);
+    registry.updateModelMappingGroup = (id, input) => {
+      originalUpdate(id, input);
+      throw committedError("PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED");
+    };
+    await assert.rejects(
+      () => service.updateModelMappingGroup(group.id, {
+        name: "Mutable",
+        rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5.1" }]
+      }),
+      (error) => error?.code === "MODEL_MAPPING_UPDATE_COMMITTED_DEGRADED"
+        && error.details.committed === true
+    );
+    assert.equal(registry.getModelMappingGroup(group.id).rules[0].targetModel, "openai/gpt-5.1");
+
+    const originalDelete = registry.deleteModelMappingGroup.bind(registry);
+    registry.deleteModelMappingGroup = (id) => {
+      originalDelete(id);
+      throw committedError("PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED");
+    };
+    await assert.rejects(
+      () => service.deleteModelMappingGroup(group.id),
+      (error) => error?.code === "MODEL_MAPPING_DELETE_COMMITTED_DEGRADED"
+        && error.details.committed === true
+    );
+    assert.deepEqual(registry.listModelMappingGroups(), []);
+  });
+
+  await t.test("Activity failure after commit", async (t) => {
+    class OneShotFailingActivity extends MemoryActivity {
+      failed = false;
+
+      append(event) {
+        if (!this.failed && event.action === "model-mapping-create" && event.result === "success") {
+          this.failed = true;
+          throw new Error("injected activity failure");
+        }
+        super.append(event);
+      }
+    }
+    const activity = new OneShotFailingActivity();
+    const { registry, service } = makeHarness(t, { activityStore: activity });
+    await assert.rejects(
+      () => service.createModelMappingGroup({
+        name: "Activity committed",
+        rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5" }]
+      }),
+      (error) => error?.code === "MODEL_MAPPING_CREATE_COMMITTED_DEGRADED"
+        && error.details.committed === true
+    );
+    assert.equal(registry.listModelMappingGroups().length, 1);
+    assert.equal(activity.events.at(-1).result, "degraded");
+    assert.equal(activity.events.at(-1).errorCode, "MODEL_MAPPING_CREATE_COMMITTED_DEGRADED");
+  });
 });
 
 test("running provider pools reject stale-profile mutations and general updates cannot bypass weight routing", async (t) => {
@@ -1215,7 +1350,8 @@ test("activate persists then confirms increasing generations and rolls back fail
     overrideAuthorization: true,
     requestIdHeader: "x-client-request-id",
     modelMode: "passthrough",
-    modelOverride: null
+    modelOverride: null,
+    modelMappings: []
   });
   assert.deepEqual(healthCalls, [[1, 1]]);
 

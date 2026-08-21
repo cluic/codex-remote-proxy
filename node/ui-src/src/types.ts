@@ -1,6 +1,6 @@
 export type Locale = "en" | "zh-CN";
 
-export type Route = "overview" | "providers" | "forwarding" | "activity" | "system" | "setup";
+export type Route = "overview" | "providers" | "model-mappings" | "forwarding" | "activity" | "system" | "setup";
 
 export type AccessMode = "initializing" | "writable" | "read-only" | "terminal" | "stopped";
 
@@ -16,6 +16,7 @@ export interface Provider {
   weight: number;
   modelMode: "passthrough" | "override";
   modelOverride: string | null;
+  modelMappingGroupId: string | null;
   lastTestAt: string | null;
   lastTestStatus: TestStatus;
   lastTestCode: string | null;
@@ -33,6 +34,26 @@ export interface ProviderInput {
   weight: number;
   modelMode: "passthrough" | "override";
   modelOverride: string | null;
+  modelMappingGroupId: string | null;
+}
+
+export interface ModelMappingRule {
+  sourceModel: string;
+  targetModel: string;
+}
+
+export interface ModelMappingGroup {
+  id: string;
+  name: string;
+  rules: ModelMappingRule[];
+  providerIds: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface ModelMappingGroupInput {
+  name: string;
+  rules: ModelMappingRule[];
 }
 
 export interface WorkerChildState {
@@ -135,7 +156,7 @@ export interface ActivityPageData {
   page: { limit: number; offset: number; nextOffset: number | null };
 }
 
-export type ForwardingOutcome = "all" | "success" | "rejected" | "error";
+export type ForwardingOutcome = "all" | "success" | "rejected" | "aborted" | "error";
 
 export interface ForwardingRecord {
   id: number;
@@ -153,6 +174,8 @@ export interface ForwardingRecord {
   responseBytes: number;
   stream: boolean;
   upstreamRequestId: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
   errorType: string | null;
   errorMessage: string | null;
   outcome: Exclude<ForwardingOutcome, "all">;
@@ -165,7 +188,7 @@ export interface ForwardingRecordsPageData {
   storageState: "missing" | "ready";
   records: ForwardingRecord[];
   page: { limit: number; nextBefore: number | null };
-  summary: { total: number; success: number; rejected: number; error: number };
+  summary: { total: number; success: number; rejected: number; aborted: number; error: number };
 }
 
 export interface ForwardingRecordsQuery {
@@ -279,6 +302,7 @@ export interface MetricsOverview {
 export interface WorkspaceData {
   status: StatusResponse;
   providers: Provider[];
+  modelMappingGroups: ModelMappingGroup[];
   settings: Settings;
 }
 

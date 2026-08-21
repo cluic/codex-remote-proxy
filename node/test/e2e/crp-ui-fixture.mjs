@@ -286,6 +286,7 @@ function publicProvider(input = {}, index = 0) {
     weight: input.weight ?? 100,
     modelMode: input.modelMode ?? "passthrough",
     modelOverride: input.modelOverride ?? null,
+    modelMappingGroupId: input.modelMappingGroupId ?? null,
     lastTestAt: Object.hasOwn(input, "lastTestAt") ? input.lastTestAt : now,
     lastTestStatus: input.lastTestStatus ?? "passed",
     lastTestCode: Object.hasOwn(input, "lastTestCode") ? input.lastTestCode : null,
@@ -313,6 +314,7 @@ function createServices({ upstream }) {
   const modelCatalogs = new Map();
   const state = {
     providers: [],
+    modelMappingGroups: [],
     activeProviderId: null,
     generation: 0,
     worker: stoppedWorker(),
@@ -326,6 +328,31 @@ function createServices({ upstream }) {
     captureEnabled: true,
     autoStartEnabled: false,
     forwardingRecords: [
+      {
+        id: 4,
+        startedAt: "2026-07-13T08:43:00.000Z",
+        completedAt: "2026-07-13T08:43:00.360Z",
+        durationMs: 360,
+        requestId: "req-fixture-4",
+        sessionId: null,
+        threadId: "thread-fixture",
+        method: "POST",
+        incomingUrl: "/responses",
+        targetUrl: "https://fallback.example/v1/responses",
+        requestBytes: 820,
+        responseStatus: 200,
+        responseBytes: 1_420,
+        stream: true,
+        upstreamRequestId: "fallback-upstream-4",
+        inputTokens: null,
+        outputTokens: null,
+        errorType: "proxy_client_abort",
+        errorMessage: "Client closed connection",
+        outcome: "aborted",
+        providerId: "provider-2",
+        providerName: "Fallback API",
+        route: "custom"
+      },
       {
         id: 3,
         startedAt: "2026-07-13T08:42:00.000Z",
@@ -342,6 +369,8 @@ function createServices({ upstream }) {
         responseBytes: 18_420,
         stream: true,
         upstreamRequestId: "chatgpt-upstream-3",
+        inputTokens: 128,
+        outputTokens: 42,
         errorType: null,
         errorMessage: null,
         outcome: "success",
@@ -365,6 +394,8 @@ function createServices({ upstream }) {
         responseBytes: 210,
         stream: false,
         upstreamRequestId: null,
+        inputTokens: null,
+        outputTokens: null,
         errorType: null,
         errorMessage: null,
         outcome: "rejected",
@@ -388,6 +419,8 @@ function createServices({ upstream }) {
         responseBytes: 96,
         stream: false,
         upstreamRequestId: null,
+        inputTokens: null,
+        outputTokens: null,
         errorType: "proxy_upstream_error",
         errorMessage: "connection refused",
         outcome: "error",
@@ -473,6 +506,63 @@ function createServices({ upstream }) {
       calls.push({ operation: "listProviders" });
       return structuredClone(state.providers);
     },
+    listModelMappingGroups() {
+      calls.push({ operation: "listModelMappingGroups" });
+      return state.modelMappingGroups.map((group) => ({
+        ...structuredClone(group),
+        providerIds: state.providers
+          .filter((provider) => provider.modelMappingGroupId === group.id)
+          .map((provider) => provider.id)
+      }));
+    },
+    async createModelMappingGroup(input) {
+      rejectNextMutation("createModelMappingGroup");
+      const now = "2026-07-13T08:32:00.000Z";
+      const group = {
+        id: `mapping-${state.modelMappingGroups.length + 1}`,
+        name: input.name,
+        rules: structuredClone(input.rules),
+        createdAt: now,
+        updatedAt: now
+      };
+      state.modelMappingGroups.push(group);
+      calls.push({ operation: "createModelMappingGroup", input: structuredClone(input) });
+      addActivity("settings", "model-mapping-create", null);
+      return { ...structuredClone(group), providerIds: [] };
+    },
+    async updateModelMappingGroup(id, input) {
+      rejectNextMutation("updateModelMappingGroup");
+      const group = state.modelMappingGroups.find((item) => item.id === id);
+      if (!group) throw new CrpError("MODEL_MAPPING_NOT_FOUND", "Missing mapping.", "Refresh.", { status: 404 });
+      group.name = input.name;
+      group.rules = structuredClone(input.rules);
+      group.updatedAt = "2026-07-13T08:33:00.000Z";
+      calls.push({ operation: "updateModelMappingGroup", id, input: structuredClone(input) });
+      addActivity("settings", "model-mapping-update", null);
+      return {
+        ...structuredClone(group),
+        providerIds: state.providers
+          .filter((provider) => provider.modelMappingGroupId === id)
+          .map((provider) => provider.id)
+      };
+    },
+    async deleteModelMappingGroup(id) {
+      rejectNextMutation("deleteModelMappingGroup");
+      if (state.providers.some((provider) => provider.modelMappingGroupId === id)) {
+        throw new CrpError(
+          "MODEL_MAPPING_IN_USE",
+          "Mapping group in use.",
+          "Remove it from providers.",
+          { status: 409 }
+        );
+      }
+      const index = state.modelMappingGroups.findIndex((item) => item.id === id);
+      if (index === -1) throw new CrpError("MODEL_MAPPING_NOT_FOUND", "Missing mapping.", "Refresh.", { status: 404 });
+      const [group] = state.modelMappingGroups.splice(index, 1);
+      calls.push({ operation: "deleteModelMappingGroup", id });
+      addActivity("settings", "model-mapping-delete", null);
+      return { ...structuredClone(group), providerIds: [] };
+    },
     async createProvider(input, credential) {
       rejectNextMutation("createProvider");
       assert.equal(typeof credential, "string");
@@ -522,7 +612,8 @@ function createServices({ upstream }) {
         "authScheme",
         "extraHeaders",
         "modelMode",
-        "modelOverride"
+        "modelOverride",
+        "modelMappingGroupId"
       ];
       const operationalChange = replacementCredential !== undefined
         || invalidatingFields.some((field) => JSON.stringify(provider[field]) !== JSON.stringify(patch[field]));
@@ -846,6 +937,7 @@ function createServices({ upstream }) {
             total: state.forwardingRecords.length,
             success: state.forwardingRecords.filter((record) => record.outcome === "success").length,
             rejected: state.forwardingRecords.filter((record) => record.outcome === "rejected").length,
+            aborted: state.forwardingRecords.filter((record) => record.outcome === "aborted").length,
             error: state.forwardingRecords.filter((record) => record.outcome === "error").length
           }
         };
@@ -1328,7 +1420,10 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
         const templates = [
           { category: "proxy", action: "start" },
           { category: "provider", action: "test" },
-          { category: "migration", action: "legacy-config" },
+          { category: "settings", action: "capture" },
+          { category: "settings", action: "autostart" },
+          { category: "migration", action: "provider-registry-schema-4" },
+          { category: "provider", action: "weight" },
           { category: "proxy", action: "stop" },
           { category: "proxy", action: "restart" }
         ];

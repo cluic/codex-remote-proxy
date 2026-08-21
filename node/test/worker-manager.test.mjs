@@ -20,7 +20,8 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
     overrideAuthorization: true,
     requestIdHeader: "x-client-request-id",
     modelMode: "passthrough",
-    modelOverride: null
+    modelOverride: null,
+    modelMappings: []
   };
   return {
     ...(providerId === null ? {} : { providerId }),

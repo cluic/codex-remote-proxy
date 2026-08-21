@@ -17,6 +17,7 @@ const PUBLIC_PROVIDER_FIELDS = [
   "weight",
   "modelMode",
   "modelOverride",
+  "modelMappingGroupId",
   "lastTestAt",
   "lastTestStatus",
   "lastTestCode",
@@ -249,6 +250,24 @@ function projectProvider(provider) {
     ? provider.weight
     : 100;
   return projected;
+}
+
+function projectModelMappingGroup(group) {
+  return {
+    id: projectMetricText(group?.id, 128),
+    name: projectMetricText(group?.name, 100),
+    rules: Array.isArray(group?.rules)
+      ? group.rules.slice(0, 50).map((rule) => ({
+          sourceModel: projectMetricText(rule?.sourceModel, 256),
+          targetModel: projectMetricText(rule?.targetModel, 256)
+        })).filter((rule) => rule.sourceModel !== null && rule.targetModel !== null)
+      : [],
+    providerIds: Array.isArray(group?.providerIds)
+      ? group.providerIds.slice(0, 100).map((id) => projectMetricText(id, 128)).filter(Boolean)
+      : [],
+    createdAt: projectMetricTimestamp(group?.createdAt),
+    updatedAt: projectMetricTimestamp(group?.updatedAt)
+  };
 }
 
 function projectWorker(worker) {
@@ -554,7 +573,7 @@ function projectMetricsOverview(metrics, requestedWindow) {
 
 function projectForwardingRecord(record) {
   const id = Number.isSafeInteger(record?.id) && record.id > 0 ? record.id : null;
-  const outcome = ["success", "rejected", "error"].includes(record?.outcome)
+  const outcome = ["success", "rejected", "aborted", "error"].includes(record?.outcome)
     ? record.outcome
     : "error";
   const route = ["account", "custom", "unknown"].includes(record?.route)
@@ -565,6 +584,11 @@ function projectForwardingRecord(record) {
     && value <= 1_000_000_000_000
     ? value
     : 0;
+  const boundedTokenCount = (value) => Number.isSafeInteger(value)
+    && value >= 0
+    && value <= 100_000_000
+    ? value
+    : null;
   return {
     id,
     startedAt: projectMetricTimestamp(record?.startedAt),
@@ -593,6 +617,8 @@ function projectForwardingRecord(record) {
     responseBytes: boundedCount(record?.responseBytes),
     stream: record?.stream === true,
     upstreamRequestId: projectMetricText(record?.upstreamRequestId, 256),
+    inputTokens: boundedTokenCount(record?.inputTokens),
+    outputTokens: boundedTokenCount(record?.outputTokens),
     errorType: projectMetricText(record?.errorType, 256),
     errorMessage: projectMetricText(record?.errorMessage, 512),
     outcome,
@@ -628,6 +654,7 @@ function projectForwardingRecordsPage(result, requestedLimit) {
       total: summaryCount(result?.summary?.total),
       success: summaryCount(result?.summary?.success),
       rejected: summaryCount(result?.summary?.rejected),
+      aborted: summaryCount(result?.summary?.aborted),
       error: summaryCount(result?.summary?.error)
     }
   };
@@ -723,7 +750,7 @@ function parseProviderRoute(pathname) {
   } catch {
     return null;
   }
-  if (id.length === 0 || id.length > 128 || /[\\/\u0000-\u001f\u007f]/.test(id)) return null;
+  if (id.length === 0 || id.length > 128 || /[\\/\u0000-\u001f\u007f-\u009f]/.test(id)) return null;
   const action = rawParts[1] ?? null;
   if (action !== null
     && action !== "test"
@@ -733,6 +760,21 @@ function parseProviderRoute(pathname) {
     return null;
   }
   return { id, action };
+}
+
+function parseModelMappingRoute(pathname) {
+  const prefix = `${API_PREFIX}/model-mappings/`;
+  if (!pathname.startsWith(prefix)) return null;
+  const rawId = pathname.slice(prefix.length);
+  if (rawId.length === 0 || rawId.includes("/")) return null;
+  let id;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    return null;
+  }
+  if (id.length === 0 || id.length > 128 || /[\\/\u0000-\u001f\u007f]/.test(id)) return null;
+  return { id };
 }
 
 function providerNotFound() {
@@ -752,6 +794,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/account/refresh`, ["POST"]],
     [`${API_PREFIX}/metrics/overview`, ["GET"]],
     [`${API_PREFIX}/forwarding-records`, ["GET"]],
+    [`${API_PREFIX}/model-mappings`, ["GET", "POST"]],
     [`${API_PREFIX}/providers`, ["GET", "POST"]],
     [`${API_PREFIX}/proxy/start`, ["POST"]],
     [`${API_PREFIX}/proxy/stop`, ["POST"]],
@@ -763,6 +806,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/diagnostics/export`, ["POST"]]
   ]);
   if (exact.has(pathname)) return exact.get(pathname);
+  if (parseModelMappingRoute(pathname)) return ["GET", "PATCH", "DELETE"];
   const providerRoute = parseProviderRoute(pathname);
   if (!providerRoute) return null;
   if (providerRoute.action === null) return ["GET", "PATCH", "DELETE"];
@@ -1064,7 +1108,7 @@ export function createAdminServer({
       const outcomeValues = url.searchParams.getAll("outcome");
       if (outcomeValues.length > 1
         || (outcomeValues.length === 1
-          && !["all", "success", "rejected", "error"].includes(outcomeValues[0]))) {
+          && !["all", "success", "rejected", "aborted", "error"].includes(outcomeValues[0]))) {
         throw bodyError("API_BODY_INVALID");
       }
       const searchValues = url.searchParams.getAll("search");
@@ -1088,6 +1132,57 @@ export function createAdminServer({
         search: searchValues[0] ?? ""
       });
       sendJson(response, 200, projectForwardingRecordsPage(result, limit));
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/model-mappings` && request.method === "GET") {
+      const groups = providerService.listModelMappingGroups();
+      sendJson(response, 200, {
+        modelMappingGroups: groups.map(projectModelMappingGroup)
+      });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/model-mappings` && request.method === "POST") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["mappingGroup"],
+        required: ["mappingGroup"]
+      });
+      if (!isPlainObject(body.mappingGroup)) throw bodyError("API_BODY_INVALID");
+      const group = await providerService.createModelMappingGroup(body.mappingGroup);
+      sendJson(response, 201, { modelMappingGroup: projectModelMappingGroup(group) });
+      return;
+    }
+    const modelMappingRoute = parseModelMappingRoute(url.pathname);
+    if (modelMappingRoute && request.method === "GET") {
+      const group = providerService.listModelMappingGroups()
+        .find((candidate) => candidate.id === modelMappingRoute.id);
+      if (!group) {
+        throw new CrpError(
+          "MODEL_MAPPING_NOT_FOUND",
+          "The model mapping group does not exist.",
+          "Refresh model mappings and try again.",
+          { status: 404 }
+        );
+      }
+      sendJson(response, 200, { modelMappingGroup: projectModelMappingGroup(group) });
+      return;
+    }
+    if (modelMappingRoute && request.method === "PATCH") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["mappingGroup"],
+        required: ["mappingGroup"]
+      });
+      if (!isPlainObject(body.mappingGroup)) throw bodyError("API_BODY_INVALID");
+      const group = await providerService.updateModelMappingGroup(
+        modelMappingRoute.id,
+        body.mappingGroup
+      );
+      sendJson(response, 200, { modelMappingGroup: projectModelMappingGroup(group) });
+      return;
+    }
+    if (modelMappingRoute && request.method === "DELETE") {
+      await requireEmptyBody(request, maxBodyBytes);
+      const group = await providerService.deleteModelMappingGroup(modelMappingRoute.id);
+      sendJson(response, 200, { modelMappingGroup: projectModelMappingGroup(group) });
       return;
     }
     if (url.pathname === `${API_PREFIX}/providers` && request.method === "GET") {

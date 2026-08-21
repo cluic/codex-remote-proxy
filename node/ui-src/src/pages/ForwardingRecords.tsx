@@ -44,9 +44,10 @@ type ForwardingRecordsProps = {
   onCaptureChange: (enabled: boolean) => Promise<boolean>;
 };
 
-function outcomeTone(outcome: ForwardingRecord["outcome"]): "success" | "warning" | "danger" {
+function outcomeTone(outcome: ForwardingRecord["outcome"]): "success" | "warning" | "danger" | "neutral" {
   if (outcome === "success") return "success";
   if (outcome === "rejected") return "warning";
+  if (outcome === "aborted") return "neutral";
   return "danger";
 }
 
@@ -58,6 +59,11 @@ function byteLabel(locale: Locale, bytes: number): string {
 
 function displayPath(record: ForwardingRecord): string {
   return record.incomingUrl ?? record.targetUrl ?? "-";
+}
+
+function tokenLabel(locale: Locale, input: number | null, output: number | null): string {
+  if (input === null || output === null) return "-";
+  return formatNumber(locale, input + output);
 }
 
 function RecordDetails({
@@ -83,6 +89,11 @@ function RecordDetails({
     [t("forwarding.upstreamRequestId"), record.upstreamRequestId ?? "-"],
     [t("forwarding.sessionId"), record.sessionId ?? "-"],
     [t("forwarding.threadId"), record.threadId ?? "-"],
+    [t("forwarding.inputTokens"), record.inputTokens === null ? t("forwarding.notObserved") : formatNumber(locale, record.inputTokens)],
+    [t("forwarding.outputTokens"), record.outputTokens === null ? t("forwarding.notObserved") : formatNumber(locale, record.outputTokens)],
+    [t("forwarding.totalTokens"), record.inputTokens === null || record.outputTokens === null
+      ? t("forwarding.notObserved")
+      : formatNumber(locale, record.inputTokens + record.outputTokens)],
     [t("forwarding.transfer"), `${byteLabel(locale, record.requestBytes)} → ${byteLabel(locale, record.responseBytes)}`],
     [t("forwarding.stream"), record.stream ? t("common.yes") : t("common.no")]
   ] as const;
@@ -209,8 +220,8 @@ export function ForwardingRecordsPage({
   };
 
   const records = data?.records ?? [];
-  const summary = data?.summary ?? { total: 0, success: 0, rejected: 0, error: 0 };
-  const outcomeOptions: ForwardingOutcome[] = ["all", "success", "rejected", "error"];
+  const summary = data?.summary ?? { total: 0, success: 0, rejected: 0, aborted: 0, error: 0 };
+  const outcomeOptions: ForwardingOutcome[] = ["all", "success", "rejected", "aborted", "error"];
 
   return (
     <div className="page-stack forwarding-page" data-testid="page-forwarding-records">
@@ -240,6 +251,7 @@ export function ForwardingRecordsPage({
             <span><strong>{formatNumber(locale, summary.total)}</strong>{t("forwarding.total")}</span>
             <span className="summary-success"><strong>{formatNumber(locale, summary.success)}</strong>{t("forwarding.outcome.success")}</span>
             <span className="summary-rejected"><strong>{formatNumber(locale, summary.rejected)}</strong>{t("forwarding.outcome.rejected")}</span>
+            <span className="summary-aborted"><strong>{formatNumber(locale, summary.aborted)}</strong>{t("forwarding.outcome.aborted")}</span>
             <span className="summary-error"><strong>{formatNumber(locale, summary.error)}</strong>{t("forwarding.outcome.error")}</span>
           </div>
           <IconButton
@@ -296,6 +308,7 @@ export function ForwardingRecordsPage({
                     <th>{t("forwarding.provider")}</th>
                     <th>{t("forwarding.result")}</th>
                     <th>{t("forwarding.duration")}</th>
+                    <th>{t("forwarding.tokens")}</th>
                     <th>{t("forwarding.transfer")}</th>
                   </tr>
                 </thead>
@@ -329,6 +342,10 @@ export function ForwardingRecordsPage({
                         </span>
                       </td>
                       <td><span className="record-duration"><Clock3 aria-hidden="true" />{formatDuration(locale, record.durationMs)}</span></td>
+                      <td><span className="record-tokens" title={t("forwarding.tokensBreakdown", {
+                        input: record.inputTokens ?? "-",
+                        output: record.outputTokens ?? "-"
+                      })}>{tokenLabel(locale, record.inputTokens, record.outputTokens)}</span></td>
                       <td><span className="record-transfer">{byteLabel(locale, record.requestBytes)}<ArrowRight aria-hidden="true" />{byteLabel(locale, record.responseBytes)}</span></td>
                     </tr>
                   ))}

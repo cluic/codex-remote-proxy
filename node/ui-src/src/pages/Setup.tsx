@@ -155,7 +155,8 @@ export function SetupPage({
       extraHeaders,
       weight: 100,
       modelMode,
-      modelOverride: modelMode === "override" ? modelOverride.trim() : null
+      modelOverride: modelMode === "override" ? modelOverride.trim() : null,
+      modelMappingGroupId: null
     }, secret);
     if (created) setSelectedId(created.id);
   };

@@ -87,6 +87,7 @@ function makeSettings({
   requestIdHeader = "x-client-request-id",
   modelMode = "passthrough",
   modelOverride = null,
+  modelMappings = [],
   logLevel = "info",
   captureEnabled = true,
   providers = null,
@@ -111,7 +112,8 @@ function makeSettings({
     overrideAuthorization: true,
     requestIdHeader,
     modelMode,
-    modelOverride
+    modelOverride,
+    modelMappings
   };
   const providerPool = providers ?? [{
     id: "provider-primary",
@@ -150,7 +152,8 @@ function providerCandidate({
   apiKey,
   timeoutMs = 5_000,
   modelMode = "passthrough",
-  modelOverride = null
+  modelOverride = null,
+  modelMappings = []
 }) {
   return {
     id,
@@ -169,7 +172,8 @@ function providerCandidate({
       overrideAuthorization: true,
       requestIdHeader: "x-client-request-id",
       modelMode,
-      modelOverride
+      modelOverride,
+      modelMappings
     }
   };
 }
@@ -436,6 +440,10 @@ test("account-first sends eligible Responses traffic to the fixed Codex route", 
     apiKey: "custom-token-sentinel",
     authHeader: "x-provider-auth",
     extraHeaders: { "x-provider-extra": "custom-extra-sentinel" },
+    modelMappings: [{
+      sourceModel: "client-account-model",
+      targetModel: "must-not-rewrite-account-model"
+    }],
     captureEnabled: false,
     routingMode: "account_first",
     accountState: {
@@ -946,7 +954,7 @@ test("weighted custom routing safely replays a pre-connect failure", async (t) =
   ]);
 });
 
-test("weighted cooldown applies each selected provider model policy and settles its metadata", async (t) => {
+test("weighted cooldown reapplies each provider override or exact mapping to the original request", async (t) => {
   const primaryBodies = [];
   const fallbackBodies = [];
   const primary = http.createServer((req, res) => {
@@ -983,11 +991,15 @@ test("weighted cooldown applies each selected provider model policy and settles 
       modelOverride: "provider-override-model"
     }),
     providerCandidate({
-      id: "passthrough-fallback",
-      name: "Passthrough fallback",
+      id: "mapped-fallback",
+      name: "Mapped fallback",
       weight: 100,
       baseUrl: `http://127.0.0.1:${fallbackPort}`,
-      apiKey: "passthrough-fallback-secret"
+      apiKey: "mapped-fallback-secret",
+      modelMappings: [{
+        sourceModel: "client-model",
+        targetModel: "openrouter/client-model"
+      }]
     })
   ];
   const settings = makeSettings({
@@ -1023,10 +1035,10 @@ test("weighted cooldown applies each selected provider model policy and settles 
 
   assert.deepEqual(statuses, [503, 200]);
   assert.deepEqual(primaryBodies, [{ ...first, model: "provider-override-model" }]);
-  assert.deepEqual(fallbackBodies, [second]);
+  assert.deepEqual(fallbackBodies, [{ ...second, model: "openrouter/client-model" }]);
   assert.deepEqual(metrics.map(({ providerId, model, result }) => ({ providerId, model, result })), [
     { providerId: "override-primary", model: "provider-override-model", result: "upstreamError" },
-    { providerId: "passthrough-fallback", model: "client-model", result: "success" }
+    { providerId: "mapped-fallback", model: "openrouter/client-model", result: "success" }
   ]);
   assert.equal(captureManager.records.length, 2);
   assert.deepEqual(captureManager.records.map((record) => record.targetUrl), [
@@ -1035,8 +1047,82 @@ test("weighted cooldown applies each selected provider model policy and settles 
   ]);
   assert.deepEqual(
     captureManager.records.map((record) => JSON.parse(record.requestBody.toString("utf8"))),
-    [{ ...first, model: "provider-override-model" }, second]
+    [
+      { ...first, model: "provider-override-model" },
+      { ...second, model: "openrouter/client-model" }
+    ]
   );
+});
+
+test("exact model mappings rewrite compressed matches and preserve unmatched bytes", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      observed.push({
+        contentEncoding: req.headers["content-encoding"],
+        body: Buffer.concat(chunks)
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    modelMappings: [{
+      sourceModel: "client-model",
+      targetModel: "openrouter/client-model"
+    }]
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 12, settings });
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    recordMetric: (observation) => metrics.push(structuredClone(observation)),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const matched = zlib.gzipSync(Buffer.from(JSON.stringify({
+    model: "client-model",
+    input: "mapped"
+  })));
+  const unmatched = zlib.gzipSync(Buffer.from(JSON.stringify({
+    model: "other-model",
+    input: "passthrough"
+  })));
+  for (const body of [matched, unmatched]) {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "content-encoding": "gzip",
+        "content-length": String(body.length)
+      },
+      body
+    });
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(observed.length, 2);
+  assert.equal(observed[0].contentEncoding, "gzip");
+  assert.deepEqual(JSON.parse(zlib.gunzipSync(observed[0].body).toString("utf8")), {
+    model: "openrouter/client-model",
+    input: "mapped"
+  });
+  assert.deepEqual(observed[1].body, unmatched);
+  assert.deepEqual(metrics.map(({ model, result }) => ({ model, result })), [
+    { model: "openrouter/client-model", result: "success" },
+    { model: "other-model", result: "success" }
+  ]);
 });
 
 test("custom routing does not replay non-Responses requests or non-retryable rejections", async (t) => {
@@ -1990,7 +2076,7 @@ test("in-flight request keeps A target, credential, headers, capture, and logs w
   ]);
 });
 
-test("metrics extract bounded JSON and SSE usage while screening credential-bearing model ids", async (t) => {
+test("metrics and Capture detect headerless SSE usage while screening credential-bearing model ids", async (t) => {
   const secret = "metrics-active-credential-sentinel";
   const upstream = http.createServer((req, res) => {
     const chunks = [];
@@ -1998,7 +2084,6 @@ test("metrics extract bounded JSON and SSE usage while screening credential-bear
     req.on("end", () => {
       const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (payload.stream === true) {
-        res.setHeader("content-type", "text/event-stream");
         res.end(`data: ${JSON.stringify({
           type: "response.completed",
           response: { usage: { input_tokens: 21, output_tokens: 8 } }
@@ -2023,9 +2108,10 @@ test("metrics extract bounded JSON and SSE usage while screening credential-bear
   const source = new RuntimeSettingsSource();
   source.apply({ generation: 9, settings });
   const metrics = [];
+  const captureManager = createMemoryCaptureManager();
   const proxy = createServer(settings, {
     settingsSource: source,
-    captureManager: createMemoryCaptureManager(),
+    captureManager,
     recordMetric(observation) {
       metrics.push(structuredClone(observation));
     },
@@ -2076,6 +2162,9 @@ test("metrics extract bounded JSON and SSE usage while screening credential-bear
   assert.equal(serialized.includes("url"), false);
   assert.equal(serialized.includes("headers"), false);
   assert.equal(serialized.includes("body"), false);
+  const streamCapture = captureManager.records.find((record) => record.inputTokens === 21);
+  assert.equal(streamCapture?.isStream, true);
+  assert.equal(streamCapture?.outputTokens, 8);
   assert.deepEqual(metrics.map(({ generation, result, model, inputTokens, outputTokens }) => ({
     generation,
     result,
@@ -2894,6 +2983,69 @@ test("passthrough streams request and multi-megabyte SSE response before either 
     }
   );
   assert.equal(metrics.length, 1);
+});
+
+test("client close after a headerless response.completed remains a successful captured request", async (t) => {
+  const upstreamClosed = createSignal();
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.on("close", () => upstreamClosed.resolve());
+      res.write(`data: ${JSON.stringify({
+        type: "response.completed",
+        response: { usage: { input_tokens: 67, output_tokens: 24 } }
+      })}\n\n`);
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  const settings = makeSettings({ baseUrl: `http://127.0.0.1:${upstreamPort}` });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 16, settings });
+  const captureManager = createMemoryCaptureManager();
+  const metricSignal = createSignal();
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    recordMetric(observation) {
+      const clone = structuredClone(observation);
+      metrics.push(clone);
+      metricSignal.resolve(clone);
+    },
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  await new Promise((resolvePromise, rejectPromise) => {
+    const request = http.request({
+      host: "127.0.0.1",
+      port: proxyPort,
+      path: "/responses",
+      method: "POST",
+      headers: { "content-type": "application/json" }
+    }, (response) => {
+      response.once("data", () => {
+        response.destroy();
+        resolvePromise();
+      });
+    });
+    request.on("error", rejectPromise);
+    request.end(JSON.stringify({ model: "completed-model", stream: true }));
+  });
+  await withDeadline(upstreamClosed.promise, "completed upstream response was not released");
+  const metric = await withDeadline(metricSignal.promise, "completed metric was not recorded");
+
+  assert.equal(metric.result, "success");
+  assert.equal(metric.inputTokens, 67);
+  assert.equal(metric.outputTokens, 24);
+  assert.equal(metrics.length, 1);
+  assert.equal(captureManager.records.length, 1);
+  assert.equal(captureManager.records[0].errorType, null);
+  assert.equal(captureManager.records[0].isStream, true);
+  assert.equal(captureManager.records[0].inputTokens, 67);
+  assert.equal(captureManager.records[0].outputTokens, 24);
 });
 
 test("downstream abort promptly cancels upstream work and records one clientAbort", async (t) => {

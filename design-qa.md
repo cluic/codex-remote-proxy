@@ -67,4 +67,12 @@ The start-at-login setting exposes its platform/user-level boundary directly, an
 
 - P3: Real-world accounts with several simultaneous quota windows may benefit from a later density pass after representative production snapshots are available; the current auto-fit layout already remains functional.
 
+## Model Mappings Page QA
+
+- Browser-rendered implementation: `output/playwright/task11/model-mappings-creates-ass-8fe67-n-exact-model-mapping-group-chromium/model-mappings-1440x900.png`
+- Verified state: English writable session, stopped Worker, one `OpenRouter` exact-match group assigned to `Provider Beta`, one `gpt-5` → `openai/gpt-5.1` rule, and deletion disabled while assigned.
+- The page keeps rule-group navigation narrow and gives the editable mapping table the primary workspace. Assignment count, named Provider tag, unmatched passthrough behavior, and exact-match semantics remain visible without opening a dialog.
+- The management flow creates a group, assigns it through Provider settings, edits its target, and prevents deletion while referenced. The final screenshot has no overlay, clipping, overlap, or horizontal overflow at 1440 × 900.
+- Full Chromium E2E matrix: 52/52 passed across English/Chinese and 1440/1024/390 layout checks.
+
 final result: passed

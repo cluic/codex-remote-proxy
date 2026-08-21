@@ -147,9 +147,10 @@ function scrubDocument(document) {
 
 function registryBytesForProvider(provider) {
   return Buffer.from(`${JSON.stringify({
-    schemaVersion: 4,
+    schemaVersion: 5,
     activeProviderId: null,
     providers: [provider],
+    modelMappingGroups: [],
     settings: {
       proxyHost: "127.0.0.1",
       proxyPort: 15100,
@@ -487,7 +488,11 @@ function validateSchema2Registry(document) {
   const names = new Set();
   try {
     for (const provider of document.providers) {
-      validateStoredProvider({ ...provider, weight: DEFAULT_PROVIDER_WEIGHT });
+      validateStoredProvider({
+        ...provider,
+        weight: DEFAULT_PROVIDER_WEIGHT,
+        modelMappingGroupId: null
+      });
       const normalizedName = provider.name.toLowerCase();
       if (ids.has(provider.id) || names.has(normalizedName)) {
         throw new Error("duplicate provider");
@@ -535,7 +540,59 @@ function validateSchema3Registry(document) {
   const names = new Set();
   try {
     for (const provider of document.providers) {
-      validateStoredProvider({ ...provider, weight: DEFAULT_PROVIDER_WEIGHT });
+      validateStoredProvider({
+        ...provider,
+        weight: DEFAULT_PROVIDER_WEIGHT,
+        modelMappingGroupId: null
+      });
+      const normalizedName = provider.name.toLowerCase();
+      if (ids.has(provider.id) || names.has(normalizedName)) {
+        throw new Error("duplicate provider");
+      }
+      ids.add(provider.id);
+      names.add(normalizedName);
+    }
+  } catch (error) {
+    throw migrationError("MIGRATION_INPUT_INVALID", error);
+  }
+  if (document.activeProviderId !== null && !ids.has(document.activeProviderId)) {
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  }
+}
+
+function validateSchema4Registry(document) {
+  const documentFields = new Set(["schemaVersion", "activeProviderId", "providers", "settings"]);
+  const settingsFields = new Set([
+    "proxyHost",
+    "proxyPort",
+    "adminHost",
+    "adminPort",
+    "captureEnabled",
+    "routingMode"
+  ]);
+  if (document.schemaVersion !== 4
+    || Object.keys(document).length !== documentFields.size
+    || Object.keys(document).some((key) => !documentFields.has(key))
+    || !Array.isArray(document.providers)
+    || document.settings === null
+    || typeof document.settings !== "object"
+    || Array.isArray(document.settings)
+    || Object.keys(document.settings).length !== settingsFields.size
+    || Object.keys(document.settings).some((key) => !settingsFields.has(key))
+    || document.settings.proxyHost !== "127.0.0.1"
+    || document.settings.proxyPort !== 15100
+    || document.settings.adminHost !== "127.0.0.1"
+    || document.settings.adminPort !== 15101
+    || typeof document.settings.captureEnabled !== "boolean"
+    || !["custom_only", "account_first"].includes(document.settings.routingMode)
+    || (document.activeProviderId !== null && typeof document.activeProviderId !== "string")) {
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  }
+  const ids = new Set();
+  const names = new Set();
+  try {
+    for (const provider of document.providers) {
+      validateStoredProvider({ ...provider, modelMappingGroupId: null });
       const normalizedName = provider.name.toLowerCase();
       if (ids.has(provider.id) || names.has(normalizedName)) {
         throw new Error("duplicate provider");
@@ -563,7 +620,11 @@ function inspectCurrentRegistry(path, fileOperations) {
     validateSchema3Registry(document);
     return { kind: "schema-3", source: { ...source, document } };
   }
-  if (document.schemaVersion !== 4) throw migrationError("MIGRATION_INPUT_INVALID");
+  if (document.schemaVersion === 4) {
+    validateSchema4Registry(document);
+    return { kind: "schema-4", source: { ...source, document } };
+  }
+  if (document.schemaVersion !== 5) throw migrationError("MIGRATION_INPUT_INVALID");
   new ProviderRegistry({ path, fileOperations });
   const after = lstatRegular(path, fileOperations);
   if (!sameIdentity(after.identity, source.identity)) {
@@ -640,16 +701,18 @@ export async function migrateLegacyConfiguration({
       completed = true;
       return { migrated: false, reason: "already-current" };
     }
-    if (registryInspection.kind === "schema-2" || registryInspection.kind === "schema-3") {
+    if (["schema-2", "schema-3", "schema-4"].includes(registryInspection.kind)) {
       const source = registryInspection.source;
       createBackup(source, fileOperations, createBackupId);
       const upgradedDocument = {
         ...source.document,
-        schemaVersion: 4,
+        schemaVersion: 5,
         providers: source.document.providers.map((provider) => ({
           ...provider,
-          weight: DEFAULT_PROVIDER_WEIGHT
+          weight: provider.weight ?? DEFAULT_PROVIDER_WEIGHT,
+          modelMappingGroupId: null
         })),
+        modelMappingGroups: [],
         settings: {
           ...source.document.settings,
           routingMode: source.document.settings.routingMode ?? "custom_only"
@@ -683,18 +746,20 @@ export async function migrateLegacyConfiguration({
       if (activityStore) {
         await activityStore.append({
           category: "migration",
-          action: "provider-registry-schema-4",
+          action: "provider-registry-schema-5",
           providerId: null,
           result: "success",
           errorCode: null,
           details: {
             sourceSchemaVersion: source.document.schemaVersion,
-            providerWeight: DEFAULT_PROVIDER_WEIGHT
+            ...(source.document.schemaVersion < 4
+              ? { providerWeight: DEFAULT_PROVIDER_WEIGHT }
+              : {})
           }
         });
       }
       completed = true;
-      return { migrated: true, reason: "provider-registry-schema-4" };
+      return { migrated: true, reason: "provider-registry-schema-5" };
     }
 
     const configSource = readSource(legacyConfigPath, fileOperations);
@@ -757,7 +822,7 @@ export async function migrateLegacyConfiguration({
       fileOperations
     });
     const committed = registry.getDocument();
-    if (committed.schemaVersion !== 4
+    if (committed.schemaVersion !== 5
       || committed.activeProviderId !== null
       || committed.providers.length !== 1
       || committed.providers[0].lastTestStatus !== "untested") {

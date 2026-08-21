@@ -127,7 +127,8 @@ export function loadConfig(configPath = resolveConfigPath()) {
     overrideAuthorization: typeof proxy.overrideAuthorization === "boolean" ? proxy.overrideAuthorization : true,
     requestIdHeader: typeof proxy.requestIdHeader === "string" && proxy.requestIdHeader ? proxy.requestIdHeader : "x-client-request-id",
     modelMode,
-    modelOverride: typeof modelOverride === "string" ? modelOverride.trim() : null
+    modelOverride: typeof modelOverride === "string" ? modelOverride.trim() : null,
+    modelMappings: []
   };
   return {
     configPath,
@@ -1279,12 +1280,13 @@ function inspectCompletedResponse({
   const statusResult = metricResultForStatus(statusCode);
   let semantic = null;
   let usage = null;
+  let detectedStream = stream;
   const encodedBody = metricCollector?.truncated ? null : metricCollector?.buffer();
   const decodedBody = encodedBody === null
     ? null
     : decodeBoundedBody(encodedBody, contentEncoding, METRIC_BODY_INSPECTION_MAX_BYTES);
 
-  if (stream) {
+  if (stream || responsesRequest) {
     const inspection = sseInspector
       ? sseInspector.end()
       : (decodedBody ? (() => {
@@ -1292,13 +1294,17 @@ function inspectCompletedResponse({
           boundedSse.write(decodedBody);
           return boundedSse.end();
         })() : { terminal: null, usage: null });
-    semantic = inspection.terminal;
-    usage = inspection.usage;
-  } else if (decodedBody) {
+    if (stream || inspection.terminal !== null) {
+      semantic = inspection.terminal;
+      usage = inspection.usage;
+      detectedStream = true;
+    }
+  }
+  if (!detectedStream && decodedBody) {
     const inspection = semanticResultForJson(decodedBody, jsonInspector);
     semantic = inspection.terminal;
     usage = inspection.usage;
-  } else if (jsonInspector) {
+  } else if (!detectedStream && jsonInspector) {
     semantic = semanticResultForJson(Buffer.alloc(0), jsonInspector).terminal;
   }
 
@@ -1306,7 +1312,9 @@ function inspectCompletedResponse({
     result: statusResult === "success" && responsesRequest && semantic !== "success"
       ? "upstreamError"
       : statusResult,
-    usage
+    semantic,
+    usage,
+    stream: detectedStream
   };
 }
 
@@ -1416,6 +1424,8 @@ function saveCaptureRecord(captureContext, fields) {
     responseBodyTruncated: fields.responseBodyTruncated,
     isStream: fields.isStream ?? false,
     upstreamRequestId: fields.upstreamRequestId ?? null,
+    inputTokens: fields.inputTokens ?? null,
+    outputTokens: fields.outputTokens ?? null,
     errorType: fields.errorType ?? null,
     errorMessage: fields.errorMessage ?? null
   });
@@ -1522,6 +1532,10 @@ export function createServer(settings, {
       && typeof requestSettings.proxy.modelOverride === "string"
       ? requestSettings.proxy.modelOverride
       : null;
+    let modelMappings = Array.isArray(requestSettings.proxy.modelMappings)
+      ? requestSettings.proxy.modelMappings
+      : [];
+    let modelTransformRequired = overrideModel !== null || modelMappings.length > 0;
     const requestEncoding = req.headers["content-encoding"];
     const normalizedRequestEncoding = singleContentEncoding(requestEncoding);
     const directRequestInspection = normalizedRequestEncoding === "" || normalizedRequestEncoding === "identity";
@@ -1529,13 +1543,13 @@ export function createServer(settings, {
     let requestCapture = captureHandle ? createBoundedCollector(CAPTURE_BODY_MAX_BYTES) : null;
     const requestPreview = requestDebugEnabled ? createBoundedCollector(4096) : null;
     const initialAccountRoute = metricRoute === "account";
-    const requestModelInspector = (!overrideModel || initialAccountRoute) && directRequestInspection
+    const requestModelInspector = (!modelTransformRequired || initialAccountRoute) && directRequestInspection
       ? createTopLevelJsonInspector({ stringKeys: ["model"] })
       : null;
-    const encodedRequestMetric = (!overrideModel || initialAccountRoute) && !directRequestInspection
+    const encodedRequestMetric = (!modelTransformRequired || initialAccountRoute) && !directRequestInspection
       ? createBoundedCollector(METRIC_BODY_INSPECTION_MAX_BYTES)
       : null;
-    const overrideCollector = overrideModel && !initialAccountRoute
+    const modelTransformCollector = modelTransformRequired && !initialAccountRoute
       ? createBoundedCollector(MODEL_OVERRIDE_MAX_BYTES)
       : null;
     let forwardedHeaders = initialAccountRoute
@@ -1662,6 +1676,10 @@ export function createServer(settings, {
         && typeof requestSettings.proxy.modelOverride === "string"
         ? requestSettings.proxy.modelOverride
         : null;
+      modelMappings = Array.isArray(requestSettings.proxy.modelMappings)
+        ? requestSettings.proxy.modelMappings
+        : [];
+      modelTransformRequired = overrideModel !== null || modelMappings.length > 0;
       metricRoute = "custom";
       targetUrl = customTargetUrl;
       safeTargetUrl = redactProtectedUrl(targetUrl.href, requestProtectedValues);
@@ -1689,7 +1707,7 @@ export function createServer(settings, {
       return true;
     }
 
-    function prepareCustomOverrideBody(encodedBody) {
+    function prepareCustomModelBody(encodedBody) {
       const normalizedEncoding = singleContentEncoding(requestEncoding);
       const supportedEncoding = normalizedEncoding === ""
         || normalizedEncoding === "identity"
@@ -1703,7 +1721,7 @@ export function createServer(settings, {
           statusCode: 415,
           errorType: "proxy_unsupported_content_encoding",
           result: "upstreamError",
-          error: new Error("model override content encoding is unsupported")
+          error: new Error("model transformation content encoding is unsupported")
         });
         return null;
       }
@@ -1721,14 +1739,23 @@ export function createServer(settings, {
         });
         return null;
       }
-      const rewrite = rewriteTopLevelModel(decodedBody, overrideModel);
+      let targetModel = overrideModel;
+      if (targetModel === null) {
+        const parsed = parseBoundedJson(decodedBody, MODEL_OVERRIDE_MAX_BYTES);
+        const sourceModel = typeof parsed?.model === "string" ? parsed.model : null;
+        targetModel = sourceModel === null
+          ? null
+          : modelMappings.find((rule) => rule.sourceModel === sourceModel)?.targetModel ?? null;
+        if (targetModel === null) return prepareCustomPassthroughBody(encodedBody);
+      }
+      const rewrite = rewriteTopLevelModel(decodedBody, targetModel);
       if (!rewrite) {
         logRequestBody();
         finishProxyFailure({
           statusCode: 400,
           errorType: "proxy_bad_request",
           result: "upstreamError",
-          error: new Error("model override request is not a valid JSON object")
+          error: new Error("model transformation request is not a valid JSON object")
         });
         return null;
       }
@@ -1737,7 +1764,7 @@ export function createServer(settings, {
           statusCode: 413,
           errorType: "proxy_request_too_large",
           result: "upstreamError",
-          error: new Error("rewritten model override request exceeds the bounded transformation limit")
+          error: new Error("rewritten model request exceeds the bounded transformation limit")
         });
         return null;
       }
@@ -1766,7 +1793,7 @@ export function createServer(settings, {
         requestCapture = createBoundedCollector(CAPTURE_BODY_MAX_BYTES);
         requestCapture.append(forwardedBody);
       }
-      requestModel = safeMetricModel(overrideModel, requestSettings, requestProtectedValues);
+      requestModel = safeMetricModel(targetModel, requestSettings, requestProtectedValues);
       requestInspectionFinished = true;
       return forwardedBody;
     }
@@ -1798,8 +1825,8 @@ export function createServer(settings, {
     function startCustomFallback() {
       if (terminal || !Buffer.isBuffer(replayBody)) return;
       if (!switchToCustomRoute(0)) return;
-      const forwardedBody = overrideModel
-        ? prepareCustomOverrideBody(replayBody)
+      const forwardedBody = modelTransformRequired
+        ? prepareCustomModelBody(replayBody)
         : prepareCustomPassthroughBody(replayBody);
       if (!forwardedBody || terminal) return;
       logRequestBody(forwardedBody.subarray(0, 4096));
@@ -1811,8 +1838,8 @@ export function createServer(settings, {
       if (terminal || !Buffer.isBuffer(replayBody)) return false;
       const nextIndex = customCandidateIndex + 1;
       if (!switchToCustomRoute(nextIndex)) return false;
-      const forwardedBody = overrideModel
-        ? prepareCustomOverrideBody(replayBody)
+      const forwardedBody = modelTransformRequired
+        ? prepareCustomModelBody(replayBody)
         : prepareCustomPassthroughBody(replayBody);
       if (!forwardedBody || terminal) return false;
       logRequestBody(forwardedBody.subarray(0, 4096));
@@ -1935,6 +1962,31 @@ export function createServer(settings, {
 
     function handleClientAbort() {
       if (terminal || res.writableFinished) return;
+      const inspected = responseState ? inspectCompletedResponse({
+        statusCode: responseState.statusCode,
+        stream: responseState.stream,
+        responsesRequest,
+        contentEncoding: responseState.contentEncoding,
+        metricCollector: responseState.metricCollector,
+        jsonInspector: responseState.jsonInspector,
+        sseInspector: responseState.sseInspector
+      }) : null;
+      if (inspected?.semantic === "success") {
+        terminal = true;
+        upstreamResponse?.destroy();
+        upstreamRequest?.destroy();
+        finalizeCapture({
+          responseStatus: responseState.statusCode,
+          responseHeaders: responseState.captureHeaders,
+          ...responseCaptureSnapshot(),
+          isStream: inspected.stream,
+          upstreamRequestId: responseState.upstreamRequestId,
+          inputTokens: inspected.usage?.inputTokens ?? null,
+          outputTokens: inspected.usage?.outputTokens ?? null
+        });
+        finalizeMetric("success", inspected.usage);
+        return;
+      }
       terminal = true;
       upstreamResponse?.destroy();
       upstreamRequest?.destroy();
@@ -1983,8 +2035,10 @@ export function createServer(settings, {
         responseStatus: responseState.statusCode,
         responseHeaders: responseState.captureHeaders,
         ...captureSnapshot,
-        isStream: responseState.stream,
-        upstreamRequestId: responseState.upstreamRequestId
+        isStream: inspected.stream,
+        upstreamRequestId: responseState.upstreamRequestId,
+        inputTokens: inspected.usage?.inputTokens ?? null,
+        outputTokens: inspected.usage?.outputTokens ?? null
       });
       finalizeMetric(inspected.result, inspected.usage);
       logFn("info", "Proxied request", {
@@ -1992,7 +2046,7 @@ export function createServer(settings, {
         method: safeMethod,
         path: safeRequestPath,
         status: responseState.statusCode,
-        stream: responseState.stream,
+        stream: inspected.stream,
         duration_ms: Date.now() - startedAt
       });
     }
@@ -2055,7 +2109,9 @@ export function createServer(settings, {
               tokenKeys: ["error"]
             })
           : null,
-        sseInspector: directInspection && stream ? createSseInspector() : null,
+        sseInspector: directInspection && (stream || responsesRequest)
+          ? createSseInspector()
+          : null,
         upstreamEnded: false,
         downstreamFinished: false
       };
@@ -2219,13 +2275,13 @@ export function createServer(settings, {
           accountBytes += chunk.length;
           return;
         }
-        if (overrideModel) {
+        if (modelTransformRequired) {
           logRequestBody();
           finishProxyFailure({
             statusCode: 413,
             errorType: "proxy_request_too_large",
             result: "upstreamError",
-            error: new Error("model override request exceeds the bounded transformation limit")
+            error: new Error("model transformation request exceeds the bounded limit")
           });
           return;
         }
@@ -2253,8 +2309,8 @@ export function createServer(settings, {
         }
         replayBody = Buffer.concat(accountChunks, accountBytes);
         logRequestBody(replayBody.subarray(0, 4096));
-        const forwardedBody = !initialAccountRoute && overrideModel
-          ? prepareCustomOverrideBody(replayBody)
+        const forwardedBody = !initialAccountRoute && modelTransformRequired
+          ? prepareCustomModelBody(replayBody)
           : replayBody;
         if (!forwardedBody || terminal) return;
         outgoing = createUpstreamRequest();
@@ -2263,27 +2319,27 @@ export function createServer(settings, {
       return;
     }
 
-    if (overrideModel) {
+    if (modelTransformRequired) {
       req.on("data", (chunk) => {
         if (terminal) return;
         requestCapture?.append(chunk);
         requestPreview?.append(chunk);
-        overrideCollector.append(chunk);
-        if (overrideCollector.truncated) {
+        modelTransformCollector.append(chunk);
+        if (modelTransformCollector.truncated) {
           logRequestBody();
           finishProxyFailure({
             statusCode: 413,
             errorType: "proxy_request_too_large",
             result: "upstreamError",
-            error: new Error("model override request exceeds the bounded transformation limit")
+            error: new Error("model transformation request exceeds the bounded limit")
           });
         }
       });
       req.on("end", () => {
         requestEnded = true;
         if (terminal) return;
-        const encodedBody = overrideCollector.buffer();
-        const forwardedBody = prepareCustomOverrideBody(encodedBody);
+        const encodedBody = modelTransformCollector.buffer();
+        const forwardedBody = prepareCustomModelBody(encodedBody);
         if (!forwardedBody || terminal) return;
         logRequestBody(forwardedBody.subarray(0, 4096));
         const outgoing = createUpstreamRequest();

@@ -21,8 +21,8 @@ test("lists, filters, inspects, and toggles metadata-only forwarding records", a
   await page.getByRole("link", { name: "Forwarding Records", exact: true }).click();
   await expect(page).toHaveURL(/\/forwarding$/);
   await expect(page.getByRole("heading", { name: "Forwarding Records", level: 1 })).toBeVisible();
-  await expect(page.locator(".forwarding-summary")).toContainText("3");
-  await expect(page.locator(".records-table tbody tr")).toHaveCount(3);
+  await expect(page.locator(".forwarding-summary")).toContainText("4");
+  await expect(page.locator(".records-table tbody tr")).toHaveCount(4);
   await expect(page.locator(".records-table")).toContainText("ChatGPT");
   await expect(page.locator(".records-table")).toContainText("Fallback API");
 
@@ -31,6 +31,10 @@ test("lists, filters, inspects, and toggles metadata-only forwarding records", a
   await expect(detail).toContainText("chatgpt-upstream-3");
   await expect(detail).toContainText("Only bounded metadata is shown");
   await expect(detail).not.toContainText("authorization");
+
+  await page.getByRole("button", { name: "Aborted", exact: true }).click();
+  await expect(page.locator(".records-table tbody tr")).toHaveCount(1);
+  await expect(page.locator(".records-table")).toContainText("Aborted");
 
   await page.getByRole("button", { name: "Rejected", exact: true }).click();
   await expect(page.locator(".records-table tbody tr")).toHaveCount(1);
@@ -64,6 +68,9 @@ test("keeps the forwarding workflow usable in Chinese on a phone viewport", asyn
   await page.getByRole("button", { name: "Open navigation" }).click();
   await page.getByRole("dialog", { name: "Primary navigation" })
     .getByLabel("Language").selectOption("zh-CN");
+  await page.locator(".sidebar-open").evaluate(async (element) => {
+    await Promise.all(element.getAnimations().map((animation) => animation.finished));
+  });
   await expect(page.getByRole("heading", { name: "转发记录", level: 1 })).toBeVisible();
   await expect(page.getByLabel("记录转发元数据")).toBeChecked();
   await expect(page.locator(".records-table-wrap")).toBeVisible();

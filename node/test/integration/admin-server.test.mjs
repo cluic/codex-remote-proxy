@@ -39,6 +39,7 @@ function publicProvider(overrides = {}) {
     weight: 100,
     modelMode: "passthrough",
     modelOverride: null,
+    modelMappingGroupId: null,
     lastTestAt: null,
     lastTestStatus: "untested",
     lastTestCode: null,
@@ -77,6 +78,7 @@ function workerState(overrides = {}) {
 function createServices() {
   const calls = [];
   const providers = [publicProvider()];
+  const modelMappingGroups = [];
   const providerService = {
     async listProviders() {
       calls.push(["listProviders"]);
@@ -87,6 +89,36 @@ function createServices() {
       const created = publicProvider({ id: "provider-2", name: input.name });
       providers.push(created);
       return created;
+    },
+    listModelMappingGroups() {
+      calls.push(["listModelMappingGroups"]);
+      return structuredClone(modelMappingGroups);
+    },
+    async createModelMappingGroup(input) {
+      calls.push(["createModelMappingGroup", input]);
+      const group = {
+        id: "mapping-1",
+        ...structuredClone(input),
+        providerIds: [],
+        createdAt: "2026-07-13T00:00:00.000Z",
+        updatedAt: "2026-07-13T00:00:00.000Z",
+        credentialRef: CREDENTIAL_REF
+      };
+      modelMappingGroups.push(group);
+      return structuredClone(group);
+    },
+    async updateModelMappingGroup(id, input) {
+      calls.push(["updateModelMappingGroup", id, input]);
+      const group = modelMappingGroups.find((candidate) => candidate.id === id);
+      Object.assign(group, structuredClone(input), {
+        updatedAt: "2026-07-13T00:01:00.000Z"
+      });
+      return structuredClone(group);
+    },
+    async deleteModelMappingGroup(id) {
+      calls.push(["deleteModelMappingGroup", id]);
+      const index = modelMappingGroups.findIndex((candidate) => candidate.id === id);
+      return structuredClone(modelMappingGroups.splice(index, 1)[0]);
     },
     async updateProvider(id, patch, replacementSecret) {
       calls.push(["updateProvider", id, patch, replacementSecret]);
@@ -1266,6 +1298,8 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
       responseBytes: 40,
       stream: true,
       upstreamRequestId: "upstream-9",
+      inputTokens: null,
+      outputTokens: null,
       errorType: null,
       errorMessage: null,
       outcome: "success",
@@ -1274,7 +1308,7 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
       route: "custom"
     }],
     page: { limit: 25, nextBefore: null },
-    summary: { total: 1, success: 1, rejected: 0, error: 0 }
+    summary: { total: 1, success: 1, rejected: 0, aborted: 0, error: 0 }
   });
   assert.deepEqual(
     harness.calls.find(([name]) => name === "forwardingRecords"),
@@ -1576,6 +1610,70 @@ test("model catalog routes distinguish cached reads from refreshes with strict p
   assert.equal(methodRejected.response.status, 405, methodRejected.text);
   assert.equal(methodRejected.response.headers.get("allow"), "GET, POST");
   assert.equal(methodRejected.json.error.code, "API_METHOD_NOT_ALLOWED");
+});
+
+test("model mapping routes provide bounded CRUD without exposing internal fields", async (t) => {
+  const harness = await createHarness(t);
+  const jsonHeaders = { ...bearer(harness), "content-type": "application/json" };
+  const input = {
+    name: "OpenRouter",
+    rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5" }]
+  };
+  const created = await harness.request("/api/v1/model-mappings", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ mappingGroup: input })
+  });
+  assert.equal(created.response.status, 201, created.text);
+  assertNoSensitiveResponse(created);
+  assert.equal(created.text.includes(CREDENTIAL_REF), false);
+  assert.deepEqual(created.json.modelMappingGroup, {
+    id: "mapping-1",
+    ...input,
+    providerIds: [],
+    createdAt: "2026-07-13T00:00:00.000Z",
+    updatedAt: "2026-07-13T00:00:00.000Z"
+  });
+
+  const listed = await harness.request("/api/v1/model-mappings", {
+    headers: bearer(harness)
+  });
+  assert.equal(listed.response.status, 200, listed.text);
+  assert.deepEqual(listed.json.modelMappingGroups, [created.json.modelMappingGroup]);
+
+  const updatedInput = {
+    name: "OpenRouter exact",
+    rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5.1" }]
+  };
+  const updated = await harness.request("/api/v1/model-mappings/mapping-1", {
+    method: "PATCH",
+    headers: jsonHeaders,
+    body: JSON.stringify({ mappingGroup: updatedInput })
+  });
+  assert.equal(updated.response.status, 200, updated.text);
+  assert.deepEqual(updated.json.modelMappingGroup, {
+    id: "mapping-1",
+    ...updatedInput,
+    providerIds: [],
+    createdAt: "2026-07-13T00:00:00.000Z",
+    updatedAt: "2026-07-13T00:01:00.000Z"
+  });
+
+  const deleted = await harness.request("/api/v1/model-mappings/mapping-1", {
+    method: "DELETE",
+    headers: bearer(harness)
+  });
+  assert.equal(deleted.response.status, 200, deleted.text);
+  assert.equal(deleted.json.modelMappingGroup.id, "mapping-1");
+  assert.deepEqual(
+    harness.calls.filter(([operation]) => operation.includes("ModelMapping")),
+    [
+      ["createModelMappingGroup", input],
+      ["listModelMappingGroups"],
+      ["updateModelMappingGroup", "mapping-1", updatedInput],
+      ["deleteModelMappingGroup", "mapping-1"]
+    ]
+  );
 });
 
 test("enforces JSON content type, exact shape, and a bounded request body", async (t) => {

@@ -60,7 +60,8 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
           overrideAuthorization: true,
           requestIdHeader: "x-client-request-id",
           modelMode: "passthrough",
-          modelOverride: null
+          modelOverride: null,
+          modelMappings: []
         }
       }],
       upstream: {
@@ -76,7 +77,8 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
         overrideAuthorization: true,
         requestIdHeader: "x-client-request-id",
         modelMode: "passthrough",
-        modelOverride: null
+        modelOverride: null,
+        modelMappings: []
       },
       capture: { enabled: false, dbPath: join(dir, "traffic.sqlite3") },
       routing: {

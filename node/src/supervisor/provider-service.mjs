@@ -156,6 +156,22 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
       "This provider is part of the running routing pool.",
       "Stop the proxy Worker before editing or deleting this provider."
     ],
+    MODEL_MAPPING_POOL_RUNNING: [
+      "This model mapping group is used by the running routing pool.",
+      "Stop the proxy Worker before editing the mapping group."
+    ],
+    MODEL_MAPPING_CREATE_COMMITTED_DEGRADED: [
+      "The model mapping group was created, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    MODEL_MAPPING_UPDATE_COMMITTED_DEGRADED: [
+      "The model mapping group was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    MODEL_MAPPING_DELETE_COMMITTED_DEGRADED: [
+      "The model mapping group was deleted, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
     PROXY_NOT_CONFIGURED: [
       "No active provider is configured for the proxy.",
       "Test and activate a provider before starting the proxy."
@@ -228,6 +244,20 @@ function committedServiceError(action, cause) {
   return error;
 }
 
+function committedModelMappingError(action, cause) {
+  const error = serviceError(`MODEL_MAPPING_${action.toUpperCase()}_COMMITTED_DEGRADED`, {
+    cause,
+    details: { committed: true, degraded: true }
+  });
+  if (cause instanceof CrpError
+    && typeof cause.action === "string"
+    && cause.action.length > 0 && cause.action.length <= 512
+    && !/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u.test(cause.action)) {
+    error.action = cause.action;
+  }
+  return error;
+}
+
 export class ProviderService {
   #operationTail = Promise.resolve();
   #lifecycleOperation = null;
@@ -276,6 +306,146 @@ export class ProviderService {
   async listProviders() {
     const profiles = this.registry.list();
     return await Promise.all(profiles.map((profile) => this.#toPublic(profile)));
+  }
+
+  listModelMappingGroups() {
+    const document = this.registry.getDocument();
+    return document.modelMappingGroups.map((group) => ({
+      ...structuredClone(group),
+      providerIds: document.providers
+        .filter((provider) => provider.modelMappingGroupId === group.id)
+        .map((provider) => provider.id)
+    }));
+  }
+
+  createModelMappingGroup(input) {
+    return this.#runExclusive(async () => {
+      let group;
+      try {
+        group = this.registry.createModelMappingGroup(input);
+      } catch (error) {
+        if (isCommittedError(error)) {
+          const committed = committedModelMappingError("create", error);
+          let persisted;
+          try {
+            persisted = this.registry.listModelMappingGroups().find(
+              (candidate) => candidate.name === input?.name
+            );
+          } catch {
+            // The committed registry error remains authoritative if reconciliation cannot read.
+          }
+          await this.#recordSettingsCommitted("model-mapping-create", committed, {
+            ...(persisted ? {
+              mappingGroupId: persisted.id,
+              ruleCount: persisted.rules.length
+            } : {})
+          });
+          throw committed;
+        }
+        await this.#safeRecordSettingsFailure("model-mapping-create", error);
+        throw error;
+      }
+      try {
+        await this.#recordSettings("model-mapping-create", "success", null, {
+          mappingGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+      } catch (error) {
+        const committed = committedModelMappingError("create", error);
+        await this.#recordSettingsCommitted("model-mapping-create", committed, {
+          mappingGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+        throw committed;
+      }
+      return { ...group, providerIds: [] };
+    });
+  }
+
+  updateModelMappingGroup(id, input) {
+    return this.#runExclusive(async () => {
+      let group;
+      try {
+        const document = this.registry.getDocument();
+        const referencedPoolProvider = document.providers.some((provider) => (
+          provider.modelMappingGroupId === id && provider.lastTestStatus === "passed"
+        ));
+        if (referencedPoolProvider && this.workerManager.getPublicState()?.phase === "running") {
+          throw serviceError("MODEL_MAPPING_POOL_RUNNING", { status: 409 });
+        }
+        group = this.registry.updateModelMappingGroup(id, input);
+      } catch (error) {
+        if (isCommittedError(error)) {
+          const committed = committedModelMappingError("update", error);
+          let persisted;
+          try {
+            persisted = this.registry.getModelMappingGroup(id);
+          } catch {
+            // The committed registry error remains authoritative if reconciliation cannot read.
+          }
+          await this.#recordSettingsCommitted("model-mapping-update", committed, {
+            mappingGroupId: id,
+            ...(persisted ? { ruleCount: persisted.rules.length } : {})
+          });
+          throw committed;
+        }
+        await this.#safeRecordSettingsFailure("model-mapping-update", error);
+        throw error;
+      }
+      try {
+        await this.#recordSettings("model-mapping-update", "success", null, {
+          mappingGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+      } catch (error) {
+        const committed = committedModelMappingError("update", error);
+        await this.#recordSettingsCommitted("model-mapping-update", committed, {
+          mappingGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+        throw committed;
+      }
+      const document = this.registry.getDocument();
+      return {
+        ...group,
+        providerIds: document.providers
+          .filter((provider) => provider.modelMappingGroupId === group.id)
+          .map((provider) => provider.id)
+      };
+    });
+  }
+
+  deleteModelMappingGroup(id) {
+    return this.#runExclusive(async () => {
+      let group;
+      try {
+        group = this.registry.deleteModelMappingGroup(id);
+      } catch (error) {
+        if (isCommittedError(error)) {
+          const committed = committedModelMappingError("delete", error);
+          await this.#recordSettingsCommitted("model-mapping-delete", committed, {
+            mappingGroupId: id
+          });
+          throw committed;
+        }
+        await this.#safeRecordSettingsFailure("model-mapping-delete", error);
+        throw error;
+      }
+      try {
+        await this.#recordSettings("model-mapping-delete", "success", null, {
+          mappingGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+      } catch (error) {
+        const committed = committedModelMappingError("delete", error);
+        await this.#recordSettingsCommitted("model-mapping-delete", committed, {
+          mappingGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+        throw committed;
+      }
+      return { ...group, providerIds: [] };
+    });
   }
 
   createProvider(input, secret) {
@@ -1402,6 +1572,9 @@ export class ProviderService {
         const created = left.createdAt.localeCompare(right.createdAt);
         return created === 0 ? left.id.localeCompare(right.id) : created;
       });
+    const mappingGroups = new Map(
+      document.modelMappingGroups.map((group) => [group.id, group.rules])
+    );
     const providers = [];
     for (const candidate of eligible) {
       let candidateSecret = candidate.id === profile.id ? secret : null;
@@ -1431,7 +1604,10 @@ export class ProviderService {
           overrideAuthorization: true,
           requestIdHeader: "x-client-request-id",
           modelMode: candidate.modelMode,
-          modelOverride: candidate.modelOverride
+          modelOverride: candidate.modelOverride,
+          modelMappings: candidate.modelMappingGroupId === null
+            ? []
+            : structuredClone(mappingGroups.get(candidate.modelMappingGroupId) ?? [])
         }
       });
     }
@@ -1497,13 +1673,26 @@ export class ProviderService {
   }
 
   async #safeRecordSettingsFailure(action, error, details = {}) {
+    const fallbackCode = action === "capture"
+      ? "CAPTURE_SETTING_UPDATE_FAILED"
+      : action.startsWith("model-mapping-")
+        ? "MODEL_MAPPING_UPDATE_FAILED"
+        : "ROUTING_MODE_UPDATE_FAILED";
     try {
       await this.#recordSettings(action, "failed", stableErrorCode(
         error,
-        "ROUTING_MODE_UPDATE_FAILED"
+        fallbackCode
       ), details);
     } catch {
       // Preserve the settings error when the audit store is unavailable.
+    }
+  }
+
+  async #recordSettingsCommitted(action, error, details = {}) {
+    try {
+      await this.#recordSettings(action, "degraded", error.code, details);
+    } catch {
+      // The committed primary error remains authoritative when Activity is unavailable.
     }
   }
 

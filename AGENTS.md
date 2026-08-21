@@ -73,6 +73,7 @@
 - Routine package updates must use patch Changesets; minor or major releases require an explicit release-policy change.
 - Package versioning must refresh the npm lockfile root version before opening a release pull request.
 - Version-only release updates must not recalculate or prune the dependency graph.
+- Worker protocol shape changes must update every runtime snapshot fixture in the same edit.
 - Cross-platform tests that inject a target platform must distinguish host filesystem semantics from generated target-platform semantics.
 - Authenticated visual checks must keep control tokens in-process instead of placing them in browser command arguments or logs.
 - Custom-provider routing must strip ChatGPT authorization independently of the provider auth-header configuration.

@@ -25,7 +25,8 @@ function makeSettings() {
     overrideAuthorization: true,
     requestIdHeader: "x-client-request-id",
     modelMode: "passthrough",
-    modelOverride: null
+    modelOverride: null,
+    modelMappings: []
   };
   return {
     configPath: "/tmp/crp-worker/proxy-config.json",
@@ -147,6 +148,17 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
   const controlModelOverride = makeSettings();
   controlModelOverride.proxy.modelMode = "override";
   controlModelOverride.proxy.modelOverride = "model\ninvalid";
+  const duplicateModelMappings = makeSettings();
+  duplicateModelMappings.proxy.modelMappings = [
+    { sourceModel: "gpt-5", targetModel: "provider/gpt-5" },
+    { sourceModel: "gpt-5", targetModel: "provider/gpt-5-alt" }
+  ];
+  const overrideWithMappings = makeSettings();
+  overrideWithMappings.proxy.modelMode = "override";
+  overrideWithMappings.proxy.modelOverride = "fixed-model";
+  overrideWithMappings.proxy.modelMappings = [
+    { sourceModel: "gpt-5", targetModel: "provider/gpt-5" }
+  ];
   const invalidRoutingMode = makeSettings();
   invalidRoutingMode.routing.mode = "automatic";
   const invalidAccountState = makeSettings();
@@ -164,7 +176,9 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
     invalidRoutingMode,
     invalidAccountState,
     missingModelOverride,
-    blankModelOverride
+    blankModelOverride,
+    duplicateModelMappings,
+    overrideWithMappings
   ]) {
     assert.throws(
       () => validateParentMessage({
@@ -185,6 +199,17 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
     requestId: "configure-legacy-model",
     generation: 1,
     settings: controlModelOverride
+  }));
+  const mapped = makeSettings();
+  mapped.proxy.modelMappings = [
+    { sourceModel: "gpt-5", targetModel: "openai/gpt-5" }
+  ];
+  assert.doesNotThrow(() => validateParentMessage({
+    version: 1,
+    type: "configure",
+    requestId: "configure-mapping",
+    generation: 2,
+    settings: mapped
   }));
 });
 
