@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.5
+
+### Patch Changes
+
+- 85d7314: Add a maintained OpenRouter provider preset, recognize `response.done` usage, keep managed Capture settings authoritative, explain Token observation gaps, add identity-bound CLI version/update commands with automatic rollback, expose build links, and make Overview metrics interactive and fully inspectable.
+
 ## 0.4.4
 
 ### Patch Changes
