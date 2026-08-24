@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.7
+
+### Patch Changes
+
+- acd663a: Let each routing rule cover multiple exact models, and replace the provider model-list mode editor with a configurable discovery path plus per-model add, manual-entry deletion, enable, and disable controls. Existing model and routing settings migrate without changing their runtime behavior, and edits continue to hot-apply to a running Worker.
+
 ## 0.4.6
 
 ### Patch Changes
