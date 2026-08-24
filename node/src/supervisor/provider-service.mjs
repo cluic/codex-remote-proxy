@@ -869,7 +869,10 @@ export class ProviderService {
       let status = null;
       let cacheCommitted = false;
       try {
-        const response = await this.fetchImpl(buildProviderEndpointUrl(profile.baseUrl, "models"), {
+        const response = await this.fetchImpl(buildProviderModelsUrl(
+          profile.baseUrl,
+          profile.modelsPath
+        ), {
           method: "GET",
           redirect: "manual",
           headers: providerRequestHeaders(profile, secret),
@@ -945,7 +948,7 @@ export class ProviderService {
         const committed = committedServiceError("models", outcome.commitWarning);
         await this.#recordCommitted("models-update", id, committed, {
           mode: profile.supportedModelsMode,
-          modelCount: profile.supportedModels.length,
+          modelCount: profile.customModels.length,
           generation: outcome.generation
         });
         throw committed;
@@ -953,14 +956,14 @@ export class ProviderService {
       try {
         await this.#record("models-update", id, "success", null, {
           mode: profile.supportedModelsMode,
-          modelCount: profile.supportedModels.length,
+          modelCount: profile.customModels.length,
           generation: outcome.generation
         });
       } catch (error) {
         const committed = committedServiceError("models", error);
         await this.#recordCommitted("models-update", id, committed, {
           mode: profile.supportedModelsMode,
-          modelCount: profile.supportedModels.length,
+          modelCount: profile.customModels.length,
           generation: outcome.generation
         });
         throw committed;
@@ -1756,10 +1759,35 @@ export class ProviderService {
   }
 
   #withSupportedModelSettings(profile, catalog) {
+    const discoveredModels = Array.isArray(catalog.models) ? catalog.models : [];
+    const discovered = new Set(discoveredModels);
+    const configured = new Set(profile.supportedModels);
+    const custom = new Set(profile.customModels);
+    const modelIds = [];
+    const seen = new Set();
+    for (const model of [...profile.supportedModels, ...profile.customModels, ...discoveredModels]) {
+      if (seen.has(model)) continue;
+      seen.add(model);
+      modelIds.push(model);
+      if (modelIds.length >= MAX_PROVIDER_MODELS) break;
+    }
+    const defaultEnabled = profile.supportedModelsMode === "auto";
+    const entries = modelIds.map((model) => ({
+      id: model,
+      discovered: discovered.has(model),
+      custom: custom.has(model),
+      enabled: configured.has(model) ? !defaultEnabled : defaultEnabled
+    }));
     return {
       ...catalog,
       mode: profile.supportedModelsMode,
-      configuredModels: [...profile.supportedModels]
+      configuredModels: [...profile.supportedModels],
+      modelsPath: profile.modelsPath,
+      defaultEnabled,
+      customModels: [...profile.customModels],
+      discoveredModels: [...discoveredModels],
+      entries,
+      models: entries.filter((entry) => entry.enabled).map((entry) => entry.id)
     };
   }
 
@@ -2014,13 +2042,13 @@ export class ProviderService {
         }
       }
       if (typeof candidateSecret !== "string" || candidateSecret.length === 0) continue;
+      const defaultEnabled = candidate.supportedModelsMode === "auto";
       providers.push({
         id: candidate.id,
         name: candidate.name,
         weight: candidate.weight,
-        supportedModels: candidate.supportedModelsMode === "custom"
-          ? [...candidate.supportedModels]
-          : null,
+        supportedModels: defaultEnabled ? null : [...candidate.supportedModels],
+        disabledModels: defaultEnabled ? [...candidate.supportedModels] : [],
         upstream: {
           baseUrl: candidate.baseUrl,
           apiKey: candidateSecret,
@@ -2048,10 +2076,11 @@ export class ProviderService {
       : document.routingRuleGroups.find(
           (group) => group.id === document.settings.routingRuleGroupId
         ) ?? null;
-    const providerPriorityRules = (activeRoutingRuleGroup?.rules ?? []).map((rule) => ({
-      model: rule.model,
-      providerIds: rule.providerIds.filter((providerId) => runtimeProviderIds.has(providerId))
-    })).filter((rule) => rule.providerIds.length > 0);
+    const providerPriorityRules = (activeRoutingRuleGroup?.rules ?? []).flatMap((rule) => {
+      const providerIds = rule.providerIds.filter((providerId) => runtimeProviderIds.has(providerId));
+      if (providerIds.length === 0) return [];
+      return rule.models.map((model) => ({ model, providerIds: [...providerIds] }));
+    });
     const primary = providers[0];
     return {
       providerId: primary.id,
@@ -2194,6 +2223,14 @@ function buildProviderEndpointUrl(baseUrl, endpoint) {
   const target = new URL(baseUrl);
   const basePath = target.pathname.replace(/\/+$/, "");
   target.pathname = `${basePath}/${endpoint}`;
+  target.hash = "";
+  return target.toString();
+}
+
+function buildProviderModelsUrl(baseUrl, modelsPath) {
+  const target = new URL(baseUrl);
+  const basePath = target.pathname.replace(/\/+$/, "");
+  target.pathname = `${basePath}${modelsPath}`;
   target.hash = "";
   return target.toString();
 }

@@ -320,6 +320,11 @@ function validateFingerprintSettings(profile) {
     || typeof profile.authScheme !== "string"
     || profile.authScheme.trim() !== profile.authScheme
     || (profile.authScheme.length > 0 && !HEADER_TOKEN_PATTERN.test(profile.authScheme))
+    || typeof profile.modelsPath !== "string"
+    || profile.modelsPath.length < 2
+    || profile.modelsPath.trim() !== profile.modelsPath
+    || !profile.modelsPath.startsWith("/")
+    || PROVIDER_CONTROL_CHARACTER_PATTERN.test(profile.modelsPath)
     || !isPlainObject(profile.extraHeaders)) {
     throw cacheInputInvalid(new Error("invalid provider request settings"));
   }
@@ -346,6 +351,7 @@ function validateFingerprintSettings(profile) {
   ));
   return {
     baseUrl: profile.baseUrl,
+    modelsPath: profile.modelsPath,
     authHeader: profile.authHeader,
     authScheme: profile.authScheme,
     extraHeaders: headers

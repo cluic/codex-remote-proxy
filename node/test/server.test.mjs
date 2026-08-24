@@ -121,6 +121,7 @@ function makeSettings({
     name: "Primary",
     weight: 100,
     supportedModels: null,
+    disabledModels: [],
     upstream,
     proxy
   }];

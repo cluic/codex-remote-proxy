@@ -393,12 +393,16 @@ export class CrpApi {
 
   async updateProviderModels(
     id: string,
-    mode: "auto" | "custom",
-    models: string[]
+    input: {
+      modelsPath: string;
+      defaultEnabled: boolean;
+      customModels: string[];
+      overrides: string[];
+    }
   ): Promise<ModelCatalog> {
     const payload = await this.mutate<{ modelCatalog: ModelCatalog }>(`${this.providerPath(id)}/models`, {
       method: "PATCH",
-      body: { mode, models }
+      body: input
     });
     return payload.modelCatalog;
   }

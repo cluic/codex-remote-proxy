@@ -884,6 +884,7 @@ function configuredProviderCandidates(settings) {
         name: "Standalone",
         weight: 100,
         supportedModels: null,
+        disabledModels: [],
         upstream: settings.upstream,
         proxy: settings.proxy
       }];
@@ -2320,7 +2321,10 @@ export function createServer(settings, {
     req.on("error", handleClientAbort);
 
     const modelAwareRouting = providerPriorityRules.length > 0
-      || configuredCustomProviders.some((provider) => Array.isArray(provider.supportedModels));
+      || configuredCustomProviders.some((provider) => (
+        Array.isArray(provider.supportedModels)
+        || Array.isArray(provider.disabledModels) && provider.disabledModels.length > 0
+      ));
     const customFailoverReplay = !initialAccountRoute
       && responsesRequest
       && (customCandidates.length > 1 || modelAwareRouting);

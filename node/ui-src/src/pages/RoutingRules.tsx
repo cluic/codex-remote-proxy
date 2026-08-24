@@ -10,7 +10,13 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import {
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useState
+} from "react";
 
 import {
   Button,
@@ -48,7 +54,7 @@ type RoutingRulesProps = {
 };
 
 type DialogMode = "create" | "edit" | "delete" | null;
-type DraftRule = RoutingRule & { key: string };
+type DraftRule = RoutingRule & { key: string; modelDraft: string };
 
 let nextRuleKey = 0;
 
@@ -56,9 +62,24 @@ function draftRule(rule?: RoutingRule): DraftRule {
   nextRuleKey += 1;
   return {
     key: `routing-rule-${nextRuleKey}`,
-    model: rule?.model ?? "",
+    models: [...(rule?.models ?? [])],
+    modelDraft: "",
     providerIds: [...(rule?.providerIds ?? [])]
   };
+}
+
+function parseModelNames(value: string): string[] {
+  return value.split(/[\n,]+/)
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
+function validModelName(model: string): boolean {
+  return model.length > 0
+    && model.trim() === model
+    && [...model].length <= 256
+    && new TextEncoder().encode(model).length <= 512
+    && !/[\u0000-\u001f\u007f]/.test(model);
 }
 
 function RoutingRuleForm({
@@ -94,16 +115,58 @@ function RoutingRuleForm({
     });
   };
 
+  const addModels = (ruleKey: string, values: string[]) => {
+    updateRule(ruleKey, (rule) => {
+      const models = [...rule.models];
+      const seen = new Set(models);
+      for (const model of values) {
+        if (!seen.has(model)) {
+          seen.add(model);
+          models.push(model);
+        }
+      }
+      return { ...rule, models, modelDraft: "" };
+    });
+  };
+
+  const commitModelDraft = (rule: DraftRule) => {
+    const models = parseModelNames(rule.modelDraft);
+    if (models.length > 0) addModels(rule.key, models);
+  };
+
+  const onModelKeyDown = (event: KeyboardEvent<HTMLInputElement>, rule: DraftRule) => {
+    if (event.key !== "Enter" && event.key !== ",") return;
+    event.preventDefault();
+    commitModelDraft(rule);
+  };
+
+  const onModelPaste = (event: ClipboardEvent<HTMLInputElement>, rule: DraftRule) => {
+    const models = parseModelNames(event.clipboardData.getData("text"));
+    if (models.length < 2) return;
+    event.preventDefault();
+    addModels(rule.key, models);
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const normalized = rules.map((rule) => ({
-      model: rule.model.trim(),
+      models: [...new Set([
+        ...rule.models,
+        ...parseModelNames(rule.modelDraft)
+      ])],
       providerIds: [...rule.providerIds]
     }));
+    const assignedModels = normalized.flatMap((rule) => rule.models);
     if (!name.trim()
       || normalized.length === 0
-      || normalized.some((rule) => !rule.model || rule.providerIds.length === 0)
-      || new Set(normalized.map((rule) => rule.model)).size !== normalized.length) {
+      || normalized.some((rule) => (
+        rule.models.length === 0
+        || rule.models.length > 100
+        || rule.models.some((model) => !validModelName(model))
+        || rule.providerIds.length === 0
+      ))
+      || assignedModels.length > 100
+      || new Set(assignedModels).size !== assignedModels.length) {
       setError(t("routingRules.invalidForm"));
       return;
     }
@@ -149,20 +212,43 @@ function RoutingRuleForm({
                     onClick={() => setRules((current) => current.filter((item) => item.key !== rule.key))}
                   ><X aria-hidden="true" /></IconButton>
                 </header>
-                <Field
-                  id={`${formId}-model-${rule.key}`}
-                  name={`model-${ruleIndex}`}
-                  label={t("routingRules.model")}
-                  help={t("routingRules.modelHelp")}
-                  value={rule.model}
-                  maxLength={256}
-                  spellCheck={false}
-                  required
-                  onChange={(event) => updateRule(rule.key, (current) => ({
-                    ...current,
-                    model: event.target.value
-                  }))}
-                />
+                <div className="routing-model-editor">
+                  <span className="routing-priority-label">{t("routingRules.models")}</span>
+                  <p>{t("routingRules.modelsHelp")}</p>
+                  {rule.models.length > 0 ? (
+                    <div className="routing-model-chips" aria-label={t("routingRules.models")}>
+                      {rule.models.map((model) => (
+                        <span className="routing-model-chip" key={model}>
+                          <code>{model}</code>
+                          <button
+                            type="button"
+                            aria-label={t("routingRules.removeModel", { model })}
+                            onClick={() => updateRule(rule.key, (current) => ({
+                              ...current,
+                              models: current.models.filter((item) => item !== model)
+                            }))}
+                          ><X aria-hidden="true" /></button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : <p className="routing-empty-priority">{t("routingRules.noModels")}</p>}
+                  <Field
+                    id={`${formId}-model-${rule.key}`}
+                    name={`model-${ruleIndex}`}
+                    label={t("routingRules.addModels")}
+                    help={t("routingRules.addModelsHelp")}
+                    value={rule.modelDraft}
+                    maxLength={26_000}
+                    spellCheck={false}
+                    onChange={(event) => updateRule(rule.key, (current) => ({
+                      ...current,
+                      modelDraft: event.target.value
+                    }))}
+                    onKeyDown={(event) => onModelKeyDown(event, rule)}
+                    onPaste={(event) => onModelPaste(event, rule)}
+                    onBlur={() => commitModelDraft(rule)}
+                  />
+                </div>
                 <div className="routing-priority-editor">
                   <span className="routing-priority-label">{t("routingRules.priority")}</span>
                   {rule.providerIds.length > 0 ? (
@@ -315,7 +401,10 @@ export function RoutingRulesPage({
                   <span className="mapping-group-icon"><ListTree aria-hidden="true" /></span>
                   <span>
                     <strong>{group.name}</strong>
-                    <small>{t("routingRules.groupSummary", { rules: group.rules.length })}</small>
+                    <small>{t("routingRules.groupSummary", {
+                      rules: group.rules.length,
+                      models: group.rules.reduce((count, rule) => count + rule.models.length, 0)
+                    })}</small>
                   </span>
                   {group.active
                     ? <span className="routing-active-dot" title={t("routingRules.active")} />
@@ -362,12 +451,15 @@ export function RoutingRulesPage({
               ) : null}
               <div className="routing-summary-strip">
                 <div><span>{t("routingRules.exactRules")}</span><strong>{formatNumber(locale, selected.rules.length)}</strong></div>
+                <div><span>{t("routingRules.assignedModels")}</span><strong>{formatNumber(locale, selected.rules.reduce((count, rule) => count + rule.models.length, 0))}</strong></div>
                 <p>{t("routingRules.fallbackHelp")}</p>
               </div>
               <div className="routing-rules-view">
                 {selected.rules.length > 0 ? selected.rules.map((rule) => (
-                  <article key={rule.model}>
-                    <code>{rule.model}</code>
+                  <article key={rule.models.join("\u0000")}>
+                    <div className="routing-view-models">
+                      {rule.models.map((model) => <code key={model}>{model}</code>)}
+                    </div>
                     <div className="routing-priority-flow">
                       {rule.providerIds.map((providerId, index) => {
                         const provider = providers.find((item) => item.id === providerId);

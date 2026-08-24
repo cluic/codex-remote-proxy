@@ -33,6 +33,7 @@ function actionKey(action: string | null): TranslationKey | null {
     "provider-registry-schema-4": "activity.provider-registry-schema-4",
     "provider-registry-schema-5": "activity.provider-registry-schema-5",
     "provider-registry-schema-6": "activity.provider-registry-schema-6",
+    "provider-registry-schema-7": "activity.provider-registry-schema-7",
     "model-mapping-create": "activity.model-mapping-create",
     "model-mapping-update": "activity.model-mapping-update",
     "model-mapping-delete": "activity.model-mapping-delete",

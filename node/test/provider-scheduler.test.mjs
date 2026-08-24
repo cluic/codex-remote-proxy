@@ -72,12 +72,14 @@ test("orders providers per exact model rule and enforces custom model availabili
       id: "provider-a",
       weight: 900,
       supportedModels: ["gpt-5.6-sol"],
+      disabledModels: [],
       proxy: { modelMode: "passthrough", modelOverride: null, modelMappings: [] }
     },
     {
       id: "provider-b",
       weight: 100,
       supportedModels: ["gpt-5.6-luna", "vendor/sol"],
+      disabledModels: [],
       proxy: {
         modelMode: "passthrough",
         modelOverride: null,
@@ -88,6 +90,7 @@ test("orders providers per exact model rule and enforces custom model availabili
       id: "provider-c",
       weight: 500,
       supportedModels: null,
+      disabledModels: ["gpt-5.6-terra"],
       proxy: { modelMode: "passthrough", modelOverride: null, modelMappings: [] }
     }
   ];
@@ -106,6 +109,10 @@ test("orders providers per exact model rule and enforces custom model availabili
   );
   assert.deepEqual(
     scheduler.ordered(providers, { model: "gpt-5.6-terra", priorityRules }).map(({ id }) => id),
+    []
+  );
+  assert.deepEqual(
+    scheduler.ordered(providers, { model: "gpt-5.6-nova", priorityRules }).map(({ id }) => id),
     ["provider-c"]
   );
 });
