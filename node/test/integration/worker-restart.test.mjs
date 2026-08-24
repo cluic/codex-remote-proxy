@@ -47,6 +47,7 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
         id: "provider-restart",
         name: "Restart fixture",
         weight: 100,
+        supportedModels: null,
         upstream: {
           baseUrl: `http://127.0.0.1:${upstreamPort}`,
           apiKey: SECRET,
@@ -83,6 +84,7 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
       capture: { enabled: false, dbPath: join(dir, "traffic.sqlite3") },
       routing: {
         mode: "custom_only",
+        providerPriorityRules: [],
         accountRevision: 1,
         account: {
           authMode: null,

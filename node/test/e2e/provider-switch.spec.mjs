@@ -358,7 +358,6 @@ test("creates, discovers models, tests, switches, edits, and deletes a provider 
   });
 
   await page.getByTestId("provider-card-provider-a").getByRole("button", { name: "Make preferred" }).click();
-  await page.getByRole("button", { name: "Stop proxy" }).click();
   const detailsTrigger = page.getByRole("button", { name: "View Provider Gamma details" });
   await detailsTrigger.focus();
   await detailsTrigger.click();
@@ -387,7 +386,7 @@ test("creates, discovers models, tests, switches, edits, and deletes a provider 
   await editDialog.getByRole("button", { name: "Save changes" }).click();
   const editSnapshots = await page.evaluate(() => window.__stopPasswordSnapshots());
   expect(JSON.stringify(editSnapshots)).not.toContain(replacement);
-  await expect(renamed).toContainText("Untested");
+  await expect(renamed).toContainText("Passed");
   expect(crp.calls.findLast((call) => call.operation === "updateProvider")).toMatchObject({
     id: "provider-3",
     replacedCredential: true,
@@ -573,6 +572,26 @@ test("shows ChatGPT quota and hot-updates account-first routing", async ({ page,
   await assertNoSecrets(page, crp);
 });
 
+test("explains a Codex model-catalog account-monitor failure in both locales", async ({ page, crp }) => {
+  crp.state.account = {
+    phase: "unavailable",
+    authMode: null,
+    planType: null,
+    quotaSupported: null,
+    quota: null,
+    updatedAt: "2026-07-13T08:45:00.000Z",
+    errorCode: "CODEX_MODEL_CATALOG_INVALID"
+  };
+  await openCrp(page, crp);
+  await navigate(page, "System");
+  await expect(page.getByText("CODEX_MODEL_CATALOG_INVALID")).toBeVisible();
+  await expect(page.getByText(/could not load model_catalog_json/)).toBeVisible();
+
+  await page.locator("#locale-select").selectOption("zh-CN");
+  await expect(page.getByText(/无法加载 model_catalog_json/)).toBeVisible();
+  await assertNoSecrets(page, crp);
+});
+
 test("keeps fragmentless reload GET-only until explicit same-origin management recovery", async ({ page, crp }) => {
   crp.seedActivity(55);
   await openCrp(page, crp);
@@ -622,11 +641,11 @@ test("keeps every V8 page unclipped in both locales at desktop, tablet, and mobi
   const matrices = [
     {
       locale: "en",
-      pages: [["Overview", "Overview"], ["Providers", "Providers"], ["Model Mappings", "Model Mappings"], ["Activity", "Activity"], ["System", "System"]]
+      pages: [["Overview", "Overview"], ["Providers", "Providers"], ["Model Mappings", "Model Mappings"], ["Routing Rules", "Routing Rules"], ["Activity", "Activity"], ["System", "System"]]
     },
     {
       locale: "zh-CN",
-      pages: [["概览", "概览"], ["提供商", "提供商"], ["模型映射", "模型映射"], ["活动", "活动"], ["系统", "系统"]]
+      pages: [["概览", "概览"], ["提供商", "提供商"], ["模型映射", "模型映射"], ["路由规则", "路由规则"], ["活动", "活动"], ["系统", "系统"]]
     }
   ];
   for (const viewport of [

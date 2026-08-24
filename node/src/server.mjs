@@ -883,9 +883,28 @@ function configuredProviderCandidates(settings) {
         id: "standalone",
         name: "Standalone",
         weight: 100,
+        supportedModels: null,
         upstream: settings.upstream,
         proxy: settings.proxy
       }];
+}
+
+function boundedRequestModel(encodedBody, contentEncoding) {
+  const decoded = decodeBoundedBody(
+    encodedBody,
+    contentEncoding,
+    METRIC_BODY_INSPECTION_MAX_BYTES
+  );
+  if (!decoded) return null;
+  const payload = parseBoundedJson(decoded, METRIC_BODY_INSPECTION_MAX_BYTES);
+  const model = payload?.model;
+  return typeof model === "string"
+    && model.length > 0
+    && model.trim() === model
+    && [...model].length <= 256
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(model)
+    ? model
+    : null;
 }
 
 function settingsForProvider(settings, provider) {
@@ -1494,9 +1513,13 @@ export function createServer(settings, {
       return;
     }
     const baseRequestSettings = active.settings;
-    const customCandidates = providerScheduler.ordered(
-      configuredProviderCandidates(baseRequestSettings)
-    );
+    const configuredCustomProviders = configuredProviderCandidates(baseRequestSettings);
+    const providerPriorityRules = Array.isArray(baseRequestSettings.routing?.providerPriorityRules)
+      ? baseRequestSettings.routing.providerPriorityRules
+      : [];
+    let customCandidates = providerScheduler.ordered(configuredCustomProviders, {
+      priorityRules: providerPriorityRules
+    });
     if (customCandidates.length === 0) {
       writeJson(res, 503, {
         error: {
@@ -1579,6 +1602,7 @@ export function createServer(settings, {
       ? safeMetricModel(overrideModel, requestSettings, requestProtectedValues)
       : null;
     let requestInspectionFinished = Boolean(overrideModel && !initialAccountRoute);
+    let requestedRoutingModel = null;
     let upstreamRequest = null;
     let upstreamResponse = null;
     let responseState = null;
@@ -1675,6 +1699,26 @@ export function createServer(settings, {
     function clearResponseHeaders() {
       if (res.headersSent) return;
       for (const name of res.getHeaderNames()) res.removeHeader(name);
+    }
+
+    function selectCustomCandidatesForModel(model) {
+      const candidates = providerScheduler.ordered(configuredCustomProviders, {
+        model,
+        priorityRules: providerPriorityRules
+      });
+      if (candidates.length === 0) return false;
+      customCandidates = candidates;
+      customCandidateIndex = 0;
+      return switchToCustomRoute(0);
+    }
+
+    function failUnsupportedCustomModel() {
+      finishProxyFailure({
+        statusCode: 503,
+        errorType: "proxy_model_unavailable",
+        result: "upstreamError",
+        error: new Error("no custom provider supports the requested model")
+      });
     }
 
     function switchToCustomRoute(candidateIndex = customCandidateIndex) {
@@ -1836,7 +1880,10 @@ export function createServer(settings, {
 
     function startCustomFallback() {
       if (terminal || !Buffer.isBuffer(replayBody)) return;
-      if (!switchToCustomRoute(0)) return;
+      if (!selectCustomCandidatesForModel(requestedRoutingModel)) {
+        failUnsupportedCustomModel();
+        return;
+      }
       const forwardedBody = modelTransformRequired
         ? prepareCustomModelBody(replayBody)
         : prepareCustomPassthroughBody(replayBody);
@@ -2272,9 +2319,11 @@ export function createServer(settings, {
     req.on("aborted", handleClientAbort);
     req.on("error", handleClientAbort);
 
+    const modelAwareRouting = providerPriorityRules.length > 0
+      || configuredCustomProviders.some((provider) => Array.isArray(provider.supportedModels));
     const customFailoverReplay = !initialAccountRoute
       && responsesRequest
-      && customCandidates.length > 1;
+      && (customCandidates.length > 1 || modelAwareRouting);
     if (initialAccountRoute || customFailoverReplay) {
       const accountChunks = [];
       let accountBytes = 0;
@@ -2307,7 +2356,22 @@ export function createServer(settings, {
         }
         streamingCustom = true;
         replayBody = null;
-        switchToCustomRoute();
+        const inspectedModel = requestModelInspector?.snapshot()?.strings?.model;
+        if (modelAwareRouting && typeof inspectedModel !== "string") {
+          logRequestBody();
+          finishProxyFailure({
+            statusCode: 413,
+            errorType: "proxy_request_too_large",
+            result: "upstreamError",
+            error: new Error("model-aware routing inspection exceeds the bounded limit")
+          });
+          return;
+        }
+        requestedRoutingModel = typeof inspectedModel === "string" ? inspectedModel : null;
+        if (!selectCustomCandidatesForModel(requestedRoutingModel)) {
+          failUnsupportedCustomModel();
+          return;
+        }
         outgoing = createUpstreamRequest();
         let backpressured = false;
         for (const buffered of accountChunks) {
@@ -2328,6 +2392,12 @@ export function createServer(settings, {
           return;
         }
         replayBody = Buffer.concat(accountChunks, accountBytes);
+        requestedRoutingModel = boundedRequestModel(replayBody, requestEncoding);
+        if (!initialAccountRoute
+          && !selectCustomCandidatesForModel(requestedRoutingModel)) {
+          failUnsupportedCustomModel();
+          return;
+        }
         logRequestBody(replayBody.subarray(0, 4096));
         const forwardedBody = !initialAccountRoute && modelTransformRequired
           ? prepareCustomModelBody(replayBody)

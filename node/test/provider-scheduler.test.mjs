@@ -64,3 +64,48 @@ test("classifies only explicit provider availability failures", () => {
   assert.equal(isRetryableProviderTransportError({ code: "CERT_HAS_EXPIRED" }), false);
   assert.equal(isRetryableProviderTransportError(new Error("generic")), false);
 });
+
+test("orders providers per exact model rule and enforces custom model availability", () => {
+  const scheduler = new ProviderScheduler({ now: () => 1_000 });
+  const providers = [
+    {
+      id: "provider-a",
+      weight: 900,
+      supportedModels: ["gpt-5.6-sol"],
+      proxy: { modelMode: "passthrough", modelOverride: null, modelMappings: [] }
+    },
+    {
+      id: "provider-b",
+      weight: 100,
+      supportedModels: ["gpt-5.6-luna", "vendor/sol"],
+      proxy: {
+        modelMode: "passthrough",
+        modelOverride: null,
+        modelMappings: [{ sourceModel: "gpt-5.6-sol", targetModel: "vendor/sol" }]
+      }
+    },
+    {
+      id: "provider-c",
+      weight: 500,
+      supportedModels: null,
+      proxy: { modelMode: "passthrough", modelOverride: null, modelMappings: [] }
+    }
+  ];
+  const priorityRules = [
+    { model: "gpt-5.6-sol", providerIds: ["provider-b", "provider-a"] },
+    { model: "gpt-5.6-luna", providerIds: ["provider-b"] }
+  ];
+
+  assert.deepEqual(
+    scheduler.ordered(providers, { model: "gpt-5.6-sol", priorityRules }).map(({ id }) => id),
+    ["provider-b", "provider-a", "provider-c"]
+  );
+  assert.deepEqual(
+    scheduler.ordered(providers, { model: "gpt-5.6-luna", priorityRules }).map(({ id }) => id),
+    ["provider-b", "provider-c"]
+  );
+  assert.deepEqual(
+    scheduler.ordered(providers, { model: "gpt-5.6-terra", priorityRules }).map(({ id }) => id),
+    ["provider-c"]
+  );
+});

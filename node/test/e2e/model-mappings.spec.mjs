@@ -57,8 +57,6 @@ test("creates, assigns, and edits an exact model mapping group", async ({ page, 
     }
   });
 
-  await page.getByRole("button", { name: "Stop proxy" }).click();
-  await expect.poll(() => crp.state.worker.phase).toBe("stopped");
   await navigate(page, "Providers");
   await page.getByRole("button", { name: "View Provider Beta details" }).click();
   const details = page.getByRole("dialog", { name: "Provider Beta" });

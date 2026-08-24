@@ -8,6 +8,7 @@ import {
   GitFork,
   Languages,
   LoaderCircle,
+  ListTree,
   Menu,
   Play,
   Power,
@@ -29,6 +30,7 @@ const navConfig = [
   { route: "overview" as const, key: "nav.overview" as const, icon: CircleGauge },
   { route: "providers" as const, key: "nav.providers" as const, icon: Boxes },
   { route: "model-mappings" as const, key: "nav.model-mappings" as const, icon: GitFork },
+  { route: "routing-rules" as const, key: "nav.routing-rules" as const, icon: ListTree },
   { route: "forwarding" as const, key: "nav.forwarding" as const, icon: FileClock },
   { route: "activity" as const, key: "nav.activity" as const, icon: Activity },
   { route: "system" as const, key: "nav.system" as const, icon: ServerCog }
@@ -38,6 +40,7 @@ const routeTitleKeys: Record<Route, TranslationKey> = {
   overview: "nav.overview",
   providers: "nav.providers",
   "model-mappings": "nav.model-mappings",
+  "routing-rules": "nav.routing-rules",
   forwarding: "nav.forwarding",
   activity: "nav.activity",
   system: "nav.system",

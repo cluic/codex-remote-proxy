@@ -5,6 +5,9 @@ export const TEST_STATUSES = new Set(["untested", "passed", "failed"]);
 export const DEFAULT_PROVIDER_WEIGHT = 100;
 export const MIN_PROVIDER_WEIGHT = 1;
 export const MAX_PROVIDER_WEIGHT = 1_000;
+export const MAX_SUPPORTED_MODELS = 2_000;
+export const MAX_SUPPORTED_MODEL_ID_CODE_POINTS = 256;
+export const SUPPORTED_MODEL_MODES = new Set(["auto", "custom"]);
 
 const INPUT_FIELDS = new Set([
   "name",
@@ -16,7 +19,9 @@ const INPUT_FIELDS = new Set([
   "weight",
   "modelMode",
   "modelOverride",
-  "modelMappingGroupId"
+  "modelMappingGroupId",
+  "supportedModelsMode",
+  "supportedModels"
 ]);
 const PROFILE_FIELDS = new Set([
   "id",
@@ -37,6 +42,7 @@ const SENSITIVE_HEADER_TERMS = [
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const TEST_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+const MODEL_CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
 
 function inputError(field, reason) {
   throw new CrpError(
@@ -229,6 +235,40 @@ function normalizeModelMappingGroupId(value) {
   return value;
 }
 
+function normalizeSupportedModels(modeValue, modelsValue) {
+  const supportedModelsMode = modeValue === undefined ? "auto" : modeValue;
+  if (!SUPPORTED_MODEL_MODES.has(supportedModelsMode)) {
+    inputError("supportedModelsMode", "must be auto or custom");
+  }
+  const candidate = modelsValue === undefined ? [] : modelsValue;
+  if (!Array.isArray(candidate) || candidate.length > MAX_SUPPORTED_MODELS) {
+    inputError(
+      "supportedModels",
+      `must contain at most ${MAX_SUPPORTED_MODELS} model names`
+    );
+  }
+  const seen = new Set();
+  const supportedModels = candidate.map((model) => {
+    if (typeof model !== "string"
+      || model.length === 0
+      || model.trim() !== model
+      || [...model].length > MAX_SUPPORTED_MODEL_ID_CODE_POINTS
+      || Buffer.byteLength(model, "utf8") > MAX_SUPPORTED_MODEL_ID_CODE_POINTS * 2
+      || MODEL_CONTROL_CHARACTER_PATTERN.test(model)) {
+      inputError("supportedModels", "contains an invalid model name");
+    }
+    if (seen.has(model)) {
+      inputError("supportedModels", "must not contain duplicate model names");
+    }
+    seen.add(model);
+    return model;
+  });
+  if (supportedModelsMode === "auto" && supportedModels.length > 0) {
+    inputError("supportedModels", "must be empty in auto mode");
+  }
+  return { supportedModelsMode, supportedModels };
+}
+
 function normalizeInput(input, options) {
   if (!isPlainObject(input)) {
     inputError("provider", "must be an object");
@@ -236,6 +276,10 @@ function normalizeInput(input, options) {
   assertExactFields(input, INPUT_FIELDS, "provider");
   const modelPolicy = normalizeModelPolicy(input.modelMode, input.modelOverride, options);
   const modelMappingGroupId = normalizeModelMappingGroupId(input.modelMappingGroupId);
+  const supportedModelPolicy = normalizeSupportedModels(
+    input.supportedModelsMode,
+    input.supportedModels
+  );
   if (modelPolicy.modelMode === "override" && modelMappingGroupId !== null) {
     inputError("modelMappingGroupId", "cannot be combined with override mode");
   }
@@ -248,6 +292,7 @@ function normalizeInput(input, options) {
     extraHeaders: normalizeExtraHeaders(input.extraHeaders),
     weight: normalizeWeight(input.weight),
     modelMappingGroupId,
+    ...supportedModelPolicy,
     ...modelPolicy
   };
 }
@@ -312,7 +357,9 @@ export function validateStoredProvider(profile) {
     weight: profile.weight,
     modelMode: profile.modelMode,
     modelOverride: profile.modelOverride,
-    modelMappingGroupId: profile.modelMappingGroupId
+    modelMappingGroupId: profile.modelMappingGroupId,
+    supportedModelsMode: profile.supportedModelsMode,
+    supportedModels: profile.supportedModels
   }, { allowControlCharacters: true });
   assertStoredValue(
     typeof profile.id === "string" && profile.id.trim() === profile.id && profile.id.length > 0,
@@ -379,6 +426,8 @@ export function toPublicProvider(profile, credentialConfigured) {
     modelMode: profile.modelMode,
     modelOverride: profile.modelOverride,
     modelMappingGroupId: profile.modelMappingGroupId,
+    supportedModelsMode: profile.supportedModelsMode,
+    supportedModels: [...profile.supportedModels],
     lastTestAt: profile.lastTestAt,
     lastTestStatus: profile.lastTestStatus,
     lastTestCode: profile.lastTestCode,

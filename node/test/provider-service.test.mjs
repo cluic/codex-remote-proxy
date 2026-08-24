@@ -293,26 +293,20 @@ test("model mapping groups project usage and resolve exact rules into Worker sna
   assert.deepEqual(workerManager.calls.at(-1)[1].settings.proxy.modelMappings, [
     { sourceModel: "gpt-5", targetModel: "openai/gpt-5" }
   ]);
-  await assert.rejects(
-    () => service.updateModelMappingGroup(group.id, {
-      name: "OpenRouter",
-      rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5.1" }]
-    }),
-    (error) => error?.code === "MODEL_MAPPING_POOL_RUNNING" && error.status === 409
-  );
-
-  await service.stopProxy();
   const updated = await service.updateModelMappingGroup(group.id, {
     name: "OpenRouter exact",
     rules: [{ sourceModel: "gpt-5", targetModel: "openai/gpt-5.1" }]
   });
   assert.deepEqual(updated.providerIds, [provider.id]);
+  assert.equal(workerManager.calls.at(-1)[0], "applySnapshot");
+  assert.deepEqual(workerManager.calls.at(-1)[1].settings.proxy.modelMappings, [
+    { sourceModel: "gpt-5", targetModel: "openai/gpt-5.1" }
+  ]);
   await assert.rejects(
     () => service.deleteModelMappingGroup(group.id),
     (error) => error?.code === "MODEL_MAPPING_IN_USE" && error.status === 409
   );
 
-  registry.setActive(null);
   await service.updateProvider(provider.id, { modelMappingGroupId: null });
   assert.equal(await service.deleteModelMappingGroup(group.id).then(({ id }) => id), group.id);
   assert.deepEqual(
@@ -321,7 +315,6 @@ test("model mapping groups project usage and resolve exact rules into Worker sna
       .map(({ action, result }) => ({ action, result })),
     [
       { action: "model-mapping-create", result: "success" },
-      { action: "model-mapping-update", result: "failed" },
       { action: "model-mapping-update", result: "success" },
       { action: "model-mapping-delete", result: "failed" },
       { action: "model-mapping-delete", result: "success" }
@@ -411,7 +404,7 @@ test("reports committed model mapping mutations as degraded without rolling them
   });
 });
 
-test("running provider pools reject stale-profile mutations and general updates cannot bypass weight routing", async (t) => {
+test("running provider pools hot-apply provider edits and protect the final tested route", async (t) => {
   const secret = makeSecret("pool-member");
   const { service, registry, credentials, workerManager } = makeHarness(t);
   const provider = await service.createProvider(providerInput("Pool member"), secret);
@@ -423,19 +416,75 @@ test("running provider pools reject stale-profile mutations and general updates 
   assert.equal(registry.get(provider.id).weight, 100);
 
   registry.markTest(provider.id, { status: "passed" });
-  workerManager.phase = "running";
-  const operationsBefore = structuredClone(credentials.operations);
-  await assert.rejects(
-    () => service.updateProvider(provider.id, { name: "Stale mutation" }, makeSecret("replacement")),
-    (error) => error?.code === "PROVIDER_POOL_RUNNING"
+  await service.activate(provider.id);
+  const replacement = makeSecret("replacement");
+  const updated = await service.updateProvider(
+    provider.id,
+    { name: "Live mutation" },
+    replacement
   );
+  assert.equal(updated.name, "Live mutation");
+  assert.equal(registry.get(provider.id).lastTestStatus, "passed");
+  assert.equal(credentials.values.get("credential-1"), replacement);
+  assert.equal(workerManager.calls.at(-1)[0], "applySnapshot");
   await assert.rejects(
     () => service.deleteProvider(provider.id),
-    (error) => error?.code === "PROVIDER_POOL_RUNNING"
+    (error) => error?.code === "PROVIDER_POOL_EMPTY"
   );
-  assert.equal(registry.get(provider.id).name, "Pool member");
-  assert.equal(credentials.values.get("credential-1"), secret);
-  assert.deepEqual(credentials.operations, operationsBefore);
+  assert.equal(registry.get(provider.id).name, "Live mutation");
+  assert.equal(credentials.values.get("credential-1"), replacement);
+});
+
+test("routing rules, custom model lists, and active-provider deletion hot-apply together", async (t) => {
+  const { service, registry, credentials, workerManager } = makeHarness(t);
+  const providerA = await service.createProvider(
+    providerInput("Provider A"),
+    makeSecret("provider-a")
+  );
+  const providerB = await service.createProvider(
+    providerInput("Provider B", "https://provider-b.example/v1"),
+    makeSecret("provider-b")
+  );
+  registry.markTest(providerA.id, { status: "passed" });
+  registry.markTest(providerB.id, { status: "passed" });
+  await service.activate(providerA.id);
+
+  const group = await service.createRoutingRuleGroup({
+    name: "Split Sol and Luna",
+    rules: [
+      { model: "gpt-5.6-sol", providerIds: [providerA.id, providerB.id] },
+      { model: "gpt-5.6-luna", providerIds: [providerB.id, providerA.id] }
+    ]
+  });
+  await service.setActiveRoutingRuleGroup(group.id);
+  assert.deepEqual(
+    workerManager.calls.at(-1)[1].settings.routing.providerPriorityRules,
+    group.rules
+  );
+
+  const catalog = await service.setProviderSupportedModels(providerB.id, {
+    mode: "custom",
+    models: ["gpt-5.6-luna"]
+  });
+  assert.equal(catalog.mode, "custom");
+  assert.deepEqual(catalog.configuredModels, ["gpt-5.6-luna"]);
+  const providerBSnapshot = workerManager.calls.at(-1)[1].settings.providers.find(
+    (candidate) => candidate.id === providerB.id
+  );
+  assert.deepEqual(providerBSnapshot.supportedModels, ["gpt-5.6-luna"]);
+
+  const deleted = await service.deleteProvider(providerA.id);
+  assert.equal(deleted.id, providerA.id);
+  assert.equal(credentials.values.has("credential-1"), false);
+  assert.equal(registry.getDocument().activeProviderId, providerB.id);
+  assert.deepEqual(
+    workerManager.calls.at(-1)[1].settings.providers.map(({ id }) => id),
+    [providerB.id]
+  );
+  assert.deepEqual(registry.getRoutingRuleGroup(group.id).rules, [
+    { model: "gpt-5.6-sol", providerIds: [providerB.id] },
+    { model: "gpt-5.6-luna", providerIds: [providerB.id] }
+  ]);
 });
 
 test("a failed live compatibility probe does not invalidate the running provider snapshot", async (t) => {
@@ -470,7 +519,7 @@ test("create does not forward a public fallback-consent option to credential sto
   assert.equal(credentials.setCalls[0][1], secret);
 });
 
-test("CRUD compensates credential changes and rejects active delete before credential access", async (t) => {
+test("CRUD compensates credential changes and permits stopped active-provider deletion", async (t) => {
   const oldSecret = makeSecret("old");
   const otherSecret = makeSecret("other");
   const replacementSecret = makeSecret("replacement");
@@ -514,26 +563,25 @@ test("CRUD compensates credential changes and rejects active delete before crede
 
   registry.setActive(primary.id);
   credentials.operations.length = 0;
-  await assert.rejects(
-    () => service.deleteProvider(primary.id),
-    (error) => error?.code === "PROVIDER_ACTIVE"
-  );
-  assert.deepEqual(credentials.operations, []);
+  const deletedPrimary = await service.deleteProvider(primary.id);
+  assert.equal(deletedPrimary.id, primary.id);
+  assert.equal(registry.getDocument().activeProviderId, null);
+  assert.equal(credentials.values.has("credential-1"), false);
+  assert.ok(credentials.operations.some(([action]) => action === "delete"));
   assert.deepEqual(
     activity.events.filter((entry) => entry.result === "failed")
       .map((entry) => [entry.action, entry.errorCode]),
     [
       ["create", "PROVIDER_NAME_CONFLICT"],
       ["update", "PROVIDER_NAME_CONFLICT"],
-      ["delete", "PROVIDER_REGISTRY_WRITE_FAILED"],
-      ["delete", "PROVIDER_ACTIVE"]
+      ["delete", "PROVIDER_REGISTRY_WRITE_FAILED"]
     ]
   );
   assert.equal(JSON.stringify(activity.events).includes(oldSecret), false);
   assert.equal(JSON.stringify(activity.events).includes(replacementSecret), false);
 });
 
-test("rejects active provider updates before credential or registry mutation", async (t) => {
+test("updates a stopped active provider without starting the Worker", async (t) => {
   const { service, registry, credentials, activity } = makeHarness(t);
   const provider = await service.createProvider(providerInput(), makeSecret());
   registry.setActive(provider.id);
@@ -551,16 +599,18 @@ test("rejects active provider updates before credential or registry mutation", a
     return originalMarkTest(...args);
   };
 
-  await assert.rejects(
-    () => service.updateProvider(provider.id, { name: "Must Not Change" }, makeSecret()),
-    (error) => error?.code === "PROVIDER_ACTIVE" && error.status === 409
+  const updated = await service.updateProvider(
+    provider.id,
+    { name: "Changed safely" },
+    makeSecret()
   );
-  assert.deepEqual(credentials.operations, []);
-  assert.equal(updateCalls, 0);
-  assert.equal(markTestCalls, 0);
-  assert.equal(registry.get(provider.id).name, "Primary");
+  assert.equal(updated.name, "Changed safely");
+  assert.ok(credentials.operations.length > 0);
+  assert.equal(updateCalls, 1);
+  assert.equal(markTestCalls, 1);
+  assert.equal(registry.get(provider.id).name, "Changed safely");
   assert.equal(activity.events.at(-1).action, "update");
-  assert.equal(activity.events.at(-1).errorCode, "PROVIDER_ACTIVE");
+  assert.equal(activity.events.at(-1).result, "success");
 });
 
 test("keeps a created provider and credential when registry create reports committed", async (t) => {
@@ -845,6 +895,8 @@ test("model discovery reads cache and refreshes a bounded authenticated catalog 
     state: "missing",
     fetchedAt: null,
     expiresAt: null,
+    mode: "auto",
+    configuredModels: [],
     models: []
   });
   const refreshed = await service.refreshProviderModels(provider.id);
@@ -853,6 +905,8 @@ test("model discovery reads cache and refreshes a bounded authenticated catalog 
     state: "fresh",
     fetchedAt: NOW,
     expiresAt: "2026-07-14T02:00:00.000Z",
+    mode: "auto",
+    configuredModels: [],
     models: ["model-b", "model-a"]
   });
   assert.deepEqual(await service.getProviderModels(provider.id), refreshed);
@@ -930,6 +984,8 @@ test("model refresh classifies failures, enforces bounds, and preserves the last
       state: "stale",
       fetchedAt: stale.fetchedAt,
       expiresAt: stale.expiresAt,
+      mode: "auto",
+      configuredModels: [],
       models: stale.models
     });
   }
@@ -969,6 +1025,8 @@ test("model refresh reports committed degradation when Activity fails after the 
     state: "fresh",
     fetchedAt: NOW,
     expiresAt: "2026-07-14T02:00:00.000Z",
+    mode: "auto",
+    configuredModels: [],
     models: ["model-a", "model-b"]
   });
   assert.equal(fetchCalls, 1);
@@ -1009,6 +1067,8 @@ test("model refresh preserves cache-lock repair guidance after a committed cache
     state: "fresh",
     fetchedAt: NOW,
     expiresAt: "2026-07-14T02:00:00.000Z",
+    mode: "auto",
+    configuredModels: [],
     models: ["model-a"]
   });
 });
@@ -1057,6 +1117,8 @@ test("model discovery rejects credential-bearing model ids before any public or 
     state: "stale",
     fetchedAt: previous.fetchedAt,
     expiresAt: previous.expiresAt,
+    mode: "auto",
+    configuredModels: [],
     models: previous.models
   });
   assert.equal(modelCache.putCalls.length, 0);
@@ -1121,7 +1183,8 @@ test("legacy controlled model overrides remain startable after initial selection
       quotaStatus: "unknown",
       blockedUntil: null,
       updatedAt: null
-    }
+    },
+    providerPriorityRules: []
   });
 
   await service.restartProxy();

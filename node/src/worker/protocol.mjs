@@ -50,7 +50,14 @@ const SETTINGS_FIELDS = new Set([
   "routing"
 ]);
 const SERVER_FIELDS = new Set(["host", "port", "logLevel"]);
-const PROVIDER_FIELDS = new Set(["id", "name", "weight", "upstream", "proxy"]);
+const PROVIDER_FIELDS = new Set([
+  "id",
+  "name",
+  "weight",
+  "supportedModels",
+  "upstream",
+  "proxy"
+]);
 const UPSTREAM_FIELDS = new Set([
   "baseUrl",
   "apiKey",
@@ -69,7 +76,13 @@ const PROXY_FIELDS = new Set([
 ]);
 const MODEL_MAPPING_RULE_FIELDS = new Set(["sourceModel", "targetModel"]);
 const CAPTURE_FIELDS = new Set(["enabled", "dbPath"]);
-const ROUTING_FIELDS = new Set(["mode", "accountRevision", "account"]);
+const ROUTING_FIELDS = new Set([
+  "mode",
+  "accountRevision",
+  "account",
+  "providerPriorityRules"
+]);
+const PROVIDER_PRIORITY_RULE_FIELDS = new Set(["model", "providerIds"]);
 const ROUTING_MODES = new Set(["custom_only", "account_first"]);
 const METRIC_ROUTES = new Set(["custom", "account"]);
 const WORKER_PHASES = new Set(["ready", "running", "draining", "drained", "stopping", "failed"]);
@@ -213,6 +226,48 @@ function isValidModelPolicy(proxy) {
     && (proxy.modelMode !== "override" || proxy.modelMappings.length === 0);
 }
 
+function isValidSupportedModels(value) {
+  if (value === null) return true;
+  if (!Array.isArray(value) || value.length > 2_000) return false;
+  const models = new Set();
+  for (const model of value) {
+    if (!isNonEmptyString(model)
+      || [...model].length > 256
+      || Buffer.byteLength(model, "utf8") > 512
+      || model.trim() !== model
+      || METRIC_TEXT_CONTROL_PATTERN.test(model)
+      || models.has(model)) {
+      return false;
+    }
+    models.add(model);
+  }
+  return true;
+}
+
+function isValidProviderPriorityRules(value, providerIds) {
+  if (!Array.isArray(value) || value.length > 100) return false;
+  const models = new Set();
+  for (const rule of value) {
+    if (!isPlainObject(rule)
+      || !hasExactFields(rule, PROVIDER_PRIORITY_RULE_FIELDS)
+      || !isNonEmptyString(rule.model)
+      || [...rule.model].length > 256
+      || Buffer.byteLength(rule.model, "utf8") > 512
+      || rule.model.trim() !== rule.model
+      || METRIC_TEXT_CONTROL_PATTERN.test(rule.model)
+      || models.has(rule.model)
+      || !Array.isArray(rule.providerIds)
+      || rule.providerIds.length < 1
+      || rule.providerIds.length > 100
+      || rule.providerIds.some((providerId) => !providerIds.has(providerId))
+      || new Set(rule.providerIds).size !== rule.providerIds.length) {
+      return false;
+    }
+    models.add(rule.model);
+  }
+  return true;
+}
+
 function isValidProviderCandidate(provider) {
   return isPlainObject(provider)
     && hasExactFields(provider, PROVIDER_FIELDS)
@@ -223,6 +278,7 @@ function isValidProviderCandidate(provider) {
     && Number.isInteger(provider.weight)
     && provider.weight >= 1
     && provider.weight <= 1_000
+    && isValidSupportedModels(provider.supportedModels)
     && isPlainObject(provider.upstream)
     && hasExactFields(provider.upstream, UPSTREAM_FIELDS)
     && isValidBaseUrl(provider.upstream.baseUrl)
@@ -286,6 +342,9 @@ function isLoopbackHostname(hostname) {
 }
 
 function validateRuntimeSettings(settings) {
+  const providerIds = Array.isArray(settings?.providers)
+    ? new Set(settings.providers.map((provider) => provider?.id))
+    : new Set();
   if (!isPlainObject(settings)
     || !hasExactFields(settings, SETTINGS_FIELDS)
     || !isNonEmptyString(settings.configPath)
@@ -329,6 +388,7 @@ function validateRuntimeSettings(settings) {
     || !isPlainObject(settings.routing)
     || !hasExactFields(settings.routing, ROUTING_FIELDS)
     || !ROUTING_MODES.has(settings.routing.mode)
+    || !isValidProviderPriorityRules(settings.routing.providerPriorityRules, providerIds)
     || !Number.isSafeInteger(settings.routing.accountRevision)
     || settings.routing.accountRevision <= 0
     || !isValidAccountRoutingState(settings.routing.account)) {

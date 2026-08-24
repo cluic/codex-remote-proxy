@@ -8,6 +8,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  SlidersHorizontal,
   ShieldCheck,
   TestTube2,
   Trash2
@@ -65,9 +66,14 @@ type ProvidersProps = {
   onDelete: (id: string) => Promise<boolean>;
   onGetModels: (id: string, signal?: AbortSignal) => Promise<ModelCatalog>;
   onRefreshModels: (id: string) => Promise<ModelCatalog | null>;
+  onUpdateModels: (
+    id: string,
+    mode: "auto" | "custom",
+    models: string[]
+  ) => Promise<ModelCatalog | null>;
 };
 
-type DialogMode = "create" | "duplicate" | "detail" | "edit" | "test" | "delete" | null;
+type DialogMode = "create" | "duplicate" | "detail" | "edit" | "test" | "models" | "delete" | null;
 type FormPurpose = "create" | "duplicate" | "edit";
 
 function testTone(status: Provider["lastTestStatus"]): "success" | "warning" | "danger" {
@@ -377,6 +383,80 @@ function ProviderForm({
   );
 }
 
+function SupportedModelsForm({
+  catalog,
+  t,
+  onSubmit
+}: {
+  catalog: ModelCatalog;
+  t: Translator;
+  onSubmit: (mode: "auto" | "custom", models: string[]) => Promise<boolean>;
+}) {
+  const [mode, setMode] = useState<"auto" | "custom">(catalog.mode);
+  const [modelsText, setModelsText] = useState(() => (
+    catalog.mode === "custom" ? catalog.configuredModels : catalog.models
+  ).join("\n"));
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const models = mode === "auto" ? [] : modelsText.split(/\r?\n/)
+      .map((model) => model.trim())
+      .filter(Boolean);
+    if (models.length > 2_000
+      || new Set(models).size !== models.length
+      || models.some((model) => [...model].length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(model))) {
+      setError(t("providers.supportedModelsInvalid"));
+      return;
+    }
+    setError(null);
+    if (!await onSubmit(mode, models)) setError(t("providers.supportedModelsInvalid"));
+  };
+
+  return (
+    <form id="provider-models-form" className="supported-models-form" onSubmit={submit} noValidate>
+      {error ? <FormError>{error}</FormError> : null}
+      <SelectField
+        id="provider-supported-models-mode"
+        name="supportedModelsMode"
+        label={t("providers.supportedModelsMode")}
+        help={t("providers.supportedModelsModeHelp")}
+        value={mode}
+        onChange={(event) => {
+          const next = event.target.value as "auto" | "custom";
+          setMode(next);
+          if (next === "custom" && !modelsText.trim()) setModelsText(catalog.models.join("\n"));
+        }}
+      >
+        <option value="auto">{t("providers.supportedModelsAuto")}</option>
+        <option value="custom">{t("providers.supportedModelsCustom")}</option>
+      </SelectField>
+      {mode === "custom" ? (
+        <TextareaField
+          id="provider-supported-models"
+          name="supportedModels"
+          label={t("providers.supportedModelsList")}
+          help={t("providers.supportedModelsListHelp")}
+          value={modelsText}
+          onChange={(event) => setModelsText(event.target.value)}
+          rows={14}
+          spellCheck={false}
+          autoFocus
+        />
+      ) : (
+        <Notice title={t("providers.supportedModelsAuto")} tone="info">
+          <p>{t("providers.supportedModelsAutoHelp")}</p>
+        </Notice>
+      )}
+      {catalog.models.length > 0 ? (
+        <p className="supported-models-source">
+          {t("providers.discoveredModelHint", { count: catalog.models.length })}
+        </p>
+      ) : null}
+    </form>
+  );
+}
+
 export function ProvidersPage({
   locale,
   t,
@@ -394,7 +474,8 @@ export function ProvidersPage({
   onActivate,
   onDelete,
   onGetModels,
-  onRefreshModels
+  onRefreshModels,
+  onUpdateModels
 }: ProvidersProps) {
   const [mode, setMode] = useState<DialogMode>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -404,7 +485,6 @@ export function ProvidersPage({
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [model, setModel] = useState("");
   const selected = providers.find((provider) => provider.id === selectedId);
-  const selectedPoolLocked = workerRunning && selected?.lastTestStatus === "passed";
 
   const duplicateName = (provider: Provider): string => {
     const occupied = new Set(providers.map((item) => item.name.toLocaleLowerCase()));
@@ -418,7 +498,7 @@ export function ProvidersPage({
   };
 
   useEffect(() => {
-    if (!selectedId || mode !== "detail" && mode !== "test") return undefined;
+    if (!selectedId || mode !== "detail" && mode !== "test" && mode !== "models") return undefined;
     const controller = new AbortController();
     setCatalogLoading(true);
     setCatalogError(null);
@@ -501,7 +581,6 @@ export function ProvidersPage({
           {providers.map((provider) => {
             const active = provider.id === activeProviderId;
             const eligible = provider.lastTestStatus === "passed" && provider.credentialConfigured;
-            const poolLocked = workerRunning && provider.lastTestStatus === "passed";
             const preset = providerPresets.find(({ baseUrl }) => baseUrl === provider.baseUrl);
             return (
               <article
@@ -522,6 +601,7 @@ export function ProvidersPage({
                   <div><dt>{t("providers.testStatus")}</dt><dd><StatusBadge tone={testTone(provider.lastTestStatus)}>{testLabel(provider, t)}</StatusBadge></dd></div>
                   <div><dt>{t("providers.lastTest")}</dt><dd>{provider.lastTestAt ? formatDate(locale, provider.lastTestAt) : t("common.none")}</dd></div>
                   <div><dt>{t("providers.modelPolicy")}</dt><dd>{modelPolicy(provider, modelMappingGroups, t)}</dd></div>
+                  <div><dt>{t("providers.supportedModels")}</dt><dd>{provider.supportedModelsMode === "custom" ? t("providers.supportedModelsCount", { count: provider.supportedModels.length }) : t("providers.supportedModelsAuto")}</dd></div>
                   <div><dt>{t("providers.credential")}</dt><dd>{provider.credentialConfigured ? t("common.configured") : t("common.notConfigured")}</dd></div>
                   <div className="provider-weight-fact">
                     <dt>{t("providers.weight")}</dt>
@@ -715,13 +795,13 @@ export function ProvidersPage({
           <>
             <Button
               variant="danger"
-              disabled={readOnly || selected.id === activeProviderId || pending !== null || selectedPoolLocked}
+              disabled={readOnly || pending !== null}
               onClick={() => setMode("delete")}
               aria-label={t("providers.deleteNamed", { name: selected.name })}
             ><Trash2 className="icon" aria-hidden="true" />{t("providers.delete")}</Button>
             <span className="modal-footer-spacer" />
             <Button
-              disabled={readOnly || selected.id === activeProviderId || pending !== null || selectedPoolLocked}
+              disabled={readOnly || pending !== null}
               onClick={() => setMode("edit")}
               aria-label={t("providers.editNamed", { name: selected.name })}
             ><Pencil className="icon" aria-hidden="true" />{t("providers.editTitle")}</Button>
@@ -755,12 +835,10 @@ export function ProvidersPage({
             {selected.id === activeProviderId ? (
               <Notice title={t("providers.preferred")} tone="info"><p>{t("providers.activeReason")}</p></Notice>
             ) : null}
-            {selectedPoolLocked ? (
-              <Notice title={t("providers.poolLockedTitle")} tone="info"><p>{t("providers.poolLockedHelp")}</p></Notice>
-            ) : null}
             <DefinitionList rows={[
               { label: t("providers.testStatus"), value: <StatusBadge tone={testTone(selected.lastTestStatus)}>{testLabel(selected, t)}</StatusBadge> },
               { label: t("providers.modelPolicy"), value: modelPolicy(selected, modelMappingGroups, t) },
+              { label: t("providers.supportedModels"), value: selected.supportedModelsMode === "custom" ? t("providers.supportedModelsCount", { count: selected.supportedModels.length }) : t("providers.supportedModelsAuto") },
               { label: t("providers.credential"), value: selected.credentialConfigured ? t("common.configured") : t("common.notConfigured") },
               { label: t("providers.authMethod"), value: <code>{selected.authScheme ? `${selected.authScheme} / ${selected.authHeader}` : selected.authHeader}</code> },
               { label: t("providers.extraHeaderCount"), value: formatNumber(locale, Object.keys(selected.extraHeaders).length) },
@@ -780,11 +858,17 @@ export function ProvidersPage({
                           : "providers.catalogMissing")} · ${t("providers.catalogCount", { count: catalog.models.length })}`
                       : t("providers.catalogMissing")}</p>
                 </div>
-                <Button
-                  disabled={readOnly || pending !== null || !selected.credentialConfigured}
-                  busy={pending === `provider-models-${selected.id}`}
-                  onClick={() => void refreshCatalog()}
-                ><RefreshCw className="icon" aria-hidden="true" />{t("providers.refreshModels")}</Button>
+                <div className="catalog-actions">
+                  <Button
+                    disabled={readOnly || pending !== null}
+                    onClick={() => setMode("models")}
+                  ><SlidersHorizontal className="icon" aria-hidden="true" />{t("providers.manageModels")}</Button>
+                  <Button
+                    disabled={readOnly || pending !== null || !selected.credentialConfigured}
+                    busy={pending === `provider-models-${selected.id}`}
+                    onClick={() => void refreshCatalog()}
+                  ><RefreshCw className="icon" aria-hidden="true" />{t("providers.refreshModels")}</Button>
+                </div>
               </div>
               {catalogError ? <ErrorNotice error={catalogError} t={t} /> : null}
               {catalog?.models.length ? (
@@ -836,6 +920,44 @@ export function ProvidersPage({
             {catalogError ? <ErrorNotice error={catalogError} t={t} /> : null}
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={mode === "models"}
+        title={t("providers.manageModelsTitle")}
+        description={selected?.name}
+        onClose={() => setMode("detail")}
+        t={t}
+        size="large"
+        footer={(
+          <>
+            <Button onClick={() => setMode("detail")}>{t("common.cancel")}</Button>
+            <Button
+              variant="primary"
+              type="submit"
+              form="provider-models-form"
+              busy={pending === `provider-models-update-${selected?.id ?? ""}`}
+              disabled={catalogLoading || catalog === null}
+            >{t("providers.saveModels")}</Button>
+          </>
+        )}
+      >
+        {catalogError ? <ErrorNotice error={catalogError} t={t} /> : null}
+        {mode === "models" && selected && catalog ? (
+          <SupportedModelsForm
+            key={`${selected.id}-${catalog.mode}-${catalog.configuredModels.join("|")}`}
+            catalog={catalog}
+            t={t}
+            onSubmit={async (catalogMode, models) => {
+              const updated = await onUpdateModels(selected.id, catalogMode, models);
+              if (updated) {
+                setCatalog(updated);
+                setMode("detail");
+              }
+              return updated !== null;
+            }}
+          />
+        ) : catalogLoading ? <p>{t("common.loading")}</p> : null}
       </Modal>
 
       <Modal

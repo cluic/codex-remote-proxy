@@ -35,7 +35,14 @@ function makeSettings() {
       port: 0,
       logLevel: "info"
     },
-    providers: [{ id: "provider-1", name: "Primary", weight: 100, upstream, proxy }],
+    providers: [{
+      id: "provider-1",
+      name: "Primary",
+      weight: 100,
+      supportedModels: null,
+      upstream,
+      proxy
+    }],
     upstream,
     proxy,
     capture: {
@@ -50,7 +57,8 @@ function makeSettings() {
         quotaStatus: "unknown",
         blockedUntil: null,
         updatedAt: null
-      }
+      },
+      providerPriorityRules: []
     }
   };
 }

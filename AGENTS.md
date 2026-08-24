@@ -86,6 +86,7 @@
 - Retryable POST routing may replay only before upstream delivery is possible; uncertain delivery must cool the provider for later requests.
 - Managed startup mutations must prove marker and inode identity, publish without clobber, disable through inert content, and preserve foreign paths and shared-directory modes.
 - Running provider pools must reject eligible configuration mutations unless the resulting snapshot is hot-applied and confirmed; failed probes must not invalidate a live snapshot.
+- Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
 
 ## Required Checks
 

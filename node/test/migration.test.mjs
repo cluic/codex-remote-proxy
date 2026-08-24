@@ -96,8 +96,12 @@ test("transactionally migrates legacy config to one untested inactive Default pr
   assert.deepEqual(result, { migrated: true, providerId: "provider-default" });
   assert.equal(credentials.values.get("credential-opaque"), secret);
   const registry = JSON.parse(readFileSync(harness.registryPath, "utf8"));
-  assert.equal(registry.schemaVersion, 5);
+  assert.equal(registry.schemaVersion, 6);
   assert.deepEqual(registry.modelMappingGroups, []);
+  assert.deepEqual(registry.routingRuleGroups, []);
+  assert.equal(registry.settings.routingRuleGroupId, null);
+  assert.equal(registry.providers[0].supportedModelsMode, "auto");
+  assert.deepEqual(registry.providers[0].supportedModels, []);
   assert.equal(registry.providers[0].modelMappingGroupId, null);
   assert.equal(registry.settings.routingMode, "custom_only");
   assert.equal(registry.activeProviderId, null);
@@ -300,7 +304,7 @@ test("does not overwrite an exclusive backup collision and is idempotent after s
   );
 });
 
-test("backs up and atomically upgrades a schema 2 registry to mapping-aware schema 5", async (t) => {
+test("backs up and atomically upgrades a schema 2 registry to routing-aware schema 6", async (t) => {
   const harness = makeHarness(t, { upstreamBaseUrl: "https://legacy.example/v1" });
   const schema2 = {
     schemaVersion: 2,
@@ -326,15 +330,17 @@ test("backs up and atomically upgrades a schema 2 registry to mapping-aware sche
     activityStore: { append: async (event) => events.push(event) }
   });
 
-  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-5" });
+  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-6" });
   const upgraded = JSON.parse(readFileSync(harness.registryPath, "utf8"));
-  assert.equal(upgraded.schemaVersion, 5);
+  assert.equal(upgraded.schemaVersion, 6);
   assert.deepEqual(upgraded.modelMappingGroups, []);
+  assert.deepEqual(upgraded.routingRuleGroups, []);
+  assert.equal(upgraded.settings.routingRuleGroupId, null);
   assert.equal(upgraded.settings.routingMode, "custom_only");
   assert.deepEqual(readFileSync(`${harness.registryPath}.schema-2.bak`), originalBytes);
   assert.equal(credentials.values.size, 0);
   assert.equal("apiKey" in JSON.parse(readFileSync(harness.legacyConfigPath, "utf8")), false);
-  assert.deepEqual(events.map(({ action }) => action), ["provider-registry-schema-5"]);
+  assert.deepEqual(events.map(({ action }) => action), ["provider-registry-schema-6"]);
 
   const second = await migrateLegacyConfiguration({ paths: harness.paths, credentialStore: credentials });
   assert.deepEqual(second, { migrated: false, reason: "already-current" });
@@ -380,10 +386,14 @@ test("upgrades schema 3 providers with default weights without changing routing 
     createBackupId: () => "schema-3"
   });
 
-  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-5" });
+  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-6" });
   const upgraded = JSON.parse(readFileSync(harness.registryPath, "utf8"));
-  assert.equal(upgraded.schemaVersion, 5);
+  assert.equal(upgraded.schemaVersion, 6);
   assert.deepEqual(upgraded.modelMappingGroups, []);
+  assert.deepEqual(upgraded.routingRuleGroups, []);
+  assert.equal(upgraded.settings.routingRuleGroupId, null);
+  assert.equal(upgraded.providers[0].supportedModelsMode, "auto");
+  assert.deepEqual(upgraded.providers[0].supportedModels, []);
   assert.equal(upgraded.providers[0].modelMappingGroupId, null);
   assert.equal(upgraded.activeProviderId, "provider-existing");
   assert.equal(upgraded.providers[0].weight, 100);
@@ -435,14 +445,79 @@ test("upgrades schema 4 providers with null mapping assignments and an empty gro
     activityStore: { append: async (event) => events.push(event) }
   });
 
-  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-5" });
+  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-6" });
   const upgraded = JSON.parse(readFileSync(harness.registryPath, "utf8"));
-  assert.equal(upgraded.schemaVersion, 5);
+  assert.equal(upgraded.schemaVersion, 6);
   assert.equal(upgraded.providers[0].weight, 275);
   assert.equal(upgraded.providers[0].modelMappingGroupId, null);
   assert.deepEqual(upgraded.modelMappingGroups, []);
+  assert.deepEqual(upgraded.routingRuleGroups, []);
+  assert.equal(upgraded.settings.routingRuleGroupId, null);
+  assert.equal(upgraded.providers[0].supportedModelsMode, "auto");
+  assert.deepEqual(upgraded.providers[0].supportedModels, []);
   assert.deepEqual(readFileSync(`${harness.registryPath}.schema-4.bak`), originalBytes);
-  assert.deepEqual(events.map(({ action }) => action), ["provider-registry-schema-5"]);
+  assert.deepEqual(events.map(({ action }) => action), ["provider-registry-schema-6"]);
+});
+
+test("upgrades schema 5 without changing provider mappings or routing settings", async (t) => {
+  const harness = makeHarness(t, {});
+  const schema5 = {
+    schemaVersion: 5,
+    activeProviderId: "provider-existing",
+    providers: [{
+      id: "provider-existing",
+      name: "Existing",
+      baseUrl: "https://existing.example/v1",
+      credentialRef: "credential-existing",
+      authHeader: "authorization",
+      authScheme: "Bearer",
+      extraHeaders: {},
+      weight: 275,
+      modelMode: "passthrough",
+      modelOverride: null,
+      modelMappingGroupId: "mapping-existing",
+      lastTestAt: NOW,
+      lastTestStatus: "passed",
+      lastTestCode: null,
+      createdAt: NOW,
+      updatedAt: NOW
+    }],
+    modelMappingGroups: [{
+      id: "mapping-existing",
+      name: "Existing mapping",
+      rules: [{ sourceModel: "gpt-5.6-sol", targetModel: "vendor/sol" }],
+      createdAt: NOW,
+      updatedAt: NOW
+    }],
+    settings: {
+      proxyHost: "127.0.0.1",
+      proxyPort: 15100,
+      adminHost: "127.0.0.1",
+      adminPort: 15101,
+      captureEnabled: true,
+      routingMode: "account_first"
+    }
+  };
+  const originalBytes = Buffer.from(`${JSON.stringify(schema5, null, 2)}\n`, "utf8");
+  writeFileSync(harness.registryPath, originalBytes, { mode: 0o600 });
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: new MemoryCredentialStore(),
+    createBackupId: () => "schema-5"
+  });
+
+  assert.deepEqual(result, { migrated: true, reason: "provider-registry-schema-6" });
+  const upgraded = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  assert.equal(upgraded.schemaVersion, 6);
+  assert.equal(upgraded.providers[0].modelMappingGroupId, "mapping-existing");
+  assert.equal(upgraded.providers[0].supportedModelsMode, "auto");
+  assert.deepEqual(upgraded.providers[0].supportedModels, []);
+  assert.deepEqual(upgraded.modelMappingGroups, schema5.modelMappingGroups);
+  assert.deepEqual(upgraded.routingRuleGroups, []);
+  assert.equal(upgraded.settings.routingMode, "account_first");
+  assert.equal(upgraded.settings.routingRuleGroupId, null);
+  assert.deepEqual(readFileSync(`${harness.registryPath}.schema-5.bak`), originalBytes);
 });
 
 test("restores exact schema 2 bytes when post-upgrade activity recording fails", async (t) => {
@@ -909,7 +984,7 @@ test("release token mismatch restores a canonical blocker before the next transa
   );
 });
 
-test("keeps committed schema 5 and credential when the shared registry lock degrades", async (t) => {
+test("keeps committed schema 6 and credential when the shared registry lock degrades", async (t) => {
   const secret = makeSecret();
   const harness = makeHarness(t, {
     upstreamBaseUrl: "https://legacy.example/v1",

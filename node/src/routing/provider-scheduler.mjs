@@ -42,6 +42,33 @@ function retryAfterMs(headers, nowMs) {
     : null;
 }
 
+function targetModelForProvider(provider, requestedModel) {
+  if (typeof requestedModel !== "string" || requestedModel.length === 0) return null;
+  if (provider?.proxy?.modelMode === "override"
+    && typeof provider.proxy.modelOverride === "string") {
+    return provider.proxy.modelOverride;
+  }
+  const mapping = Array.isArray(provider?.proxy?.modelMappings)
+    ? provider.proxy.modelMappings.find((rule) => rule?.sourceModel === requestedModel)
+    : null;
+  return typeof mapping?.targetModel === "string" ? mapping.targetModel : requestedModel;
+}
+
+function supportsRequestedModel(provider, requestedModel) {
+  if (provider?.supportedModels === null
+    || provider?.supportedModels === undefined
+    || requestedModel === null) return true;
+  if (!Array.isArray(provider?.supportedModels)) return false;
+  const targetModel = targetModelForProvider(provider, requestedModel);
+  return targetModel !== null && provider.supportedModels.includes(targetModel);
+}
+
+function priorityRanks(priorityRules, requestedModel) {
+  if (typeof requestedModel !== "string" || !Array.isArray(priorityRules)) return new Map();
+  const rule = priorityRules.find((candidate) => candidate?.model === requestedModel);
+  return new Map((rule?.providerIds ?? []).map((providerId, index) => [providerId, index]));
+}
+
 export function isRetryableProviderResponse(statusCode) {
   return Number.isInteger(statusCode) && RETRYABLE_RESPONSE_STATUSES.has(statusCode);
 }
@@ -59,19 +86,23 @@ export class ProviderScheduler {
     this.#now = now;
   }
 
-  ordered(providers) {
+  ordered(providers, { model = null, priorityRules = [] } = {}) {
     if (!Array.isArray(providers) || providers.length === 0) return [];
     const nowMs = safeNow(this.#now);
-    const indexed = providers.map((provider, index) => ({
+    const ranks = priorityRanks(priorityRules, model);
+    const indexed = providers.filter((provider) => supportsRequestedModel(provider, model)).map((provider, index) => ({
       provider,
       index,
+      priority: ranks.get(provider.id) ?? Number.POSITIVE_INFINITY,
       blockedUntilMs: this.#states.get(provider.id)?.blockedUntilMs ?? 0
     }));
+    if (indexed.length === 0) return [];
     const healthy = indexed.filter((candidate) => candidate.blockedUntilMs <= nowMs);
     const candidates = healthy.length > 0
       ? healthy
       : indexed.sort((left, right) => left.blockedUntilMs - right.blockedUntilMs).slice(0, 1);
     return candidates.sort((left, right) => {
+      if (left.priority !== right.priority) return left.priority - right.priority;
       if (left.provider.weight !== right.provider.weight) {
         return right.provider.weight - left.provider.weight;
       }
