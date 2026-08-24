@@ -20,6 +20,8 @@ const PUBLIC_PROVIDER_FIELDS = [
   "modelMode",
   "modelOverride",
   "modelMappingGroupId",
+  "supportedModelsMode",
+  "supportedModels",
   "lastTestAt",
   "lastTestStatus",
   "lastTestCode",
@@ -272,6 +274,26 @@ function projectModelMappingGroup(group) {
   };
 }
 
+function projectRoutingRuleGroup(group) {
+  return {
+    id: projectMetricText(group?.id, 128),
+    name: projectMetricText(group?.name, 100),
+    rules: Array.isArray(group?.rules)
+      ? group.rules.slice(0, 100).map((rule) => ({
+          model: projectMetricText(rule?.model, 256),
+          providerIds: Array.isArray(rule?.providerIds)
+            ? rule.providerIds.slice(0, 100)
+                .map((id) => projectMetricText(id, 128))
+                .filter(Boolean)
+            : []
+        })).filter((rule) => rule.model !== null && rule.providerIds.length > 0)
+      : [],
+    active: group?.active === true,
+    createdAt: projectMetricTimestamp(group?.createdAt),
+    updatedAt: projectMetricTimestamp(group?.updatedAt)
+  };
+}
+
 function projectWorker(worker) {
   if (worker === null || typeof worker !== "object") return null;
   const projected = pick(worker, PUBLIC_WORKER_FIELDS);
@@ -319,6 +341,10 @@ function projectModelCatalog(catalog) {
     state,
     fetchedAt: typeof catalog?.fetchedAt === "string" ? catalog.fetchedAt : null,
     expiresAt: typeof catalog?.expiresAt === "string" ? catalog.expiresAt : null,
+    mode: catalog?.mode === "custom" ? "custom" : "auto",
+    configuredModels: Array.isArray(catalog?.configuredModels)
+      ? catalog.configuredModels.filter((model) => typeof model === "string").slice(0, 2_000)
+      : [],
     models: Array.isArray(catalog?.models)
       ? catalog.models.filter((model) => typeof model === "string").slice(0, 2_000)
       : []
@@ -837,6 +863,21 @@ function parseModelMappingRoute(pathname) {
   return { id };
 }
 
+function parseRoutingRuleGroupRoute(pathname) {
+  const prefix = `${API_PREFIX}/routing-rule-groups/`;
+  if (!pathname.startsWith(prefix)) return null;
+  const rawId = pathname.slice(prefix.length);
+  if (rawId.length === 0 || rawId.includes("/")) return null;
+  let id;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    return null;
+  }
+  if (id.length === 0 || id.length > 128 || /[\\/\u0000-\u001f\u007f]/.test(id)) return null;
+  return { id };
+}
+
 function providerNotFound() {
   return new CrpError(
     "PROVIDER_NOT_FOUND",
@@ -856,6 +897,8 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/forwarding-records`, ["GET"]],
     [`${API_PREFIX}/model-mappings`, ["GET", "POST"]],
     [`${API_PREFIX}/provider-presets`, ["GET"]],
+    [`${API_PREFIX}/routing-rule-groups`, ["GET", "POST"]],
+    [`${API_PREFIX}/routing-rule-groups/active`, ["PATCH"]],
     [`${API_PREFIX}/providers`, ["GET", "POST"]],
     [`${API_PREFIX}/proxy/start`, ["POST"]],
     [`${API_PREFIX}/proxy/stop`, ["POST"]],
@@ -868,10 +911,11 @@ function allowedMethods(pathname) {
   ]);
   if (exact.has(pathname)) return exact.get(pathname);
   if (parseModelMappingRoute(pathname)) return ["GET", "PATCH", "DELETE"];
+  if (parseRoutingRuleGroupRoute(pathname)) return ["GET", "PATCH", "DELETE"];
   const providerRoute = parseProviderRoute(pathname);
   if (!providerRoute) return null;
   if (providerRoute.action === null) return ["GET", "PATCH", "DELETE"];
-  if (providerRoute.action === "models") return ["GET", "POST"];
+  if (providerRoute.action === "models") return ["GET", "POST", "PATCH"];
   return providerRoute.action === "weight" ? ["PATCH"] : ["POST"];
 }
 
@@ -1255,6 +1299,74 @@ export function createAdminServer({
       sendJson(response, 200, { modelMappingGroup: projectModelMappingGroup(group) });
       return;
     }
+    if (url.pathname === `${API_PREFIX}/routing-rule-groups` && request.method === "GET") {
+      const groups = providerService.listRoutingRuleGroups();
+      sendJson(response, 200, {
+        routingRuleGroups: groups.map(projectRoutingRuleGroup)
+      });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/routing-rule-groups` && request.method === "POST") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["routingRuleGroup"],
+        required: ["routingRuleGroup"]
+      });
+      if (!isPlainObject(body.routingRuleGroup)) throw bodyError("API_BODY_INVALID");
+      const group = await providerService.createRoutingRuleGroup(body.routingRuleGroup);
+      sendJson(response, 201, { routingRuleGroup: projectRoutingRuleGroup(group) });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/routing-rule-groups/active`
+      && request.method === "PATCH") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["id"],
+        required: ["id"]
+      });
+      if (body.id !== null && typeof body.id !== "string") throw bodyError("API_BODY_INVALID");
+      const result = await providerService.setActiveRoutingRuleGroup(body.id);
+      sendJson(response, 200, {
+        activeRoutingRuleGroupId: typeof result.activeRoutingRuleGroupId === "string"
+          ? result.activeRoutingRuleGroupId
+          : null,
+        generation: Number.isSafeInteger(result.generation) ? result.generation : 0,
+        worker: projectWorker(result.worker)
+      });
+      return;
+    }
+    const routingRuleGroupRoute = parseRoutingRuleGroupRoute(url.pathname);
+    if (routingRuleGroupRoute && request.method === "GET") {
+      const group = providerService.listRoutingRuleGroups()
+        .find((candidate) => candidate.id === routingRuleGroupRoute.id);
+      if (!group) {
+        throw new CrpError(
+          "ROUTING_RULE_GROUP_NOT_FOUND",
+          "The routing rule group does not exist.",
+          "Refresh routing rules and try again.",
+          { status: 404 }
+        );
+      }
+      sendJson(response, 200, { routingRuleGroup: projectRoutingRuleGroup(group) });
+      return;
+    }
+    if (routingRuleGroupRoute && request.method === "PATCH") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["routingRuleGroup"],
+        required: ["routingRuleGroup"]
+      });
+      if (!isPlainObject(body.routingRuleGroup)) throw bodyError("API_BODY_INVALID");
+      const group = await providerService.updateRoutingRuleGroup(
+        routingRuleGroupRoute.id,
+        body.routingRuleGroup
+      );
+      sendJson(response, 200, { routingRuleGroup: projectRoutingRuleGroup(group) });
+      return;
+    }
+    if (routingRuleGroupRoute && request.method === "DELETE") {
+      await requireEmptyBody(request, maxBodyBytes);
+      const group = await providerService.deleteRoutingRuleGroup(routingRuleGroupRoute.id);
+      sendJson(response, 200, { routingRuleGroup: projectRoutingRuleGroup(group) });
+      return;
+    }
     if (url.pathname === `${API_PREFIX}/providers` && request.method === "GET") {
       const providers = await providerService.listProviders();
       sendJson(response, 200, { providers: providers.map(projectProvider) });
@@ -1332,6 +1444,21 @@ export function createAdminServer({
     if (providerRoute?.action === "models" && request.method === "POST") {
       await requireEmptyBody(request, maxBodyBytes);
       const modelCatalog = await providerService.refreshProviderModels(providerRoute.id);
+      sendJson(response, 200, { modelCatalog: projectModelCatalog(modelCatalog) });
+      return;
+    }
+    if (providerRoute?.action === "models" && request.method === "PATCH") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["mode", "models"],
+        required: ["mode", "models"]
+      });
+      if ((body.mode !== "auto" && body.mode !== "custom") || !Array.isArray(body.models)) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const modelCatalog = await providerService.setProviderSupportedModels(
+        providerRoute.id,
+        { mode: body.mode, models: body.models }
+      );
       sendJson(response, 200, { modelCatalog: projectModelCatalog(modelCatalog) });
       return;
     }

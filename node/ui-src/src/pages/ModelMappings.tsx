@@ -275,7 +275,7 @@ export function ModelMappingsPage({
                 </div>
                 <div className="mapping-detail-actions">
                   <Button
-                    disabled={readOnly || pending !== null || runningPoolLocked}
+                    disabled={readOnly || pending !== null}
                     onClick={() => setMode("edit")}
                   ><Pencil className="icon" aria-hidden="true" />{t("common.edit")}</Button>
                   <Button

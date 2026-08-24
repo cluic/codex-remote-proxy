@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 
 export const ACCOUNT_MONITOR_POLL_INTERVAL_MS = 5 * 60 * 1_000;
 export const ACCOUNT_MONITOR_MAX_LINE_BYTES = 1024 * 1024;
+export const ACCOUNT_MONITOR_MAX_STDERR_BYTES = 32 * 1024;
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const CLOSE_TIMEOUT_MS = 1_000;
@@ -193,13 +195,54 @@ function publicErrorCode(error) {
   if (error?.code === "APP_SERVER_METHOD_NOT_FOUND") return "ACCOUNT_QUOTA_UNSUPPORTED";
   if (error?.code === "ACCOUNT_MONITOR_TIMEOUT") return error.code;
   if (error?.code === "ACCOUNT_MONITOR_PROTOCOL_ERROR") return error.code;
+  if (error?.code === "ENOENT") return "CODEX_COMMAND_UNAVAILABLE";
+  if (error?.code === "CODEX_MODEL_CATALOG_INVALID") return error.code;
+  if (error?.code === "CODEX_CONFIG_INVALID") return error.code;
+  if (error?.code === "CODEX_COMMAND_UNAVAILABLE") return error.code;
   return "ACCOUNT_MONITOR_UNAVAILABLE";
+}
+
+function classifyCodexStartupFailure(stderr, error) {
+  if (error?.code === "ENOENT") return requestError("CODEX_COMMAND_UNAVAILABLE");
+  const text = Buffer.isBuffer(stderr) ? stderr.toString("utf8") : "";
+  if (/failed to parse model_catalog_json|model_catalog_json[^\n]*missing field/i.test(text)) {
+    return requestError("CODEX_MODEL_CATALOG_INVALID");
+  }
+  if (/error loading configuration|failed to load configuration/i.test(text)) {
+    return requestError("CODEX_CONFIG_INVALID");
+  }
+  return error;
+}
+
+export function buildCodexSpawnEnvironment(
+  environment = process.env,
+  { execPath = process.execPath, platform = process.platform } = {}
+) {
+  const next = { ...environment };
+  const pathKey = platform === "win32"
+    ? Object.keys(next).find((key) => key.toLowerCase() === "path") ?? "Path"
+    : "PATH";
+  const separator = platform === "win32" ? ";" : ":";
+  const runtimeDirectory = dirname(execPath);
+  const current = typeof next[pathKey] === "string" ? next[pathKey] : "";
+  const entries = current.split(separator).filter(Boolean);
+  const runtimeIdentity = platform === "win32"
+    ? runtimeDirectory.toLowerCase()
+    : runtimeDirectory;
+  next[pathKey] = [
+    runtimeDirectory,
+    ...entries.filter((entry) => (
+      platform === "win32" ? entry.toLowerCase() : entry
+    ) !== runtimeIdentity)
+  ].join(separator);
+  return next;
 }
 
 function defaultSpawn(command, args) {
   return spawn(command, args, {
     stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true
+    windowsHide: true,
+    env: buildCodexSpawnEnvironment()
   });
 }
 
@@ -216,6 +259,7 @@ export class AccountMonitor {
   #clientVersion;
   #child = null;
   #stdoutBuffer = Buffer.alloc(0);
+  #stderrBuffer = Buffer.alloc(0);
   #requestSequence = 0;
   #pending = new Map();
   #listeners = new Set();
@@ -324,9 +368,9 @@ export class AccountMonitor {
         throw requestError("ACCOUNT_MONITOR_PROTOCOL_ERROR");
       }
       this.#stdoutBuffer = Buffer.alloc(0);
+      this.#stderrBuffer = Buffer.alloc(0);
       this.#child = child;
       this.#attachChild(child);
-      child.stderr.resume?.();
       await this.#request("initialize", {
         clientInfo: {
           name: "codex_remote_proxy",
@@ -391,6 +435,7 @@ export class AccountMonitor {
         const child = this.#child;
         this.#child = null;
         this.#stdoutBuffer = Buffer.alloc(0);
+        this.#stderrBuffer = Buffer.alloc(0);
         this.#retireChild(child);
         this.#rejectPending(error);
         this.#setState({
@@ -412,12 +457,26 @@ export class AccountMonitor {
       if (child === this.#child) this.#acceptStdout(chunk);
     });
     child.stdout.once("error", () => this.#failProtocol(child));
+    child.stderr.on("data", (chunk) => {
+      if (child === this.#child) this.#acceptStderr(chunk);
+    });
     child.stdin.once("error", (error) => this.#handleChildExit(child, error));
     child.once("error", (error) => this.#handleChildExit(child, error));
-    child.once("exit", () => this.#handleChildExit(
-      child,
+    child.once("exit", () => this.#handleChildExit(child, classifyCodexStartupFailure(
+      this.#stderrBuffer,
       requestError("ACCOUNT_MONITOR_UNAVAILABLE")
-    ));
+    )));
+  }
+
+  #acceptStderr(chunk) {
+    if (this.#closed || !Buffer.isBuffer(chunk) && typeof chunk !== "string") return;
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const remaining = ACCOUNT_MONITOR_MAX_STDERR_BYTES - this.#stderrBuffer.length;
+    if (remaining <= 0) return;
+    this.#stderrBuffer = Buffer.concat([
+      this.#stderrBuffer,
+      bytes.subarray(0, remaining)
+    ]);
   }
 
   #acceptStdout(chunk) {
@@ -545,15 +604,17 @@ export class AccountMonitor {
     const existingErrorCode = this.#state.phase === "unavailable"
       ? this.#state.errorCode
       : null;
+    const classifiedError = classifyCodexStartupFailure(this.#stderrBuffer, error);
     this.#child = null;
     this.#stdoutBuffer = Buffer.alloc(0);
-    this.#rejectPending(error);
+    this.#stderrBuffer = Buffer.alloc(0);
+    this.#rejectPending(classifiedError);
     this.#setState({
       ...this.#state,
       phase: "unavailable",
       quota: null,
       updatedAt: this.#now(),
-      errorCode: existingErrorCode ?? publicErrorCode(error)
+      errorCode: existingErrorCode ?? publicErrorCode(classifiedError)
     });
   }
 

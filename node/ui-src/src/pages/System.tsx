@@ -75,6 +75,20 @@ function captureLabel(status: StatusResponse["capture"], t: Translator): string 
   return t("system.captureAttention");
 }
 
+function accountErrorHelp(errorCode: string | null, t: Translator): string | null {
+  if (errorCode === "CODEX_MODEL_CATALOG_INVALID") {
+    return t("system.accountModelCatalogInvalid");
+  }
+  if (errorCode === "CODEX_CONFIG_INVALID") return t("system.accountConfigInvalid");
+  if (errorCode === "CODEX_COMMAND_UNAVAILABLE") {
+    return t("system.accountCommandUnavailable");
+  }
+  if (errorCode === "ACCOUNT_MONITOR_UNAVAILABLE") {
+    return t("system.accountMonitorUnavailable");
+  }
+  return null;
+}
+
 export function SystemPage({
   locale,
   t,
@@ -130,6 +144,7 @@ export function SystemPage({
     : account.authenticated === false
       ? t("system.accountApiKey")
       : t("system.accountUnknown");
+  const accountErrorDescription = accountErrorHelp(account.errorCode, t);
   const accountFirst = routingSelection === "account_first";
   const autoStartDescription = !settings.autoStartSupported
     ? t("system.autoStartUnavailable")
@@ -255,6 +270,11 @@ export function SystemPage({
                   </span>
                   <small>{t("system.accountUpdated")}: {formatDate(locale, account.updatedAt, true)}</small>
                   {account.errorCode ? <code>{account.errorCode}</code> : null}
+                  {accountErrorDescription ? (
+                    <small className="system-account-error-help">
+                      {accountErrorDescription}
+                    </small>
+                  ) : null}
                 </div>
                 <IconButton
                   label={t("system.refreshAccount")}

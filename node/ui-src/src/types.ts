@@ -1,6 +1,6 @@
 export type Locale = "en" | "zh-CN";
 
-export type Route = "overview" | "providers" | "model-mappings" | "forwarding" | "activity" | "system" | "setup";
+export type Route = "overview" | "providers" | "model-mappings" | "routing-rules" | "forwarding" | "activity" | "system" | "setup";
 
 export type AccessMode = "initializing" | "writable" | "read-only" | "terminal" | "stopped";
 
@@ -17,6 +17,8 @@ export interface Provider {
   modelMode: "passthrough" | "override";
   modelOverride: string | null;
   modelMappingGroupId: string | null;
+  supportedModelsMode: "auto" | "custom";
+  supportedModels: string[];
   lastTestAt: string | null;
   lastTestStatus: TestStatus;
   lastTestCode: string | null;
@@ -65,6 +67,25 @@ export interface ModelMappingGroup {
 export interface ModelMappingGroupInput {
   name: string;
   rules: ModelMappingRule[];
+}
+
+export interface RoutingRule {
+  model: string;
+  providerIds: string[];
+}
+
+export interface RoutingRuleGroup {
+  id: string;
+  name: string;
+  rules: RoutingRule[];
+  active: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface RoutingRuleGroupInput {
+  name: string;
+  rules: RoutingRule[];
 }
 
 export interface WorkerChildState {
@@ -231,6 +252,8 @@ export interface ModelCatalog {
   state: "missing" | "fresh" | "stale";
   fetchedAt: string | null;
   expiresAt: string | null;
+  mode: "auto" | "custom";
+  configuredModels: string[];
   models: string[];
 }
 
@@ -332,6 +355,7 @@ export interface WorkspaceData {
   providers: Provider[];
   providerPresets: ProviderPreset[];
   modelMappingGroups: ModelMappingGroup[];
+  routingRuleGroups: RoutingRuleGroup[];
   settings: Settings;
 }
 

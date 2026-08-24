@@ -202,7 +202,14 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
       port,
       logLevel: "info"
     },
-    providers: [{ id: "provider-1", name: "Primary", weight: 100, upstream, proxy }],
+    providers: [{
+      id: "provider-1",
+      name: "Primary",
+      weight: 100,
+      supportedModels: null,
+      upstream,
+      proxy
+    }],
     upstream,
     proxy,
     capture: {
@@ -211,6 +218,7 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
     },
     routing: {
       mode: "custom_only",
+      providerPriorityRules: [],
       accountRevision: 1,
       account: {
         authMode: null,

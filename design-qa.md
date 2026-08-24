@@ -70,10 +70,18 @@ The start-at-login setting exposes its platform/user-level boundary directly, an
 ## Model Mappings Page QA
 
 - Browser-rendered implementation: `output/playwright/task11/model-mappings-creates-ass-8fe67-n-exact-model-mapping-group-chromium/model-mappings-1440x900.png`
-- Verified state: English writable session, stopped Worker, one `OpenRouter` exact-match group assigned to `Provider Beta`, one `gpt-5` → `openai/gpt-5.1` rule, and deletion disabled while assigned.
+- Verified state: English writable session, running Worker, one `OpenRouter` exact-match group assigned to `Provider Beta`, one hot-applied `gpt-5` → `openai/gpt-5.1` rule, and deletion disabled while assigned.
 - The page keeps rule-group navigation narrow and gives the editable mapping table the primary workspace. Assignment count, named Provider tag, unmatched passthrough behavior, and exact-match semantics remain visible without opening a dialog.
 - The management flow creates a group, assigns it through Provider settings, edits its target, and prevents deletion while referenced. The final screenshot has no overlay, clipping, overlap, or horizontal overflow at 1440 × 900.
-- Full Chromium E2E matrix: 52/52 passed across English/Chinese and 1440/1024/390 layout checks.
+- Full Chromium E2E matrix: 54/54 passed across English/Chinese and 1440/1024/390 layout checks.
+
+## Routing Rules Page QA
+
+- Browser-rendered implementation: `output/playwright/task11/routing-rules-manages-prov-bd650-ies-per-model-routing-rules-chromium/routing-rules-1440x900.png`
+- Verified state: English writable session, running Worker, custom `Provider Beta` model availability, and one active group that prefers Provider Alpha for `gpt-5.6-sol` and Provider Beta for `gpt-5.6-luna`.
+- The group list, active-state marker, exact model count, fallback explanation, provider ranks, and live-apply notice remain readable in the first 1440 × 900 viewport. Actions have stable text/icon targets and the success notice is a non-reflowing overlay.
+- The browser flow manages the provider model list, creates and activates a two-model group, edits its name while live, confirms a newer generation, scans for protected values, and verifies no page-level overflow. The shared bilingual matrix also opens Routing Rules at 1440, 1024, and 390 widths.
+- Visual review found no actionable P0, P1, or P2 issue. The transient success toast overlaps only the unused top-right page-action region and remains closable.
 
 ## Product Hardening QA
 

@@ -40,6 +40,8 @@ function publicProvider(overrides = {}) {
     modelMode: "passthrough",
     modelOverride: null,
     modelMappingGroupId: null,
+    supportedModelsMode: "auto",
+    supportedModels: [],
     lastTestAt: null,
     lastTestStatus: "untested",
     lastTestCode: null,
@@ -79,6 +81,7 @@ function createServices() {
   const calls = [];
   const providers = [publicProvider()];
   const modelMappingGroups = [];
+  const routingRuleGroups = [];
   const providerService = {
     async listProviders() {
       calls.push(["listProviders"]);
@@ -119,6 +122,44 @@ function createServices() {
       calls.push(["deleteModelMappingGroup", id]);
       const index = modelMappingGroups.findIndex((candidate) => candidate.id === id);
       return structuredClone(modelMappingGroups.splice(index, 1)[0]);
+    },
+    listRoutingRuleGroups() {
+      calls.push(["listRoutingRuleGroups"]);
+      return structuredClone(routingRuleGroups);
+    },
+    async createRoutingRuleGroup(input) {
+      calls.push(["createRoutingRuleGroup", input]);
+      const group = {
+        id: "routing-1",
+        ...structuredClone(input),
+        active: false,
+        createdAt: "2026-07-13T00:00:00.000Z",
+        updatedAt: "2026-07-13T00:00:00.000Z"
+      };
+      routingRuleGroups.push(group);
+      return structuredClone(group);
+    },
+    async updateRoutingRuleGroup(id, input) {
+      calls.push(["updateRoutingRuleGroup", id, input]);
+      const group = routingRuleGroups.find((candidate) => candidate.id === id);
+      Object.assign(group, structuredClone(input), {
+        updatedAt: "2026-07-13T00:01:00.000Z"
+      });
+      return structuredClone(group);
+    },
+    async deleteRoutingRuleGroup(id) {
+      calls.push(["deleteRoutingRuleGroup", id]);
+      const index = routingRuleGroups.findIndex((candidate) => candidate.id === id);
+      return structuredClone(routingRuleGroups.splice(index, 1)[0]);
+    },
+    async setActiveRoutingRuleGroup(id) {
+      calls.push(["setActiveRoutingRuleGroup", id]);
+      for (const group of routingRuleGroups) group.active = group.id === id;
+      return {
+        activeRoutingRuleGroupId: id,
+        generation: 2,
+        worker: workerState({ generation: 2 })
+      };
     },
     async updateProvider(id, patch, replacementSecret) {
       calls.push(["updateProvider", id, patch, replacementSecret]);
@@ -166,6 +207,8 @@ function createServices() {
         state: "stale",
         fetchedAt: "2026-07-12T00:00:00.000Z",
         expiresAt: "2026-07-13T00:00:00.000Z",
+        mode: "auto",
+        configuredModels: [],
         models: ["cached-model"],
         apiKey: SECRET
       };
@@ -177,8 +220,22 @@ function createServices() {
         state: "fresh",
         fetchedAt: "2026-07-13T00:00:00.000Z",
         expiresAt: "2026-07-14T00:00:00.000Z",
+        mode: "auto",
+        configuredModels: [],
         models: ["fresh-model"],
         credentialRef: CREDENTIAL_REF
+      };
+    },
+    async setProviderSupportedModels(id, input) {
+      calls.push(["setProviderSupportedModels", id, input]);
+      return {
+        providerId: id,
+        state: "fresh",
+        fetchedAt: "2026-07-13T00:00:00.000Z",
+        expiresAt: "2026-07-14T00:00:00.000Z",
+        mode: input.mode,
+        configuredModels: [...input.models],
+        models: ["fresh-model"]
       };
     },
     async activate(id) {
@@ -1027,6 +1084,26 @@ test("routes every approved Admin API operation through injected services", asyn
     }, 200],
     ["GET", "/api/v1/providers/provider-2/models", undefined, 200],
     ["POST", "/api/v1/providers/provider-2/models", undefined, 200],
+    ["PATCH", "/api/v1/providers/provider-2/models", {
+      mode: "custom",
+      models: ["gpt-5.6-sol"]
+    }, 200],
+    ["GET", "/api/v1/routing-rule-groups", undefined, 200],
+    ["POST", "/api/v1/routing-rule-groups", {
+      routingRuleGroup: {
+        name: "Sol preferred",
+        rules: [{ model: "gpt-5.6-sol", providerIds: ["provider-2"] }]
+      }
+    }, 201],
+    ["GET", "/api/v1/routing-rule-groups/routing-1", undefined, 200],
+    ["PATCH", "/api/v1/routing-rule-groups/routing-1", {
+      routingRuleGroup: {
+        name: "Sol preferred updated",
+        rules: [{ model: "gpt-5.6-sol", providerIds: ["provider-2", "provider-1"] }]
+      }
+    }, 200],
+    ["PATCH", "/api/v1/routing-rule-groups/active", { id: "routing-1" }, 200],
+    ["DELETE", "/api/v1/routing-rule-groups/routing-1", undefined, 200],
     ["POST", "/api/v1/providers/provider-2/activate", undefined, 200],
     ["POST", "/api/v1/proxy/start", undefined, 200],
     ["POST", "/api/v1/proxy/stop", undefined, 200],
@@ -1608,6 +1685,8 @@ test("model catalog routes distinguish cached reads from refreshes with strict p
       state: "stale",
       fetchedAt: "2026-07-12T00:00:00.000Z",
       expiresAt: "2026-07-13T00:00:00.000Z",
+      mode: "auto",
+      configuredModels: [],
       models: ["cached-model"]
     }
   });
@@ -1624,14 +1703,31 @@ test("model catalog routes distinguish cached reads from refreshes with strict p
       state: "fresh",
       fetchedAt: "2026-07-13T00:00:00.000Z",
       expiresAt: "2026-07-14T00:00:00.000Z",
+      mode: "auto",
+      configuredModels: [],
       models: ["fresh-model"]
     }
   });
+  const configured = await harness.request("/api/v1/providers/provider-1/models", {
+    method: "PATCH",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ mode: "custom", models: ["gpt-5.6-sol"] })
+  });
+  assertNoSensitiveResponse(configured);
+  assert.equal(configured.response.status, 200, configured.text);
+  assert.equal(configured.json.modelCatalog.mode, "custom");
+  assert.deepEqual(configured.json.modelCatalog.configuredModels, ["gpt-5.6-sol"]);
   assert.deepEqual(
-    harness.calls.filter(([operation]) => operation.includes("ProviderModels")),
+    harness.calls.filter(([operation]) => (
+      operation.includes("ProviderModels") || operation === "setProviderSupportedModels"
+    )),
     [
       ["getProviderModels", "provider-1"],
-      ["refreshProviderModels", "provider-1"]
+      ["refreshProviderModels", "provider-1"],
+      ["setProviderSupportedModels", "provider-1", {
+        mode: "custom",
+        models: ["gpt-5.6-sol"]
+      }]
     ]
   );
 
@@ -1650,7 +1746,7 @@ test("model catalog routes distinguish cached reads from refreshes with strict p
   });
   assertNoSensitiveResponse(methodRejected);
   assert.equal(methodRejected.response.status, 405, methodRejected.text);
-  assert.equal(methodRejected.response.headers.get("allow"), "GET, POST");
+  assert.equal(methodRejected.response.headers.get("allow"), "GET, POST, PATCH");
   assert.equal(methodRejected.json.error.code, "API_METHOD_NOT_ALLOWED");
 });
 

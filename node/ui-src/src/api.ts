@@ -14,6 +14,8 @@ import type {
   ProviderInput,
   ProviderPreset,
   ProviderTestResult,
+  RoutingRuleGroup,
+  RoutingRuleGroupInput,
   SafeErrorDetails,
   Settings,
   StatusResponse,
@@ -227,6 +229,48 @@ export class CrpApi {
     return payload.modelMappingGroup;
   }
 
+  async listRoutingRuleGroups(signal?: AbortSignal): Promise<RoutingRuleGroup[]> {
+    const payload = await this.get<{ routingRuleGroups: RoutingRuleGroup[] }>(
+      "/api/v1/routing-rule-groups",
+      signal
+    );
+    return payload.routingRuleGroups;
+  }
+
+  async createRoutingRuleGroup(input: RoutingRuleGroupInput): Promise<RoutingRuleGroup> {
+    const payload = await this.mutate<{ routingRuleGroup: RoutingRuleGroup }>(
+      "/api/v1/routing-rule-groups",
+      { method: "POST", body: { routingRuleGroup: input } }
+    );
+    return payload.routingRuleGroup;
+  }
+
+  async updateRoutingRuleGroup(
+    id: string,
+    input: RoutingRuleGroupInput
+  ): Promise<RoutingRuleGroup> {
+    const payload = await this.mutate<{ routingRuleGroup: RoutingRuleGroup }>(
+      this.routingRuleGroupPath(id),
+      { method: "PATCH", body: { routingRuleGroup: input } }
+    );
+    return payload.routingRuleGroup;
+  }
+
+  async deleteRoutingRuleGroup(id: string): Promise<RoutingRuleGroup> {
+    const payload = await this.mutate<{ routingRuleGroup: RoutingRuleGroup }>(
+      this.routingRuleGroupPath(id),
+      { method: "DELETE", emptyBody: true }
+    );
+    return payload.routingRuleGroup;
+  }
+
+  async setActiveRoutingRuleGroup(id: string | null): Promise<void> {
+    await this.mutate("/api/v1/routing-rule-groups/active", {
+      method: "PATCH",
+      body: { id }
+    });
+  }
+
   async getSettings(signal?: AbortSignal): Promise<Settings> {
     const payload = await this.get<{ settings: Settings }>("/api/v1/settings", signal);
     return payload.settings;
@@ -347,6 +391,18 @@ export class CrpApi {
     return payload.modelCatalog;
   }
 
+  async updateProviderModels(
+    id: string,
+    mode: "auto" | "custom",
+    models: string[]
+  ): Promise<ModelCatalog> {
+    const payload = await this.mutate<{ modelCatalog: ModelCatalog }>(`${this.providerPath(id)}/models`, {
+      method: "PATCH",
+      body: { mode, models }
+    });
+    return payload.modelCatalog;
+  }
+
   async activateProvider(id: string): Promise<void> {
     await this.mutate(`${this.providerPath(id)}/activate`, { method: "POST", emptyBody: true });
   }
@@ -415,6 +471,10 @@ export class CrpApi {
 
   private modelMappingPath(id: string): string {
     return `/api/v1/model-mappings/${encodeURIComponent(id)}`;
+  }
+
+  private routingRuleGroupPath(id: string): string {
+    return `/api/v1/routing-rule-groups/${encodeURIComponent(id)}`;
   }
 
   private async get<T>(path: string, signal?: AbortSignal): Promise<T> {

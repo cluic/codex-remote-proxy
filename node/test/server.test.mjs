@@ -91,6 +91,7 @@ function makeSettings({
   logLevel = "info",
   captureEnabled = true,
   providers = null,
+  providerPriorityRules = [],
   routingMode = "custom_only",
   accountState = {
     authMode: null,
@@ -119,6 +120,7 @@ function makeSettings({
     id: "provider-primary",
     name: "Primary",
     weight: 100,
+    supportedModels: null,
     upstream,
     proxy
   }];
@@ -139,7 +141,8 @@ function makeSettings({
     routing: {
       mode: routingMode,
       accountRevision: 1,
-      account: structuredClone(accountState)
+      account: structuredClone(accountState),
+      providerPriorityRules
     }
   };
 }
@@ -153,12 +156,14 @@ function providerCandidate({
   timeoutMs = 5_000,
   modelMode = "passthrough",
   modelOverride = null,
-  modelMappings = []
+  modelMappings = [],
+  supportedModels = null
 }) {
   return {
     id,
     name,
     weight,
+    supportedModels,
     upstream: {
       baseUrl,
       apiKey,
@@ -821,6 +826,99 @@ test("weighted custom routing cools an HTTP failure and routes the next request 
     JSON.stringify(record).includes("primary-secret") === false
       && JSON.stringify(record).includes("fallback-secret") === false
   )));
+});
+
+test("model-aware routing applies per-model provider priority and custom availability", async (t) => {
+  const observed = [];
+  const createUpstream = (providerId) => http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      observed.push({ providerId, model: body.model });
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(completedResponse()));
+    });
+  });
+  const upstreamA = createUpstream("provider-a");
+  const portA = await listen(upstreamA);
+  t.after(() => closeServer(upstreamA));
+  const upstreamB = createUpstream("provider-b");
+  const portB = await listen(upstreamB);
+  t.after(() => closeServer(upstreamB));
+
+  const supportedModels = ["gpt-5.6-sol", "gpt-5.6-luna"];
+  const providers = [
+    providerCandidate({
+      id: "provider-a",
+      name: "Provider A",
+      weight: 900,
+      baseUrl: `http://127.0.0.1:${portA}`,
+      apiKey: "secret-a",
+      supportedModels
+    }),
+    providerCandidate({
+      id: "provider-b",
+      name: "Provider B",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${portB}`,
+      apiKey: "secret-b",
+      supportedModels
+    })
+  ];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    providerPriorityRules: [
+      { model: "gpt-5.6-sol", providerIds: ["provider-a", "provider-b"] },
+      { model: "gpt-5.6-luna", providerIds: ["provider-b", "provider-a"] }
+    ],
+    captureEnabled: false
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 10, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  for (const model of ["gpt-5.6-sol", "gpt-5.6-luna"]) {
+    const response = await requestJson(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+      model,
+      input: "route"
+    });
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+  }
+  const unavailable = await requestJson(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    model: "gpt-5.6-terra",
+    input: "route"
+  });
+  assert.equal(unavailable.status, 503);
+  const lateModelStatus = await new Promise((resolvePromise, rejectPromise) => {
+    const request = http.request({
+      host: "127.0.0.1",
+      port: proxyPort,
+      path: "/v1/responses",
+      method: "POST",
+      headers: { "content-type": "application/json" }
+    }, (response) => {
+      response.resume();
+      response.on("end", () => resolvePromise(response.statusCode));
+    });
+    request.on("error", rejectPromise);
+    request.write(`{"input":"${"x".repeat(8 * 1024 * 1024)}`);
+    setImmediate(() => request.end('","model":"gpt-5.6-sol"}'));
+  });
+  assert.equal(lateModelStatus, 413);
+  assert.deepEqual(observed, [
+    { providerId: "provider-a", model: "gpt-5.6-sol" },
+    { providerId: "provider-b", model: "gpt-5.6-luna" }
+  ]);
 });
 
 test("weighted custom routing never replays after delivery and cools a timed-out provider", async (t) => {

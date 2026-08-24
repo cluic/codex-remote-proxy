@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { isValidAccountRoutingState } from "../routing/account-routing.mjs";
 import {
@@ -23,10 +24,6 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
     PROVIDER_SECRET_INVALID: [
       "The provider credential is invalid.",
       "Enter a non-empty provider credential and try again."
-    ],
-    PROVIDER_ACTIVE: [
-      "The active provider cannot be deleted.",
-      "Activate another provider or stop the proxy first."
     ],
     PROVIDER_CREATE_FAILED: [
       "The provider could not be created.",
@@ -152,14 +149,6 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
       "Provider weight must be updated through the routing control.",
       "Use the provider weight control and try again."
     ],
-    PROVIDER_POOL_RUNNING: [
-      "This provider is part of the running routing pool.",
-      "Stop the proxy Worker before editing or deleting this provider."
-    ],
-    MODEL_MAPPING_POOL_RUNNING: [
-      "This model mapping group is used by the running routing pool.",
-      "Stop the proxy Worker before editing the mapping group."
-    ],
     MODEL_MAPPING_CREATE_COMMITTED_DEGRADED: [
       "The model mapping group was created, but persistence cleanup degraded.",
       "Stop CRP and repair the residual provider-registry state before restarting."
@@ -171,6 +160,54 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
     MODEL_MAPPING_DELETE_COMMITTED_DEGRADED: [
       "The model mapping group was deleted, but persistence cleanup degraded.",
       "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    MODEL_MAPPING_UPDATE_FAILED: [
+      "The model mapping group could not be hot-applied.",
+      "Review Worker health and try the mapping change again."
+    ],
+    MODEL_MAPPING_ROLLBACK_DEGRADED: [
+      "The model mapping change failed and the prior live routing state could not be restored.",
+      "Stop CRP and repair the provider registry before restarting."
+    ],
+    PROVIDER_UPDATE_FAILED: [
+      "The provider change could not be hot-applied.",
+      "Review Worker health and try the provider change again."
+    ],
+    PROVIDER_POOL_EMPTY: [
+      "The running provider pool cannot be left empty.",
+      "Keep one tested provider available or stop the proxy before removing it."
+    ],
+    PROVIDER_MODELS_UPDATE_FAILED: [
+      "The supported-model list could not be hot-applied.",
+      "Review the model list and Worker health, then try again."
+    ],
+    PROVIDER_MODELS_ROLLBACK_DEGRADED: [
+      "The supported-model update failed and the prior live routing state could not be restored.",
+      "Stop CRP and repair the provider registry before restarting."
+    ],
+    ROUTING_RULE_UPDATE_FAILED: [
+      "The routing rule change could not be hot-applied.",
+      "Review the rule group and Worker health, then try again."
+    ],
+    ROUTING_RULE_CREATE_COMMITTED_DEGRADED: [
+      "The routing rule group was created, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    ROUTING_RULE_UPDATE_COMMITTED_DEGRADED: [
+      "The routing rule group was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    ROUTING_RULE_DELETE_COMMITTED_DEGRADED: [
+      "The routing rule group was deleted, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    ROUTING_RULE_ACTIVATE_COMMITTED_DEGRADED: [
+      "The active routing rule group changed, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    ROUTING_RULE_ROLLBACK_DEGRADED: [
+      "The routing rule change failed and the prior live routing state could not be restored.",
+      "Stop CRP and repair the provider registry before restarting."
     ],
     PROXY_NOT_CONFIGURED: [
       "No active provider is configured for the proxy.",
@@ -258,6 +295,20 @@ function committedModelMappingError(action, cause) {
   return error;
 }
 
+function committedRoutingRuleError(action, cause) {
+  const error = serviceError(`ROUTING_RULE_${action.toUpperCase()}_COMMITTED_DEGRADED`, {
+    cause,
+    details: { committed: true, degraded: true }
+  });
+  if (cause instanceof CrpError
+    && typeof cause.action === "string"
+    && cause.action.length > 0 && cause.action.length <= 512
+    && !/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/u.test(cause.action)) {
+    error.action = cause.action;
+  }
+  return error;
+}
+
 export class ProviderService {
   #operationTail = Promise.resolve();
   #lifecycleOperation = null;
@@ -318,6 +369,14 @@ export class ProviderService {
     }));
   }
 
+  listRoutingRuleGroups() {
+    const document = this.registry.getDocument();
+    return document.routingRuleGroups.map((group) => ({
+      ...structuredClone(group),
+      active: document.settings.routingRuleGroupId === group.id
+    }));
+  }
+
   createModelMappingGroup(input) {
     return this.#runExclusive(async () => {
       let group;
@@ -364,38 +423,33 @@ export class ProviderService {
 
   updateModelMappingGroup(id, input) {
     return this.#runExclusive(async () => {
-      let group;
+      let outcome;
       try {
-        const document = this.registry.getDocument();
-        const referencedPoolProvider = document.providers.some((provider) => (
-          provider.modelMappingGroupId === id && provider.lastTestStatus === "passed"
-        ));
-        if (referencedPoolProvider && this.workerManager.getPublicState()?.phase === "running") {
-          throw serviceError("MODEL_MAPPING_POOL_RUNNING", { status: 409 });
-        }
-        group = this.registry.updateModelMappingGroup(id, input);
+        outcome = await this.#executeHotRegistryMutation({
+          mutate: () => this.registry.updateModelMappingGroup(id, input),
+          reconcile: (document) => document.modelMappingGroups.find((group) => group.id === id),
+          failureCode: "MODEL_MAPPING_UPDATE_FAILED",
+          rollbackCode: "MODEL_MAPPING_ROLLBACK_DEGRADED"
+        });
       } catch (error) {
-        if (isCommittedError(error)) {
-          const committed = committedModelMappingError("update", error);
-          let persisted;
-          try {
-            persisted = this.registry.getModelMappingGroup(id);
-          } catch {
-            // The committed registry error remains authoritative if reconciliation cannot read.
-          }
-          await this.#recordSettingsCommitted("model-mapping-update", committed, {
-            mappingGroupId: id,
-            ...(persisted ? { ruleCount: persisted.rules.length } : {})
-          });
-          throw committed;
-        }
         await this.#safeRecordSettingsFailure("model-mapping-update", error);
         throw error;
+      }
+      const group = outcome.result;
+      if (outcome.commitWarning) {
+        const committed = committedModelMappingError("update", outcome.commitWarning);
+        await this.#recordSettingsCommitted("model-mapping-update", committed, {
+          mappingGroupId: id,
+          ruleCount: group.rules.length,
+          generation: outcome.generation
+        });
+        throw committed;
       }
       try {
         await this.#recordSettings("model-mapping-update", "success", null, {
           mappingGroupId: group.id,
-          ruleCount: group.rules.length
+          ruleCount: group.rules.length,
+          generation: outcome.generation
         });
       } catch (error) {
         const committed = committedModelMappingError("update", error);
@@ -445,6 +499,167 @@ export class ProviderService {
         throw committed;
       }
       return { ...group, providerIds: [] };
+    });
+  }
+
+  createRoutingRuleGroup(input) {
+    return this.#runExclusive(async () => {
+      let group;
+      try {
+        group = this.registry.createRoutingRuleGroup(input);
+      } catch (error) {
+        if (isCommittedError(error)) {
+          const committed = committedRoutingRuleError("create", error);
+          await this.#recordSettingsCommitted("routing-rule-create", committed);
+          throw committed;
+        }
+        await this.#safeRecordSettingsFailure("routing-rule-create", error);
+        throw error;
+      }
+      try {
+        await this.#recordSettings("routing-rule-create", "success", null, {
+          routingRuleGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+      } catch (error) {
+        const committed = committedRoutingRuleError("create", error);
+        await this.#recordSettingsCommitted("routing-rule-create", committed, {
+          routingRuleGroupId: group.id,
+          ruleCount: group.rules.length
+        });
+        throw committed;
+      }
+      return { ...group, active: false };
+    });
+  }
+
+  updateRoutingRuleGroup(id, input) {
+    return this.#runExclusive(async () => {
+      let outcome;
+      try {
+        outcome = await this.#executeHotRegistryMutation({
+          mutate: () => this.registry.updateRoutingRuleGroup(id, input),
+          reconcile: (document) => document.routingRuleGroups.find((group) => group.id === id),
+          failureCode: "ROUTING_RULE_UPDATE_FAILED",
+          rollbackCode: "ROUTING_RULE_ROLLBACK_DEGRADED"
+        });
+      } catch (error) {
+        await this.#safeRecordSettingsFailure("routing-rule-update", error);
+        throw error;
+      }
+      const group = outcome.result;
+      if (outcome.commitWarning) {
+        const committed = committedRoutingRuleError("update", outcome.commitWarning);
+        await this.#recordSettingsCommitted("routing-rule-update", committed, {
+          routingRuleGroupId: id,
+          ruleCount: group.rules.length,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      try {
+        await this.#recordSettings("routing-rule-update", "success", null, {
+          routingRuleGroupId: id,
+          ruleCount: group.rules.length,
+          generation: outcome.generation
+        });
+      } catch (error) {
+        const committed = committedRoutingRuleError("update", error);
+        await this.#recordSettingsCommitted("routing-rule-update", committed, {
+          routingRuleGroupId: id,
+          ruleCount: group.rules.length,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      const document = this.registry.getDocument();
+      return { ...group, active: document.settings.routingRuleGroupId === id };
+    });
+  }
+
+  deleteRoutingRuleGroup(id) {
+    return this.#runExclusive(async () => {
+      let outcome;
+      try {
+        const existing = this.registry.getRoutingRuleGroup(id);
+        outcome = await this.#executeHotRegistryMutation({
+          mutate: () => this.registry.deleteRoutingRuleGroup(id),
+          reconcile: (document) => document.routingRuleGroups.some((group) => group.id === id)
+            ? undefined
+            : existing,
+          failureCode: "ROUTING_RULE_UPDATE_FAILED",
+          rollbackCode: "ROUTING_RULE_ROLLBACK_DEGRADED"
+        });
+      } catch (error) {
+        await this.#safeRecordSettingsFailure("routing-rule-delete", error);
+        throw error;
+      }
+      const group = outcome.result;
+      if (outcome.commitWarning) {
+        const committed = committedRoutingRuleError("delete", outcome.commitWarning);
+        await this.#recordSettingsCommitted("routing-rule-delete", committed, {
+          routingRuleGroupId: id,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      try {
+        await this.#recordSettings("routing-rule-delete", "success", null, {
+          routingRuleGroupId: id,
+          generation: outcome.generation
+        });
+      } catch (error) {
+        const committed = committedRoutingRuleError("delete", error);
+        await this.#recordSettingsCommitted("routing-rule-delete", committed, {
+          routingRuleGroupId: id,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      return { ...group, active: false };
+    });
+  }
+
+  setActiveRoutingRuleGroup(id) {
+    return this.#runExclusive(async () => {
+      let outcome;
+      try {
+        outcome = await this.#executeHotRegistryMutation({
+          mutate: () => this.registry.setRoutingRuleGroup(id),
+          reconcile: (document) => document.settings.routingRuleGroupId === id ? id : undefined,
+          failureCode: "ROUTING_RULE_UPDATE_FAILED",
+          rollbackCode: "ROUTING_RULE_ROLLBACK_DEGRADED"
+        });
+      } catch (error) {
+        await this.#safeRecordSettingsFailure("routing-rule-activate", error);
+        throw error;
+      }
+      if (outcome.commitWarning) {
+        const committed = committedRoutingRuleError("activate", outcome.commitWarning);
+        await this.#recordSettingsCommitted("routing-rule-activate", committed, {
+          routingRuleGroupId: id,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      try {
+        await this.#recordSettings("routing-rule-activate", "success", null, {
+          routingRuleGroupId: id,
+          generation: outcome.generation
+        });
+      } catch (error) {
+        const committed = committedRoutingRuleError("activate", error);
+        await this.#recordSettingsCommitted("routing-rule-activate", committed, {
+          routingRuleGroupId: id,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      return {
+        activeRoutingRuleGroupId: id,
+        generation: outcome.generation,
+        worker: outcome.worker
+      };
     });
   }
 
@@ -516,26 +731,39 @@ export class ProviderService {
 
   updateProvider(id, patch, replacementSecret) {
     return this.#runExclusive(async () => {
-      let profile;
       let safeId = null;
+      let outcome;
+      let current;
+      let previousSecret = null;
       try {
-        const current = this.registry.get(id);
+        current = this.registry.get(id);
         safeId = current.id;
-        if (this.registry.getDocument().activeProviderId === current.id) {
-          throw serviceError("PROVIDER_ACTIVE", { status: 409 });
-        }
         if (patch !== null && typeof patch === "object"
           && Object.hasOwn(patch, "weight") && patch.weight !== current.weight) {
           throw serviceError("PROVIDER_WEIGHT_ENDPOINT_REQUIRED", { status: 400 });
         }
-        if (current.lastTestStatus === "passed"
-          && this.workerManager.getPublicState()?.phase === "running") {
-          throw serviceError("PROVIDER_POOL_RUNNING", { status: 409 });
-        }
         if (replacementSecret !== undefined) assertSecret(replacementSecret);
-        profile = replacementSecret === undefined
-          ? this.registry.update(id, patch)
-          : await this.#updateWithReplacementSecret(current, patch, replacementSecret);
+        const preserveTestStatus = this.workerManager.getPublicState()?.phase === "running"
+          && current.lastTestStatus === "passed";
+        if (replacementSecret !== undefined) {
+          previousSecret = await this.credentialStore.get(current.credentialRef);
+        }
+        outcome = await this.#executeHotRegistryMutation({
+          mutate: () => replacementSecret === undefined
+            ? this.registry.update(id, patch, { preserveTestStatus })
+            : this.#updateWithReplacementSecret(
+                current,
+                patch,
+                replacementSecret,
+                { preserveTestStatus }
+              ),
+          reconcile: (document) => document.providers.find((provider) => provider.id === id),
+          failureCode: "PROVIDER_UPDATE_FAILED",
+          rollbackCode: "PROVIDER_UPDATE_ROLLBACK_DEGRADED",
+          rollbackSideEffect: replacementSecret === undefined
+            ? null
+            : () => this.credentialStore.set(current.credentialRef, previousSecret)
+        });
         if (replacementSecret !== undefined) {
           try {
             this.modelCache.delete(current.id);
@@ -544,13 +772,16 @@ export class ProviderService {
           }
         }
       } catch (error) {
-        if (isCommittedError(error)) {
-          const committed = committedServiceError("update", error);
-          await this.#recordCommitted("update", safeId, committed);
-          throw committed;
-        }
         await this.#safeRecordFailure("update", safeId, error);
         throw error;
+      }
+      const profile = outcome.result;
+      if (outcome.commitWarning) {
+        const committed = committedServiceError("update", outcome.commitWarning);
+        await this.#recordCommitted("update", safeId, committed, {
+          generation: outcome.generation
+        });
+        throw committed;
       }
       const publicProfile = await this.#toPublic(profile);
       await this.#record(
@@ -558,7 +789,9 @@ export class ProviderService {
         profile.id,
         "success",
         null,
-        replacementSecret === undefined ? {} : { credentialReplaced: true }
+        replacementSecret === undefined
+          ? { generation: outcome.generation }
+          : { credentialReplaced: true, generation: outcome.generation }
       );
       return publicProfile;
     });
@@ -567,82 +800,66 @@ export class ProviderService {
   deleteProvider(id) {
     return this.#runExclusive(async () => {
       let profile;
-      let oldSecret;
-      let deleted;
-      let credentialDeleted = false;
-      let credentialCommitWarning = null;
+      let outcome;
       try {
         const document = this.registry.getDocument();
-        if (document.activeProviderId === id) {
-          throw serviceError("PROVIDER_ACTIVE", { status: 409 });
-        }
         profile = this.registry.get(id);
-        if (profile.lastTestStatus === "passed"
-          && this.workerManager.getPublicState()?.phase === "running") {
-          throw serviceError("PROVIDER_POOL_RUNNING", { status: 409 });
-        }
-        oldSecret = await this.credentialStore.get(profile.credentialRef);
+        const fallback = document.providers.filter((candidate) => (
+          candidate.id !== id && candidate.lastTestStatus === "passed"
+        )).sort((left, right) => {
+          if (left.weight !== right.weight) return right.weight - left.weight;
+          const created = left.createdAt.localeCompare(right.createdAt);
+          return created === 0 ? left.id.localeCompare(right.id) : created;
+        })[0] ?? null;
+        outcome = await this.#executeHotRegistryMutation({
+          mutate: () => document.activeProviderId === id
+            ? this.registry.deleteWithActiveFallback(id, fallback?.id ?? null)
+            : this.registry.delete(id),
+          reconcile: (observed) => observed.providers.some((candidate) => candidate.id === id)
+            ? undefined
+            : profile,
+          failureCode: "PROVIDER_DELETE_FAILED",
+          rollbackCode: "PROVIDER_DELETE_ROLLBACK_DEGRADED"
+        });
+        let cleanupWarning = outcome.commitWarning;
         try {
-          credentialDeleted = await this.credentialStore.delete(profile.credentialRef);
+          const credentialDeleted = await this.credentialStore.delete(profile.credentialRef);
+          if (!credentialDeleted) throw serviceError("PROVIDER_DELETE_FAILED");
         } catch (error) {
-          if (isCommittedError(error)) {
-            credentialDeleted = true;
-            credentialCommitWarning = error;
-          } else {
-            throw error;
-          }
+          cleanupWarning ??= error;
         }
-        if (!credentialDeleted) throw serviceError("PROVIDER_DELETE_FAILED");
-        deleted = this.registry.delete(id);
         try {
           this.modelCache.delete(id);
         } catch (error) {
-          throw committedServiceError("delete", error);
+          cleanupWarning ??= error;
         }
-      } catch (error) {
-        if (isCommittedError(error)) {
-          const committed = committedServiceError("delete", error);
-          await this.#recordCommitted("delete", profile?.id ?? id, committed);
+        if (cleanupWarning) {
+          const committed = committedServiceError("delete", cleanupWarning);
+          await this.#recordCommitted("delete", profile.id, committed, {
+            generation: outcome.generation
+          });
           throw committed;
         }
-        if (credentialCommitWarning) {
-          const degraded = serviceError("PROVIDER_DELETE_ROLLBACK_DEGRADED", {
-            cause: error,
-            details: { committed: false, degraded: true }
-          });
-          await this.#safeRecordFailure("delete", profile?.id ?? id, degraded);
-          throw degraded;
+      } catch (error) {
+        if (!isCommittedError(error)) {
+          await this.#safeRecordFailure("delete", profile?.id ?? null, error);
         }
-        let failure = error;
-        if (credentialDeleted) {
-          try {
-            await this.credentialStore.set(profile.credentialRef, oldSecret);
-          } catch (rollbackError) {
-            failure = serviceError("PROVIDER_DELETE_ROLLBACK_DEGRADED", {
-              cause: rollbackError,
-              details: { committed: false, degraded: true }
-            });
-          }
-        }
-        if (!(failure instanceof CrpError)) {
-          failure = serviceError("PROVIDER_DELETE_FAILED", { cause: failure });
-        }
-        await this.#safeRecordFailure("delete", profile?.id ?? null, failure);
-        throw failure;
+        throw error;
       }
-      if (credentialCommitWarning) {
-        const committed = committedServiceError("delete", credentialCommitWarning);
-        await this.#recordCommitted("delete", deleted.id, committed);
-        throw committed;
-      }
-      await this.#record("delete", deleted.id, "success", null, {});
+      const deleted = outcome.result;
+      await this.#record("delete", deleted.id, "success", null, {
+        generation: outcome.generation
+      });
       return toPublicProvider(deleted, false);
     });
   }
 
   getProviderModels(id) {
     const profile = this.registry.get(id);
-    return this.modelCache.get(id, createProviderSourceFingerprint(profile));
+    return this.#withSupportedModelSettings(
+      profile,
+      this.modelCache.get(id, createProviderSourceFingerprint(profile))
+    );
   }
 
   refreshProviderModels(id) {
@@ -689,7 +906,7 @@ export class ProviderService {
         } catch (error) {
           throw committedServiceError("models", error);
         }
-        return catalog;
+        return this.#withSupportedModelSettings(profile, catalog);
       } catch (error) {
         if (cacheCommitted) {
           throw error instanceof CrpError
@@ -706,6 +923,52 @@ export class ProviderService {
         );
         throw failure;
       }
+    });
+  }
+
+  setProviderSupportedModels(id, input) {
+    return this.#runExclusive(async () => {
+      let outcome;
+      try {
+        outcome = await this.#executeHotRegistryMutation({
+          mutate: () => this.registry.setProviderSupportedModels(id, input),
+          reconcile: (document) => document.providers.find((provider) => provider.id === id),
+          failureCode: "PROVIDER_MODELS_UPDATE_FAILED",
+          rollbackCode: "PROVIDER_MODELS_ROLLBACK_DEGRADED"
+        });
+      } catch (error) {
+        await this.#safeRecordFailure("models-update", id, error);
+        throw error;
+      }
+      const profile = outcome.result;
+      if (outcome.commitWarning) {
+        const committed = committedServiceError("models", outcome.commitWarning);
+        await this.#recordCommitted("models-update", id, committed, {
+          mode: profile.supportedModelsMode,
+          modelCount: profile.supportedModels.length,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      try {
+        await this.#record("models-update", id, "success", null, {
+          mode: profile.supportedModelsMode,
+          modelCount: profile.supportedModels.length,
+          generation: outcome.generation
+        });
+      } catch (error) {
+        const committed = committedServiceError("models", error);
+        await this.#recordCommitted("models-update", id, committed, {
+          mode: profile.supportedModelsMode,
+          modelCount: profile.supportedModels.length,
+          generation: outcome.generation
+        });
+        throw committed;
+      }
+      return this.#withSupportedModelSettings(
+        profile,
+        this.modelCache.get(id, createProviderSourceFingerprint(profile))
+      );
     });
   }
 
@@ -1431,7 +1694,12 @@ export class ProviderService {
     };
   }
 
-  async #updateWithReplacementSecret(current, patch, replacementSecret) {
+  async #updateWithReplacementSecret(
+    current,
+    patch,
+    replacementSecret,
+    { preserveTestStatus = false } = {}
+  ) {
     const oldSecret = await this.credentialStore.get(current.credentialRef);
     let replacementWritten = false;
     let replacementCommitWarning = null;
@@ -1448,9 +1716,11 @@ export class ProviderService {
           throw error;
         }
       }
-      this.registry.markTest(current.id, { status: "untested" });
-      testReset = true;
-      this.registry.update(current.id, patch);
+      if (!preserveTestStatus) {
+        this.registry.markTest(current.id, { status: "untested" });
+        testReset = true;
+      }
+      this.registry.update(current.id, patch, { preserveTestStatus });
       if (replacementCommitWarning) throw replacementCommitWarning;
       return this.registry.get(current.id);
     } catch (error) {
@@ -1483,6 +1753,14 @@ export class ProviderService {
       }
       throw error;
     }
+  }
+
+  #withSupportedModelSettings(profile, catalog) {
+    return {
+      ...catalog,
+      mode: profile.supportedModelsMode,
+      configuredModels: [...profile.supportedModels]
+    };
   }
 
   async #toPublic(profile) {
@@ -1548,6 +1826,155 @@ export class ProviderService {
     }
   }
 
+  async #executeHotRegistryMutation({
+    mutate,
+    reconcile,
+    failureCode,
+    rollbackCode,
+    rollbackSideEffect = null
+  }) {
+    const before = this.workerManager.getPublicState();
+    if (before?.phase !== "stopped" && before?.phase !== "running") {
+      throw serviceError(failureCode, { status: 409 });
+    }
+    const previousDocument = this.registry.getDocument();
+    const previousSnapshot = this.confirmedSnapshot
+      ? structuredClone(this.confirmedSnapshot)
+      : null;
+    const previousGeneration = this.confirmedGeneration;
+    if (before.phase === "running" && previousSnapshot === null) {
+      throw serviceError(failureCode, { status: 409 });
+    }
+
+    let result;
+    let commitWarning = null;
+    let mutationCommitted = false;
+    let candidateDocument = null;
+    let candidateSnapshot = null;
+    let workerAttempted = false;
+    let generation = previousGeneration;
+    try {
+      try {
+        result = await mutate();
+        mutationCommitted = true;
+      } catch (error) {
+        const observed = this.registry.getDocument();
+        if (!isCommittedError(error) || isDeepStrictEqual(observed, previousDocument)) {
+          throw error;
+        }
+        const reconciled = reconcile?.(observed);
+        if (reconciled === undefined) throw error;
+        result = reconciled;
+        mutationCommitted = true;
+        commitWarning = error;
+      }
+      candidateDocument = this.registry.getDocument();
+
+      let workerState = before;
+      if (before.phase === "running") {
+        let active = candidateDocument.providers.find(
+          (provider) => provider.id === candidateDocument.activeProviderId
+        );
+        if (!active || active.lastTestStatus !== "passed") {
+          const fallback = candidateDocument.providers.filter(
+            (provider) => provider.lastTestStatus === "passed"
+          ).sort((left, right) => {
+            if (left.weight !== right.weight) return right.weight - left.weight;
+            const created = left.createdAt.localeCompare(right.createdAt);
+            return created === 0 ? left.id.localeCompare(right.id) : created;
+          })[0];
+          if (!fallback) throw serviceError("PROVIDER_POOL_EMPTY", { status: 409 });
+          try {
+            this.registry.setActive(fallback.id);
+          } catch (error) {
+            if (!isCommittedError(error)
+              || this.registry.getDocument().activeProviderId !== fallback.id) {
+              throw error;
+            }
+            commitWarning ??= error;
+          }
+          candidateDocument = this.registry.getDocument();
+          active = candidateDocument.providers.find((provider) => provider.id === fallback.id);
+        }
+        const secret = await this.credentialStore.get(active.credentialRef);
+        generation += 1;
+        if (!Number.isSafeInteger(generation)) throw serviceError(failureCode);
+        candidateSnapshot = await this.#buildSnapshot(active, secret, generation);
+        workerAttempted = true;
+        workerState = await this.workerManager.applySnapshot(candidateSnapshot);
+        if (!isConfirmedWorkerState(workerState, generation)
+          || await this.verifyWorkerHealth(generation, workerState) !== true) {
+          throw new Error("Worker hot update was not confirmed");
+        }
+        this.confirmedGeneration = generation;
+        this.confirmedSnapshot = structuredClone(candidateSnapshot);
+      }
+      return {
+        result,
+        commitWarning,
+        generation,
+        worker: publicWorkerState(workerState)
+      };
+    } catch (error) {
+      if (!mutationCommitted) throw error;
+      let rollbackFailure = null;
+      try {
+        const currentDocument = this.registry.getDocument();
+        if (!isDeepStrictEqual(currentDocument, previousDocument)) {
+          const restored = this.registry.replaceDocumentIfCurrent(
+            currentDocument,
+            previousDocument
+          );
+          if (!restored) throw new Error("registry rollback lost compare-and-set");
+        }
+      } catch (caught) {
+        rollbackFailure = caught;
+      }
+      if (rollbackSideEffect) {
+        try {
+          await rollbackSideEffect();
+        } catch (caught) {
+          rollbackFailure ??= caught;
+        }
+      }
+      if (workerAttempted) {
+        try {
+          const observedGeneration = this.workerManager.getPublicState()?.generation;
+          const rollbackGeneration = Math.max(
+            generation,
+            previousGeneration,
+            Number.isSafeInteger(observedGeneration) ? observedGeneration : 0
+          ) + 1;
+          if (!Number.isSafeInteger(rollbackGeneration) || previousSnapshot === null) {
+            throw new Error("Worker rollback generation is invalid");
+          }
+          const rollbackSnapshot = structuredClone(previousSnapshot);
+          rollbackSnapshot.generation = rollbackGeneration;
+          const restored = await this.workerManager.applySnapshot(rollbackSnapshot);
+          if (!isConfirmedWorkerState(restored, rollbackGeneration)
+            || await this.verifyWorkerHealth(rollbackGeneration, restored) !== true) {
+            throw new Error("Worker rollback was not confirmed");
+          }
+          this.confirmedGeneration = rollbackGeneration;
+          this.confirmedSnapshot = structuredClone(rollbackSnapshot);
+        } catch (caught) {
+          rollbackFailure ??= caught;
+        }
+      }
+      if (rollbackFailure) {
+        throw serviceError(rollbackCode, {
+          cause: rollbackFailure,
+          details: { committed: false, degraded: true, generation }
+        });
+      }
+      if (error instanceof CrpError
+        && (error.status === 400 || error.status === 404 || error.code === "PROVIDER_POOL_EMPTY")) {
+        throw error;
+      }
+      throw serviceError(failureCode, { cause: error });
+    }
+  }
+
   async #buildSnapshot(profile, secret, generation, routingMode = null) {
     const document = this.registry.getDocument();
     const accountSnapshot = this.getAccountRoutingSnapshot();
@@ -1591,6 +2018,9 @@ export class ProviderService {
         id: candidate.id,
         name: candidate.name,
         weight: candidate.weight,
+        supportedModels: candidate.supportedModelsMode === "custom"
+          ? [...candidate.supportedModels]
+          : null,
         upstream: {
           baseUrl: candidate.baseUrl,
           apiKey: candidateSecret,
@@ -1612,6 +2042,16 @@ export class ProviderService {
       });
     }
     if (providers.length === 0) throw serviceError("PROVIDER_ACTIVATION_FAILED");
+    const runtimeProviderIds = new Set(providers.map((candidate) => candidate.id));
+    const activeRoutingRuleGroup = document.settings.routingRuleGroupId === null
+      ? null
+      : document.routingRuleGroups.find(
+          (group) => group.id === document.settings.routingRuleGroupId
+        ) ?? null;
+    const providerPriorityRules = (activeRoutingRuleGroup?.rules ?? []).map((rule) => ({
+      model: rule.model,
+      providerIds: rule.providerIds.filter((providerId) => runtimeProviderIds.has(providerId))
+    })).filter((rule) => rule.providerIds.length > 0);
     const primary = providers[0];
     return {
       providerId: primary.id,
@@ -1633,7 +2073,8 @@ export class ProviderService {
         routing: {
           mode: routingMode ?? document.settings.routingMode,
           accountRevision: accountSnapshot.revision,
-          account: structuredClone(accountSnapshot.state)
+          account: structuredClone(accountSnapshot.state),
+          providerPriorityRules
         }
       }
     };
@@ -1677,7 +2118,9 @@ export class ProviderService {
       ? "CAPTURE_SETTING_UPDATE_FAILED"
       : action.startsWith("model-mapping-")
         ? "MODEL_MAPPING_UPDATE_FAILED"
-        : "ROUTING_MODE_UPDATE_FAILED";
+        : action.startsWith("routing-rule-")
+          ? "ROUTING_RULE_UPDATE_FAILED"
+          : "ROUTING_MODE_UPDATE_FAILED";
     try {
       await this.#recordSettings(action, "failed", stableErrorCode(
         error,
@@ -1710,7 +2153,10 @@ export class ProviderService {
   }
 
   async #safeRecordFailure(action, providerId, error, details = {}) {
-    const errorCode = stableErrorCode(error, `PROVIDER_${action.toUpperCase()}_FAILED`);
+    const errorCode = stableErrorCode(
+      error,
+      `PROVIDER_${action.toUpperCase().replaceAll("-", "_")}_FAILED`
+    );
     try {
       await this.#record(action, providerId, "failed", errorCode, details);
     } catch {

@@ -287,6 +287,8 @@ function publicProvider(input = {}, index = 0) {
     modelMode: input.modelMode ?? "passthrough",
     modelOverride: input.modelOverride ?? null,
     modelMappingGroupId: input.modelMappingGroupId ?? null,
+    supportedModelsMode: input.supportedModelsMode ?? "auto",
+    supportedModels: structuredClone(input.supportedModels ?? []),
     lastTestAt: Object.hasOwn(input, "lastTestAt") ? input.lastTestAt : now,
     lastTestStatus: input.lastTestStatus ?? "passed",
     lastTestCode: Object.hasOwn(input, "lastTestCode") ? input.lastTestCode : null,
@@ -315,6 +317,7 @@ function createServices({ upstream }) {
   const state = {
     providers: [],
     modelMappingGroups: [],
+    routingRuleGroups: [],
     activeProviderId: null,
     generation: 0,
     worker: stoppedWorker(),
@@ -488,6 +491,13 @@ function createServices({ upstream }) {
     });
   }
 
+  function hotApplyIfRunning() {
+    if (state.worker.phase !== "running") return;
+    state.generation += 1;
+    state.worker.generation = state.generation;
+    if (state.worker.state) state.worker.state.generation = state.generation;
+  }
+
   function rejectNextMutation(operation) {
     const failure = state.nextMutationError;
     if (failure === null) return;
@@ -567,6 +577,63 @@ function createServices({ upstream }) {
       addActivity("settings", "model-mapping-delete", null);
       return { ...structuredClone(group), providerIds: [] };
     },
+    listRoutingRuleGroups() {
+      calls.push({ operation: "listRoutingRuleGroups" });
+      return structuredClone(state.routingRuleGroups);
+    },
+    async createRoutingRuleGroup(input) {
+      rejectNextMutation("createRoutingRuleGroup");
+      const now = "2026-07-13T08:34:00.000Z";
+      const group = {
+        id: `routing-${state.routingRuleGroups.length + 1}`,
+        name: input.name,
+        rules: structuredClone(input.rules),
+        active: false,
+        createdAt: now,
+        updatedAt: now
+      };
+      state.routingRuleGroups.push(group);
+      calls.push({ operation: "createRoutingRuleGroup", input: structuredClone(input) });
+      addActivity("settings", "routing-rule-create", null);
+      return structuredClone(group);
+    },
+    async updateRoutingRuleGroup(id, input) {
+      rejectNextMutation("updateRoutingRuleGroup");
+      const group = state.routingRuleGroups.find((item) => item.id === id);
+      if (!group) throw new CrpError("ROUTING_RULE_GROUP_NOT_FOUND", "Missing routing group.", "Refresh.", { status: 404 });
+      group.name = input.name;
+      group.rules = structuredClone(input.rules);
+      group.updatedAt = "2026-07-13T08:35:00.000Z";
+      hotApplyIfRunning();
+      calls.push({ operation: "updateRoutingRuleGroup", id, input: structuredClone(input) });
+      addActivity("settings", "routing-rule-update", null);
+      return structuredClone(group);
+    },
+    async deleteRoutingRuleGroup(id) {
+      rejectNextMutation("deleteRoutingRuleGroup");
+      const index = state.routingRuleGroups.findIndex((item) => item.id === id);
+      if (index === -1) throw new CrpError("ROUTING_RULE_GROUP_NOT_FOUND", "Missing routing group.", "Refresh.", { status: 404 });
+      const [group] = state.routingRuleGroups.splice(index, 1);
+      if (group.active) hotApplyIfRunning();
+      calls.push({ operation: "deleteRoutingRuleGroup", id });
+      addActivity("settings", "routing-rule-delete", null);
+      return { ...structuredClone(group), active: false };
+    },
+    async setActiveRoutingRuleGroup(id) {
+      rejectNextMutation("setActiveRoutingRuleGroup");
+      if (id !== null && !state.routingRuleGroups.some((group) => group.id === id)) {
+        throw new CrpError("ROUTING_RULE_GROUP_NOT_FOUND", "Missing routing group.", "Refresh.", { status: 404 });
+      }
+      for (const group of state.routingRuleGroups) group.active = group.id === id;
+      hotApplyIfRunning();
+      calls.push({ operation: "setActiveRoutingRuleGroup", id });
+      addActivity("settings", "routing-rule-activate", null);
+      return {
+        activeRoutingRuleGroupId: id,
+        generation: state.generation,
+        worker: structuredClone(state.worker)
+      };
+    },
     async createProvider(input, credential) {
       rejectNextMutation("createProvider");
       assert.equal(typeof credential, "string");
@@ -590,14 +657,6 @@ function createServices({ upstream }) {
     },
     async updateProvider(id, patch, replacementCredential) {
       rejectNextMutation("updateProvider");
-      if (id === state.activeProviderId) {
-        throw new CrpError(
-          "PROVIDER_ACTIVE",
-          "The active provider cannot be edited.",
-          "Activate another provider first.",
-          { status: 409 }
-        );
-      }
       const provider = state.providers.find((item) => item.id === id);
       if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
       if (replacementCredential !== undefined) {
@@ -622,14 +681,17 @@ function createServices({ upstream }) {
       const operationalChange = replacementCredential !== undefined
         || invalidatingFields.some((field) => JSON.stringify(provider[field]) !== JSON.stringify(patch[field]));
       if (operationalChange) modelCatalogs.delete(id);
+      const preserveTestStatus = state.worker.phase === "running"
+        && provider.lastTestStatus === "passed";
       Object.assign(provider, patch, {
         updatedAt: "2026-07-13T08:30:00.000Z",
-        ...(!operationalChange ? {} : {
+        ...(!operationalChange || preserveTestStatus ? {} : {
           lastTestAt: null,
           lastTestStatus: "untested",
           lastTestCode: null
         })
       });
+      hotApplyIfRunning();
       addActivity("provider", "update", id);
       return structuredClone(provider);
     },
@@ -652,18 +714,31 @@ function createServices({ upstream }) {
     async deleteProvider(id) {
       rejectNextMutation("deleteProvider");
       if (id === state.activeProviderId) {
-        throw new CrpError(
-          "PROVIDER_ACTIVE",
-          "The active provider cannot be deleted.",
-          "Activate another provider first.",
-          { status: 409 }
-        );
+        const fallback = state.providers.find((provider) => (
+          provider.id !== id && provider.lastTestStatus === "passed"
+        ));
+        if (state.worker.phase === "running" && !fallback) {
+          throw new CrpError(
+            "PROVIDER_POOL_EMPTY",
+            "The running provider pool cannot be left empty.",
+            "Keep one tested provider or stop the proxy.",
+            { status: 409 }
+          );
+        }
+        state.activeProviderId = fallback?.id ?? null;
       }
       const index = state.providers.findIndex((provider) => provider.id === id);
       if (index === -1) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
       const [deleted] = state.providers.splice(index, 1);
       credentials.delete(id);
       modelCatalogs.delete(id);
+      for (const group of state.routingRuleGroups) {
+        group.rules = group.rules.map((rule) => ({
+          ...rule,
+          providerIds: rule.providerIds.filter((providerId) => providerId !== id)
+        })).filter((rule) => rule.providerIds.length > 0);
+      }
+      hotApplyIfRunning();
       calls.push({ operation: "deleteProvider", id });
       addActivity("provider", "delete", id);
       return structuredClone(deleted);
@@ -672,12 +747,17 @@ function createServices({ upstream }) {
       const provider = state.providers.find((item) => item.id === id);
       if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
       calls.push({ operation: "getProviderModels", id });
-      return structuredClone(modelCatalogs.get(id) ?? {
+      const catalog = modelCatalogs.get(id) ?? {
         providerId: id,
         state: "missing",
         fetchedAt: null,
         expiresAt: null,
         models: []
+      };
+      return structuredClone({
+        ...catalog,
+        mode: provider.supportedModelsMode,
+        configuredModels: structuredClone(provider.supportedModels)
       });
     },
     async refreshProviderModels(id) {
@@ -689,11 +769,38 @@ function createServices({ upstream }) {
         state: "fresh",
         fetchedAt: MODEL_CATALOG_FETCHED_AT,
         expiresAt: MODEL_CATALOG_EXPIRES_AT,
+        mode: provider.supportedModelsMode,
+        configuredModels: structuredClone(provider.supportedModels),
         models: ["gpt-5.1-codex-mini", "fixture-model"]
       };
       modelCatalogs.set(id, modelCatalog);
       calls.push({ operation: "refreshProviderModels", id });
       addActivity("provider", "models", id);
+      return structuredClone(modelCatalog);
+    },
+    async setProviderSupportedModels(id, input) {
+      rejectNextMutation("setProviderSupportedModels");
+      const provider = state.providers.find((item) => item.id === id);
+      if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
+      provider.supportedModelsMode = input.mode;
+      provider.supportedModels = structuredClone(input.models);
+      provider.updatedAt = "2026-07-13T08:36:00.000Z";
+      hotApplyIfRunning();
+      const current = modelCatalogs.get(id) ?? {
+        providerId: id,
+        state: "missing",
+        fetchedAt: null,
+        expiresAt: null,
+        models: []
+      };
+      const modelCatalog = {
+        ...current,
+        mode: input.mode,
+        configuredModels: structuredClone(input.models)
+      };
+      modelCatalogs.set(id, modelCatalog);
+      calls.push({ operation: "setProviderSupportedModels", id, input: structuredClone(input) });
+      addActivity("provider", "models-update", id);
       return structuredClone(modelCatalog);
     },
     async testProvider(id, model, { activateIfNone = false } = {}) {
@@ -895,11 +1002,16 @@ function createServices({ upstream }) {
       modelCatalogs.clear();
     },
     seedModelCatalog(id, input = {}) {
+      const provider = state.providers.find((candidate) => candidate.id === id);
       modelCatalogs.set(id, {
         providerId: id,
         state: input.state ?? "fresh",
         fetchedAt: Object.hasOwn(input, "fetchedAt") ? input.fetchedAt : MODEL_CATALOG_FETCHED_AT,
         expiresAt: Object.hasOwn(input, "expiresAt") ? input.expiresAt : MODEL_CATALOG_EXPIRES_AT,
+        mode: input.mode ?? provider?.supportedModelsMode ?? "auto",
+        configuredModels: structuredClone(
+          input.configuredModels ?? provider?.supportedModels ?? []
+        ),
         models: structuredClone(input.models ?? ["gpt-5.1-codex-mini", "fixture-model"])
       });
     },
@@ -1287,6 +1399,7 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       },
       seedProviders({ providers, activeProviderId = null, generation = 4 } = {}) {
         services.resetModelCatalogs();
+        services.state.routingRuleGroups = [];
         services.state.providers = providers.map((provider, index) => publicProvider({
           baseUrl: `${resources.upstream.origin}/v1`,
           ...provider

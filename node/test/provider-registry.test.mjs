@@ -30,7 +30,8 @@ const DEFAULT_SETTINGS = {
   adminHost: "127.0.0.1",
   adminPort: 15101,
   captureEnabled: false,
-  routingMode: "custom_only"
+  routingMode: "custom_only",
+  routingRuleGroupId: null
 };
 
 function makeTempRegistry(t, prefix = "crp-provider-registry-") {
@@ -92,14 +93,15 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
   });
 
   assert.deepEqual(registry.getDocument(), {
-    schemaVersion: 5,
+    schemaVersion: 6,
     activeProviderId: null,
     providers: [],
     modelMappingGroups: [],
+    routingRuleGroups: [],
     settings: DEFAULT_SETTINGS
   });
 
-  const created = registry.create(validInput({ name: "  OpenRouter  " }));
+  const created = registry.create(validInput({ name: "  OpenRouter  ", weight: 321 }));
   assert.deepEqual(created, {
     id: "provider-1",
     name: "OpenRouter",
@@ -108,10 +110,12 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
     authHeader: "authorization",
     authScheme: "Bearer",
     extraHeaders: {},
-    weight: 100,
+    weight: 321,
     modelMode: "passthrough",
     modelOverride: null,
     modelMappingGroupId: null,
+    supportedModelsMode: "auto",
+    supportedModels: [],
     lastTestAt: null,
     lastTestStatus: "untested",
     lastTestCode: null,
@@ -136,6 +140,7 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
   assert.equal(updated.name, "Router Primary");
   assert.equal(updated.modelMode, "override");
   assert.equal(updated.modelOverride, "gpt-compatible");
+  assert.equal(updated.weight, 321);
   assert.deepEqual(updated.extraHeaders, { "x-region": "us-east" });
 });
 
@@ -434,6 +439,8 @@ test("validates passthrough and override model modes", () => {
       modelMode: "passthrough",
       modelOverride: null,
       modelMappingGroupId: null,
+      supportedModelsMode: "auto",
+      supportedModels: [],
       lastTestAt: null,
       lastTestStatus: "untested",
       lastTestCode: null,
@@ -530,6 +537,70 @@ test("rejects ambiguous or unsafe model mapping groups", (t) => {
   );
 });
 
+test("persists custom provider models and exact per-model routing rule groups", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({
+    path: registryPath,
+    createId: makeIds("provider-a", "provider-b", "routing-sol-luna"),
+    now: makeClock(FIXED_NOW, FIXED_NOW, FIXED_NOW, LATER_NOW, LATER_NOW, LATER_NOW)
+  });
+  const providerA = registry.create(validInput({
+    name: "Provider A",
+    credentialRef: "credential-a"
+  }));
+  const providerB = registry.create(validInput({
+    name: "Provider B",
+    baseUrl: "https://provider-b.example/v1",
+    credentialRef: "credential-b"
+  }));
+
+  const configured = registry.setProviderSupportedModels(providerA.id, {
+    mode: "custom",
+    models: ["gpt-5.6-sol", "gpt-5.6-luna"]
+  });
+  assert.equal(configured.supportedModelsMode, "custom");
+  assert.deepEqual(configured.supportedModels, ["gpt-5.6-sol", "gpt-5.6-luna"]);
+  assert.throws(
+    () => registry.setProviderSupportedModels(providerA.id, {
+      mode: "custom",
+      models: ["gpt-5.6-sol", "gpt-5.6-sol"]
+    }),
+    assertCrpError("PROVIDER_INPUT_INVALID", 400)
+  );
+  assert.throws(
+    () => registry.setProviderSupportedModels(providerA.id, {
+      mode: "custom",
+      models: ["gpt-5.6-\u0085sol"]
+    }),
+    assertCrpError("PROVIDER_INPUT_INVALID", 400)
+  );
+
+  const group = registry.createRoutingRuleGroup({
+    name: "Sol and Luna split",
+    rules: [
+      { model: "gpt-5.6-sol", providerIds: [providerA.id, providerB.id] },
+      { model: "gpt-5.6-luna", providerIds: [providerB.id, providerA.id] }
+    ]
+  });
+  assert.equal(registry.setRoutingRuleGroup(group.id), group.id);
+  assert.equal(registry.getDocument().settings.routingRuleGroupId, group.id);
+  assert.deepEqual(registry.getRoutingRuleGroup(group.id).rules[1].providerIds, [
+    providerB.id,
+    providerA.id
+  ]);
+
+  registry.delete(providerA.id);
+  assert.deepEqual(registry.getRoutingRuleGroup(group.id).rules, [
+    { model: "gpt-5.6-sol", providerIds: [providerB.id] },
+    { model: "gpt-5.6-luna", providerIds: [providerB.id] }
+  ]);
+  registry.delete(providerB.id);
+  assert.deepEqual(registry.getRoutingRuleGroup(group.id).rules, []);
+  assert.equal(registry.getDocument().settings.routingRuleGroupId, group.id);
+  assert.equal(registry.deleteRoutingRuleGroup(group.id).id, group.id);
+  assert.equal(registry.getDocument().settings.routingRuleGroupId, null);
+});
+
 test("loads a legacy controlled model override and allows replacing it safely", (t) => {
   const { registryPath } = makeTempRegistry(t);
   const legacy = normalizeProvider(validInput({
@@ -538,10 +609,11 @@ test("loads a legacy controlled model override and allows replacing it safely", 
   }), { id: "provider-legacy", now: FIXED_NOW });
   legacy.modelOverride = "legacy\tmodel";
   writeFileSync(registryPath, `${JSON.stringify({
-    schemaVersion: 5,
+    schemaVersion: 6,
     activeProviderId: null,
     providers: [legacy],
     modelMappingGroups: [],
+    routingRuleGroups: [],
     settings: DEFAULT_SETTINGS
   })}\n`, { mode: 0o600 });
 
@@ -1277,6 +1349,8 @@ test("toPublicProvider returns an exact allowlisted shape with a boolean credent
     "modelMode",
     "modelOverride",
     "modelMappingGroupId",
+    "supportedModelsMode",
+    "supportedModels",
     "lastTestAt",
     "lastTestStatus",
     "lastTestCode",

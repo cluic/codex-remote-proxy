@@ -21,6 +21,7 @@ import { ForwardingRecordsPage } from "./pages/ForwardingRecords";
 import { ModelMappingsPage } from "./pages/ModelMappings";
 import { OverviewPage } from "./pages/Overview";
 import { ProvidersPage } from "./pages/Providers";
+import { RoutingRulesPage } from "./pages/RoutingRules";
 import { SetupPage } from "./pages/Setup";
 import { SystemPage } from "./pages/System";
 import type {
@@ -39,6 +40,8 @@ import type {
   Provider,
   ProviderInput,
   Route,
+  RoutingRuleGroup,
+  RoutingRuleGroupInput,
   SupervisorIdentity,
   WorkspaceData
 } from "./types";
@@ -51,6 +54,7 @@ const emptyActivity: ActivityPageData = {
 function routeFromPath(pathname: string): Route {
   if (pathname === "/providers") return "providers";
   if (pathname === "/model-mappings") return "model-mappings";
+  if (pathname === "/routing-rules") return "routing-rules";
   if (pathname === "/forwarding") return "forwarding";
   if (pathname === "/activity") return "activity";
   if (pathname === "/system") return "system";
@@ -131,16 +135,32 @@ export function App() {
     const controller = new AbortController();
     loadControllerRef.current = controller;
     try {
-      const [status, providers, providerPresets, modelMappingGroups, settings, nextActivity] = await Promise.all([
+      const [
+        status,
+        providers,
+        providerPresets,
+        modelMappingGroups,
+        routingRuleGroups,
+        settings,
+        nextActivity
+      ] = await Promise.all([
         api.getStatus(controller.signal),
         api.listProviders(controller.signal),
         api.listProviderPresets(controller.signal),
         api.listModelMappingGroups(controller.signal),
+        api.listRoutingRuleGroups(controller.signal),
         api.getSettings(controller.signal),
         api.getActivity(0, controller.signal)
       ]);
       if (controller.signal.aborted || sequence !== loadSequenceRef.current) return null;
-      const nextWorkspace = { status, providers, providerPresets, modelMappingGroups, settings };
+      const nextWorkspace = {
+        status,
+        providers,
+        providerPresets,
+        modelMappingGroups,
+        routingRuleGroups,
+        settings
+      };
       setWorkspace(nextWorkspace);
       setActivity(nextActivity);
       setLoadError(null);
@@ -389,6 +409,43 @@ export function App() {
     ) === true
   ), [api, executeMutation]);
 
+  const createRoutingRuleGroup = useCallback(async (
+    input: RoutingRuleGroupInput
+  ): Promise<RoutingRuleGroup | null> => (
+    await executeMutation(
+      "routing-rule-create",
+      () => api.createRoutingRuleGroup(input),
+      "notice.routingRuleCreated"
+    )
+  ), [api, executeMutation]);
+
+  const updateRoutingRuleGroup = useCallback(async (
+    id: string,
+    input: RoutingRuleGroupInput
+  ): Promise<RoutingRuleGroup | null> => (
+    await executeMutation(
+      `routing-rule-update-${id}`,
+      () => api.updateRoutingRuleGroup(id, input),
+      "notice.routingRuleUpdated"
+    )
+  ), [api, executeMutation]);
+
+  const deleteRoutingRuleGroup = useCallback(async (id: string): Promise<boolean> => (
+    await executeMutation(
+      `routing-rule-delete-${id}`,
+      async () => { await api.deleteRoutingRuleGroup(id); return true; },
+      "notice.routingRuleDeleted"
+    ) === true
+  ), [api, executeMutation]);
+
+  const activateRoutingRuleGroup = useCallback(async (id: string | null): Promise<boolean> => (
+    await executeMutation(
+      "routing-rule-activate",
+      async () => { await api.setActiveRoutingRuleGroup(id); return true; },
+      id === null ? "notice.routingRuleDeactivated" : "notice.routingRuleActivated"
+    ) === true
+  ), [api, executeMutation]);
+
   const getProviderModels = useCallback(async (id: string, signal?: AbortSignal): Promise<ModelCatalog> => (
     await api.getProviderModels(id, signal)
   ), [api]);
@@ -398,6 +455,18 @@ export function App() {
       `provider-models-${id}`,
       () => api.refreshProviderModels(id),
       "notice.modelsRefreshed"
+    )
+  ), [api, executeMutation]);
+
+  const updateProviderModels = useCallback(async (
+    id: string,
+    mode: "auto" | "custom",
+    models: string[]
+  ): Promise<ModelCatalog | null> => (
+    await executeMutation(
+      `provider-models-update-${id}`,
+      () => api.updateProviderModels(id, mode, models),
+      "notice.providerModelsUpdated"
     )
   ), [api, executeMutation]);
 
@@ -713,6 +782,7 @@ export function App() {
           onUpdate={updateProvider}
           onWeight={updateProviderWeight}
           onDelete={deleteProvider}
+          onUpdateModels={updateProviderModels}
         />
       ) : null}
       {route === "model-mappings" ? (
@@ -728,6 +798,20 @@ export function App() {
           onCreate={createModelMappingGroup}
           onUpdate={updateModelMappingGroup}
           onDelete={deleteModelMappingGroup}
+        />
+      ) : null}
+      {route === "routing-rules" ? (
+        <RoutingRulesPage
+          locale={locale}
+          t={t}
+          groups={workspace.routingRuleGroups}
+          providers={workspace.providers}
+          readOnly={readOnly}
+          pending={pending}
+          onCreate={createRoutingRuleGroup}
+          onUpdate={updateRoutingRuleGroup}
+          onDelete={deleteRoutingRuleGroup}
+          onActivate={activateRoutingRuleGroup}
         />
       ) : null}
       {route === "forwarding" ? (

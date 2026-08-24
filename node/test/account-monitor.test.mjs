@@ -5,10 +5,32 @@ import { PassThrough } from "node:stream";
 
 import {
   AccountMonitor,
+  buildCodexSpawnEnvironment,
   normalizeAccountRateLimits
 } from "../src/supervisor/account-monitor.mjs";
 
 const NOW = "2026-08-20T00:00:00.000Z";
+
+test("prepends the current Node directory to Codex's detached spawn path", () => {
+  const original = { PATH: "/usr/bin:/bin", SAFE_VALUE: "kept" };
+  const environment = buildCodexSpawnEnvironment(original, {
+    execPath: "/opt/crp/bin/node",
+    platform: "linux"
+  });
+  assert.equal(environment.PATH, "/opt/crp/bin:/usr/bin:/bin");
+  assert.equal(environment.SAFE_VALUE, "kept");
+  assert.equal(original.PATH, "/usr/bin:/bin");
+  assert.equal(buildCodexSpawnEnvironment(environment, {
+    execPath: "/opt/crp/bin/node",
+    platform: "linux"
+  }).PATH, environment.PATH);
+  assert.equal(buildCodexSpawnEnvironment({
+    PATH: "/usr/bin:/opt/crp/bin:/bin"
+  }, {
+    execPath: "/opt/crp/bin/node",
+    platform: "linux"
+  }).PATH, "/opt/crp/bin:/usr/bin:/bin");
+});
 
 function createSignal() {
   let resolve;
@@ -335,7 +357,7 @@ test("fails closed on unavailable or oversized app-server output", async (t) => 
     now: () => NOW,
     autoPoll: false
   });
-  assert.equal((await unavailable.refresh()).errorCode, "ACCOUNT_MONITOR_UNAVAILABLE");
+  assert.equal((await unavailable.refresh()).errorCode, "CODEX_COMMAND_UNAVAILABLE");
   await unavailable.close();
 
   const { child, monitor } = createMonitor(() => {}, { maxLineBytes: 8 });
@@ -382,6 +404,28 @@ test("isolates replaced app-server events and contains stdin failures", async (t
   assert.equal(monitor.getState().phase, "unavailable");
   assert.equal(monitor.getState().errorCode, "ACCOUNT_MONITOR_UNAVAILABLE");
   assert.equal(JSON.stringify(monitor.getState()).includes("private"), false);
+});
+
+test("classifies bounded Codex model-catalog startup failures without exposing stderr", async () => {
+  const child = fakeAppServer(() => {});
+  const monitor = new AccountMonitor({
+    spawnImpl: () => child,
+    now: () => NOW,
+    autoPoll: false,
+    requestTimeoutMs: 500
+  });
+  const refreshing = monitor.refresh();
+  child.stderr.write(
+    "Error loading configuration: failed to parse model_catalog_json at /private/path: missing field `supports_reasoning_summaries`\n"
+  );
+  child.exitCode = 1;
+  child.emit("exit", 1, null);
+  const state = await refreshing;
+
+  assert.equal(state.phase, "unavailable");
+  assert.equal(state.errorCode, "CODEX_MODEL_CATALOG_INVALID");
+  assert.equal(JSON.stringify(state).includes("/private/path"), false);
+  await monitor.close();
 });
 
 test("retires a timed-out child and keeps close as the terminal state", async () => {

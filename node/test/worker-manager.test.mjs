@@ -33,6 +33,7 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
         id: providerId ?? "provider-1",
         name: "Primary",
         weight: 100,
+        supportedModels: null,
         upstream,
         proxy
       }],
@@ -41,6 +42,7 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
       capture: { enabled: false, dbPath: "/tmp/crp-worker-manager/traffic.sqlite3" },
       routing: {
         mode: "custom_only",
+        providerPriorityRules: [],
         accountRevision: 1,
         account: {
           authMode: null,

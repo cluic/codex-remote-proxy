@@ -32,9 +32,15 @@ function actionKey(action: string | null): TranslationKey | null {
     "provider-registry-schema-3": "activity.provider-registry-schema-3",
     "provider-registry-schema-4": "activity.provider-registry-schema-4",
     "provider-registry-schema-5": "activity.provider-registry-schema-5",
+    "provider-registry-schema-6": "activity.provider-registry-schema-6",
     "model-mapping-create": "activity.model-mapping-create",
     "model-mapping-update": "activity.model-mapping-update",
-    "model-mapping-delete": "activity.model-mapping-delete"
+    "model-mapping-delete": "activity.model-mapping-delete",
+    "models-update": "activity.models-update",
+    "routing-rule-create": "activity.routing-rule-create",
+    "routing-rule-update": "activity.routing-rule-update",
+    "routing-rule-delete": "activity.routing-rule-delete",
+    "routing-rule-activate": "activity.routing-rule-activate"
   };
   return action ? keys[action] ?? null : null;
 }
