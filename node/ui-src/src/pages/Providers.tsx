@@ -617,7 +617,7 @@ function SupportedModelsForm({
           id="provider-custom-model"
           name="customModel"
           label={t("providers.addCustomModel")}
-          help={t("providers.addCustomModelHelp")}
+          aria-describedby="provider-custom-model-help"
           value={newModel}
           maxLength={256}
           spellCheck={false}
@@ -631,6 +631,9 @@ function SupportedModelsForm({
         <Button disabled={!newModel.trim()} onClick={addCustomModel}>
           <Plus className="icon" aria-hidden="true" />{t("providers.addModel")}
         </Button>
+        <p className="model-add-help" id="provider-custom-model-help">
+          {t("providers.addCustomModelHelp")}
+        </p>
       </div>
 
       {entries.length > 0 ? (

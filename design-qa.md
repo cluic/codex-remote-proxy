@@ -84,6 +84,7 @@ The start-at-login setting exposes its platform/user-level boundary directly, an
 - One routing rule now accepts multiple model chips, so the group expresses model sets rather than repeating an identical Provider chain for every model. The group list, active marker, rule count, assigned-model count, fallback explanation, Provider ranks, and hot-apply notice remain readable in the first 1440 × 900 viewport.
 - The Provider model dialog keeps the catalog path, newly discovered-model default, refresh action, manual add/delete action, search, source badges, per-model enable state, and summary counts in one scrollable modal. Discovered models can be enabled or disabled; user-added models can also be deleted. The footer remains fixed without obscuring the scrollable list.
 - The browser flow changes and saves the catalog path, refreshes discovery, disables a discovered model, adds and removes manual models, creates and activates the two-rule/five-model group, edits it while live, confirms a newer generation, scans for protected values, and verifies no page-level overflow. The shared bilingual matrix also opens Routing Rules at 1440, 1024, and 390 widths.
+- Follow-up visual review aligns the Add model action exactly with its 42 px input control; the help copy occupies a separate grid row and moves before the full-width action on mobile.
 - Full Chromium E2E matrix: 55/55 passed. Visual review found no actionable P0, P1, or P2 issue.
 
 ## Product Hardening QA

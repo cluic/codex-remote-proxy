@@ -1485,8 +1485,10 @@ code {
 .model-catalog-toolbar > div { display: grid; gap: 3px; }
 .model-catalog-toolbar strong { font-size: 13px; }
 .model-catalog-toolbar small { color: var(--muted); font-size: 11px; }
-.model-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; align-items: end; }
-.model-add-row .button { margin-bottom: 1px; }
+.model-add-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "field action" "help help"; column-gap: 9px; row-gap: 7px; align-items: end; }
+.model-add-row .form-field { grid-area: field; }
+.model-add-row .button { grid-area: action; min-height: 42px; margin: 0; }
+.model-add-help { grid-area: help; margin: 0; color: var(--muted); font-size: 12px; }
 .model-management-list { overflow: hidden auto; max-height: min(45vh, 440px); border: 1px solid var(--line); border-radius: 8px; }
 .model-management-row { display: grid; grid-template-columns: minmax(0, 1fr) 108px 36px; gap: 12px; align-items: center; min-height: 56px; padding: 9px 11px; border-bottom: 1px solid var(--line); content-visibility: auto; contain-intrinsic-size: 56px; }
 .model-management-row:last-child { border-bottom: 0; }
@@ -2088,7 +2090,7 @@ code {
   .catalog-actions .button { width: 100%; }
   .model-catalog-toolbar,
   .model-default-policy { align-items: stretch; flex-direction: column; }
-  .model-add-row { grid-template-columns: 1fr; }
+  .model-add-row { grid-template-columns: 1fr; grid-template-areas: "field" "help" "action"; align-items: stretch; }
   .model-add-row .button { width: 100%; }
   .model-management-row { grid-template-columns: minmax(0, 1fr) 98px 34px; gap: 7px; }
   .routing-summary-strip,

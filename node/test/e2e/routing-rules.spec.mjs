@@ -33,6 +33,15 @@ test("manages provider model paths and states and groups many models into two ro
   dialog = page.getByRole("dialog", { name: "Provider model availability" });
   await expect(dialog.getByText("5 enabled of 5")).toBeVisible();
 
+  const [addModelInputBox, addModelButtonBox] = await Promise.all([
+    dialog.getByLabel("Add a model name").boundingBox(),
+    dialog.getByRole("button", { name: "Add model", exact: true }).boundingBox()
+  ]);
+  expect(addModelInputBox).not.toBeNull();
+  expect(addModelButtonBox).not.toBeNull();
+  expect(addModelButtonBox.y).toBe(addModelInputBox.y);
+  expect(addModelButtonBox.height).toBe(addModelInputBox.height);
+
   const modelM2 = dialog.locator(".model-management-row").filter({ hasText: "M2" });
   await modelM2.getByRole("checkbox").uncheck();
   await dialog.getByLabel("Add a model name").fill("custom-temporary");

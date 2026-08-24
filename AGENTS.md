@@ -91,6 +91,7 @@
 - UI validation helpers must not introduce non-loopback absolute URL literals.
 - Uncommitted Changesets must be validated with plain `changeset status`; `--since` is for committed history.
 - Large route-specific payload allowances must not widen the global Admin request-body limit.
+- Composite form actions must align with the input control rather than a field wrapper that includes help text.
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
 
 ## Required Checks
