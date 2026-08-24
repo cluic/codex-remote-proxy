@@ -55,12 +55,14 @@ function targetModelForProvider(provider, requestedModel) {
 }
 
 function supportsRequestedModel(provider, requestedModel) {
-  if (provider?.supportedModels === null
-    || provider?.supportedModels === undefined
-    || requestedModel === null) return true;
-  if (!Array.isArray(provider?.supportedModels)) return false;
+  if (requestedModel === null) return true;
   const targetModel = targetModelForProvider(provider, requestedModel);
-  return targetModel !== null && provider.supportedModels.includes(targetModel);
+  if (targetModel === null) return false;
+  if (Array.isArray(provider?.disabledModels)
+    && provider.disabledModels.includes(targetModel)) return false;
+  if (provider?.supportedModels === null || provider?.supportedModels === undefined) return true;
+  if (!Array.isArray(provider?.supportedModels)) return false;
+  return provider.supportedModels.includes(targetModel);
 }
 
 function priorityRanks(priorityRules, requestedModel) {

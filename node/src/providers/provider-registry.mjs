@@ -28,6 +28,7 @@ export const MAX_MODEL_MAPPING_GROUPS = 50;
 export const MAX_MODEL_MAPPING_RULES = 50;
 export const MAX_ROUTING_RULE_GROUPS = 50;
 export const MAX_ROUTING_RULES = 100;
+export const MAX_ROUTING_RULE_MODELS = 100;
 export const MAX_ROUTING_RULE_PROVIDERS = 100;
 const ROUTING_MODE_SET = new Set(ROUTING_MODES);
 const MAX_MAPPING_NAME_CODE_POINTS = 100;
@@ -50,7 +51,7 @@ const ROUTING_RULE_GROUP_FIELDS = new Set([
   "createdAt",
   "updatedAt"
 ]);
-const ROUTING_RULE_FIELDS = new Set(["model", "providerIds"]);
+const ROUTING_RULE_FIELDS = new Set(["models", "providerIds"]);
 const FIXED_SETTINGS = Object.freeze({
   proxyHost: "127.0.0.1",
   proxyPort: 15100,
@@ -119,7 +120,7 @@ function noChange(result) {
 
 function emptyDocument() {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     activeProviderId: null,
     providers: [],
     modelMappingGroups: [],
@@ -294,29 +295,43 @@ function normalizeRoutingRules(value) {
       400
     );
   }
-  const models = new Set();
+  const assignedModels = new Set();
   return value.map((rule) => {
     if (!validateExactFields(rule, ROUTING_RULE_FIELDS)
+      || !Array.isArray(rule.models)
+      || rule.models.length < 1
+      || rule.models.length > MAX_ROUTING_RULE_MODELS
       || !Array.isArray(rule.providerIds)
       || rule.providerIds.length < 1
       || rule.providerIds.length > MAX_ROUTING_RULE_PROVIDERS) {
       throw inputError(
         "ROUTING_RULE_INPUT_INVALID",
         "Routing rule group settings are invalid.",
-        "Each rule must contain one model and at least one provider.",
+        "Each rule must contain one or more models and at least one provider.",
         400
       );
     }
-    const model = normalizeRoutingText(rule.model, MAX_MODEL_ID_CODE_POINTS);
-    if (models.has(model)) {
-      throw inputError(
-        "ROUTING_RULE_INPUT_INVALID",
-        "Routing rule group settings are invalid.",
-        "Use each model only once per routing rule group.",
-        400
-      );
-    }
-    models.add(model);
+    const models = rule.models.map((model) => {
+      const normalized = normalizeRoutingText(model, MAX_MODEL_ID_CODE_POINTS);
+      if (assignedModels.has(normalized)) {
+        throw inputError(
+          "ROUTING_RULE_INPUT_INVALID",
+          "Routing rule group settings are invalid.",
+          "Assign each model to only one rule in the routing rule group.",
+          400
+        );
+      }
+      assignedModels.add(normalized);
+      if (assignedModels.size > MAX_ROUTING_RULE_MODELS) {
+        throw inputError(
+          "ROUTING_RULE_INPUT_INVALID",
+          "Routing rule group settings are invalid.",
+          `Keep at most ${MAX_ROUTING_RULE_MODELS} model assignments per group.`,
+          400
+        );
+      }
+      return normalized;
+    });
     const providerIds = rule.providerIds.map((providerId) => {
       const normalized = normalizeRoutingText(providerId, 128);
       if (/[\\/]/.test(normalized)) {
@@ -337,7 +352,7 @@ function normalizeRoutingRules(value) {
         400
       );
     }
-    return { model, providerIds };
+    return { models, providerIds };
   });
 }
 
@@ -399,7 +414,7 @@ export function validateProviderRegistryDocument(document) {
     if (!validateExactFields(document, DOCUMENT_FIELDS)) {
       throw new Error("invalid document fields");
     }
-    if (document.schemaVersion !== 6) {
+    if (document.schemaVersion !== 7) {
       throw new Error("unsupported schema version");
     }
     if (!Array.isArray(document.providers)) {
@@ -966,6 +981,8 @@ export class ProviderRegistry {
         modelMappingGroupId: current.modelMappingGroupId,
         supportedModelsMode: current.supportedModelsMode,
         supportedModels: current.supportedModels,
+        modelsPath: current.modelsPath,
+        customModels: current.customModels,
         ...patch
       }, { id: current.id, now: timestamp });
       this.#assertUniqueName(document, normalized.name, id);
@@ -1138,7 +1155,7 @@ export class ProviderRegistry {
     });
   }
 
-  setProviderSupportedModels(id, { mode, models }) {
+  setProviderSupportedModels(id, { mode, models, modelsPath, customModels }) {
     const timestamp = this.now();
     return this.#commit((document) => {
       const index = this.#getIndex(document, id);
@@ -1155,16 +1172,22 @@ export class ProviderRegistry {
         modelOverride: current.modelOverride,
         modelMappingGroupId: current.modelMappingGroupId,
         supportedModelsMode: mode,
-        supportedModels: models
+        supportedModels: models,
+        modelsPath: modelsPath ?? current.modelsPath,
+        customModels: customModels ?? current.customModels
       }, { id: current.id, now: timestamp });
       if (normalized.supportedModelsMode === current.supportedModelsMode
-        && isDeepStrictEqual(normalized.supportedModels, current.supportedModels)) {
+        && isDeepStrictEqual(normalized.supportedModels, current.supportedModels)
+        && normalized.modelsPath === current.modelsPath
+        && isDeepStrictEqual(normalized.customModels, current.customModels)) {
         return noChange(current);
       }
       const updated = {
         ...current,
         supportedModelsMode: normalized.supportedModelsMode,
         supportedModels: normalized.supportedModels,
+        modelsPath: normalized.modelsPath,
+        customModels: normalized.customModels,
         updatedAt: timestamp
       };
       document.providers[index] = updated;

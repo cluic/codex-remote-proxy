@@ -20,6 +20,7 @@ import {
   validateProviderRegistryDocument
 } from "../providers/provider-registry.mjs";
 import {
+  DEFAULT_PROVIDER_MODELS_PATH,
   DEFAULT_PROVIDER_WEIGHT,
   normalizeProvider,
   validateStoredProvider
@@ -150,7 +151,7 @@ function scrubDocument(document) {
 
 function registryBytesForProvider(provider) {
   return Buffer.from(`${JSON.stringify({
-    schemaVersion: 6,
+    schemaVersion: 7,
     activeProviderId: null,
     providers: [provider],
     modelMappingGroups: [],
@@ -498,7 +499,9 @@ function validateSchema2Registry(document) {
         weight: DEFAULT_PROVIDER_WEIGHT,
         modelMappingGroupId: null,
         supportedModelsMode: "auto",
-        supportedModels: []
+        supportedModels: [],
+        modelsPath: DEFAULT_PROVIDER_MODELS_PATH,
+        customModels: []
       });
       const normalizedName = provider.name.toLowerCase();
       if (ids.has(provider.id) || names.has(normalizedName)) {
@@ -552,7 +555,9 @@ function validateSchema3Registry(document) {
         weight: DEFAULT_PROVIDER_WEIGHT,
         modelMappingGroupId: null,
         supportedModelsMode: "auto",
-        supportedModels: []
+        supportedModels: [],
+        modelsPath: DEFAULT_PROVIDER_MODELS_PATH,
+        customModels: []
       });
       const normalizedName = provider.name.toLowerCase();
       if (ids.has(provider.id) || names.has(normalizedName)) {
@@ -605,7 +610,9 @@ function validateSchema4Registry(document) {
         ...provider,
         modelMappingGroupId: null,
         supportedModelsMode: "auto",
-        supportedModels: []
+        supportedModels: [],
+        modelsPath: DEFAULT_PROVIDER_MODELS_PATH,
+        customModels: []
       });
       const normalizedName = provider.name.toLowerCase();
       if (ids.has(provider.id) || names.has(normalizedName)) {
@@ -625,20 +632,34 @@ function validateSchema4Registry(document) {
 function upgradeRegistryDocument(document) {
   return {
     ...document,
-    schemaVersion: 6,
-    providers: document.providers.map((provider) => ({
-      ...provider,
-      weight: provider.weight ?? DEFAULT_PROVIDER_WEIGHT,
-      modelMappingGroupId: provider.modelMappingGroupId ?? null,
-      supportedModelsMode: "auto",
-      supportedModels: []
-    })),
+    schemaVersion: 7,
+    providers: document.providers.map((provider) => {
+      const supportedModelsMode = provider.supportedModelsMode ?? "auto";
+      const supportedModels = provider.supportedModels ?? [];
+      return {
+        ...provider,
+        weight: provider.weight ?? DEFAULT_PROVIDER_WEIGHT,
+        modelMappingGroupId: provider.modelMappingGroupId ?? null,
+        supportedModelsMode,
+        supportedModels,
+        modelsPath: provider.modelsPath ?? DEFAULT_PROVIDER_MODELS_PATH,
+        customModels: provider.customModels
+          ?? (supportedModelsMode === "custom" ? [...supportedModels] : [])
+      };
+    }),
     modelMappingGroups: document.modelMappingGroups ?? [],
-    routingRuleGroups: [],
+    routingRuleGroups: (document.routingRuleGroups ?? []).map((group) => ({
+      ...group,
+      rules: group.rules.map((rule) => {
+        if (Array.isArray(rule.models)) return rule;
+        const { model, ...rest } = rule;
+        return { ...rest, models: [model] };
+      })
+    })),
     settings: {
       ...document.settings,
       routingMode: document.settings.routingMode ?? "custom_only",
-      routingRuleGroupId: null
+      routingRuleGroupId: document.settings.routingRuleGroupId ?? null
     }
   };
 }
@@ -667,7 +688,15 @@ function inspectCurrentRegistry(path, fileOperations) {
     }
     return { kind: "schema-5", source: { ...source, document } };
   }
-  if (document.schemaVersion !== 6) throw migrationError("MIGRATION_INPUT_INVALID");
+  if (document.schemaVersion === 6) {
+    try {
+      validateProviderRegistryDocument(upgradeRegistryDocument(document));
+    } catch (error) {
+      throw migrationError("MIGRATION_INPUT_INVALID", error);
+    }
+    return { kind: "schema-6", source: { ...source, document } };
+  }
+  if (document.schemaVersion !== 7) throw migrationError("MIGRATION_INPUT_INVALID");
   new ProviderRegistry({ path, fileOperations });
   const after = lstatRegular(path, fileOperations);
   if (!sameIdentity(after.identity, source.identity)) {
@@ -744,7 +773,7 @@ export async function migrateLegacyConfiguration({
       completed = true;
       return { migrated: false, reason: "already-current" };
     }
-    if (["schema-2", "schema-3", "schema-4", "schema-5"].includes(registryInspection.kind)) {
+    if (["schema-2", "schema-3", "schema-4", "schema-5", "schema-6"].includes(registryInspection.kind)) {
       const source = registryInspection.source;
       createBackup(source, fileOperations, createBackupId);
       const upgradedDocument = upgradeRegistryDocument(source.document);
@@ -776,7 +805,7 @@ export async function migrateLegacyConfiguration({
       if (activityStore) {
         await activityStore.append({
           category: "migration",
-          action: "provider-registry-schema-6",
+          action: "provider-registry-schema-7",
           providerId: null,
           result: "success",
           errorCode: null,
@@ -789,7 +818,7 @@ export async function migrateLegacyConfiguration({
         });
       }
       completed = true;
-      return { migrated: true, reason: "provider-registry-schema-6" };
+      return { migrated: true, reason: "provider-registry-schema-7" };
     }
 
     const configSource = readSource(legacyConfigPath, fileOperations);
@@ -852,7 +881,7 @@ export async function migrateLegacyConfiguration({
       fileOperations
     });
     const committed = registry.getDocument();
-    if (committed.schemaVersion !== 6
+    if (committed.schemaVersion !== 7
       || committed.activeProviderId !== null
       || committed.providers.length !== 1
       || committed.providers[0].lastTestStatus !== "untested") {

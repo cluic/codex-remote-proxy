@@ -8,6 +8,8 @@ export const MAX_PROVIDER_WEIGHT = 1_000;
 export const MAX_SUPPORTED_MODELS = 2_000;
 export const MAX_SUPPORTED_MODEL_ID_CODE_POINTS = 256;
 export const SUPPORTED_MODEL_MODES = new Set(["auto", "custom"]);
+export const DEFAULT_PROVIDER_MODELS_PATH = "/models";
+export const MAX_PROVIDER_MODELS_PATH_CODE_POINTS = 512;
 
 const INPUT_FIELDS = new Set([
   "name",
@@ -21,7 +23,9 @@ const INPUT_FIELDS = new Set([
   "modelOverride",
   "modelMappingGroupId",
   "supportedModelsMode",
-  "supportedModels"
+  "supportedModels",
+  "modelsPath",
+  "customModels"
 ]);
 const PROFILE_FIELDS = new Set([
   "id",
@@ -235,38 +239,77 @@ function normalizeModelMappingGroupId(value) {
   return value;
 }
 
-function normalizeSupportedModels(modeValue, modelsValue) {
-  const supportedModelsMode = modeValue === undefined ? "auto" : modeValue;
-  if (!SUPPORTED_MODEL_MODES.has(supportedModelsMode)) {
-    inputError("supportedModelsMode", "must be auto or custom");
-  }
+function normalizeModelNames(modelsValue, field) {
   const candidate = modelsValue === undefined ? [] : modelsValue;
   if (!Array.isArray(candidate) || candidate.length > MAX_SUPPORTED_MODELS) {
     inputError(
-      "supportedModels",
+      field,
       `must contain at most ${MAX_SUPPORTED_MODELS} model names`
     );
   }
   const seen = new Set();
-  const supportedModels = candidate.map((model) => {
+  return candidate.map((model) => {
     if (typeof model !== "string"
       || model.length === 0
       || model.trim() !== model
       || [...model].length > MAX_SUPPORTED_MODEL_ID_CODE_POINTS
       || Buffer.byteLength(model, "utf8") > MAX_SUPPORTED_MODEL_ID_CODE_POINTS * 2
       || MODEL_CONTROL_CHARACTER_PATTERN.test(model)) {
-      inputError("supportedModels", "contains an invalid model name");
+      inputError(field, "contains an invalid model name");
     }
     if (seen.has(model)) {
-      inputError("supportedModels", "must not contain duplicate model names");
+      inputError(field, "must not contain duplicate model names");
     }
     seen.add(model);
     return model;
   });
-  if (supportedModelsMode === "auto" && supportedModels.length > 0) {
-    inputError("supportedModels", "must be empty in auto mode");
+}
+
+function normalizeModelsPath(value) {
+  const modelsPath = value === undefined ? DEFAULT_PROVIDER_MODELS_PATH : value;
+  if (typeof modelsPath !== "string"
+    || modelsPath.length === 0
+    || modelsPath.trim() !== modelsPath
+    || !modelsPath.startsWith("/")
+    || [...modelsPath].length > MAX_PROVIDER_MODELS_PATH_CODE_POINTS
+    || Buffer.byteLength(modelsPath, "utf8") > MAX_PROVIDER_MODELS_PATH_CODE_POINTS * 3
+    || CONTROL_CHARACTER_PATTERN.test(modelsPath)
+    || modelsPath.includes("?")
+    || modelsPath.includes("#")) {
+    inputError("modelsPath", "must be a normalized absolute path without a query or fragment");
   }
-  return { supportedModelsMode, supportedModels };
+  let parsed;
+  try {
+    parsed = new URL(modelsPath, "https://models.invalid");
+  } catch {
+    inputError("modelsPath", "must be a valid URL path");
+  }
+  if (parsed.origin !== "https://models.invalid"
+    || parsed.pathname !== modelsPath
+    || parsed.pathname === "/") {
+    inputError("modelsPath", "must not change origin or contain traversal segments");
+  }
+  return modelsPath;
+}
+
+function normalizeSupportedModels(modeValue, modelsValue, customModelsValue) {
+  const supportedModelsMode = modeValue === undefined ? "auto" : modeValue;
+  if (!SUPPORTED_MODEL_MODES.has(supportedModelsMode)) {
+    inputError("supportedModelsMode", "must be auto or custom");
+  }
+  const supportedModels = normalizeModelNames(modelsValue, "supportedModels");
+  const customModels = normalizeModelNames(customModelsValue, "customModels");
+  if (new Set([...supportedModels, ...customModels]).size > MAX_SUPPORTED_MODELS) {
+    inputError(
+      "customModels",
+      `must keep the combined model settings within ${MAX_SUPPORTED_MODELS} names`
+    );
+  }
+  return {
+    supportedModelsMode,
+    supportedModels,
+    customModels
+  };
 }
 
 function normalizeInput(input, options) {
@@ -278,7 +321,8 @@ function normalizeInput(input, options) {
   const modelMappingGroupId = normalizeModelMappingGroupId(input.modelMappingGroupId);
   const supportedModelPolicy = normalizeSupportedModels(
     input.supportedModelsMode,
-    input.supportedModels
+    input.supportedModels,
+    input.customModels
   );
   if (modelPolicy.modelMode === "override" && modelMappingGroupId !== null) {
     inputError("modelMappingGroupId", "cannot be combined with override mode");
@@ -292,6 +336,7 @@ function normalizeInput(input, options) {
     extraHeaders: normalizeExtraHeaders(input.extraHeaders),
     weight: normalizeWeight(input.weight),
     modelMappingGroupId,
+    modelsPath: normalizeModelsPath(input.modelsPath),
     ...supportedModelPolicy,
     ...modelPolicy
   };
@@ -359,7 +404,9 @@ export function validateStoredProvider(profile) {
     modelOverride: profile.modelOverride,
     modelMappingGroupId: profile.modelMappingGroupId,
     supportedModelsMode: profile.supportedModelsMode,
-    supportedModels: profile.supportedModels
+    supportedModels: profile.supportedModels,
+    modelsPath: profile.modelsPath,
+    customModels: profile.customModels
   }, { allowControlCharacters: true });
   assertStoredValue(
     typeof profile.id === "string" && profile.id.trim() === profile.id && profile.id.length > 0,
@@ -428,6 +475,8 @@ export function toPublicProvider(profile, credentialConfigured) {
     modelMappingGroupId: profile.modelMappingGroupId,
     supportedModelsMode: profile.supportedModelsMode,
     supportedModels: [...profile.supportedModels],
+    modelsPath: profile.modelsPath,
+    customModels: [...profile.customModels],
     lastTestAt: profile.lastTestAt,
     lastTestStatus: profile.lastTestStatus,
     lastTestCode: profile.lastTestCode,

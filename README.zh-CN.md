@@ -42,8 +42,8 @@ npx @cluic/codex-remote-proxy ui
 - 测试 OpenAI Responses API 兼容性；
 - 为每个提供商设置优先级权重，并指定同权重时优先使用的首选提供商；
 - 创建可复用的精确模型映射规则组，并为每个提供商选择一个规则组；不选择时默认透传；
-- 创建路由规则组，为每个精确请求模型分别设置提供商优先顺序；
-- 使用自动模型范围，或为某个提供商维护权威的自定义模型列表；
+- 创建路由规则组，让每条规则把一个或多个精确请求模型分配到同一提供商优先顺序；
+- 配置每个提供商的模型获取路径，补充缺失模型，并逐个删除手工条目、启用或停用模型；
 - 遇到可重试的 `429`、指定 `5xx`、超时、连接重置或明确网络故障时让提供商进入冷却，并且仅在尚未建立上游连接时回放有界 Responses 请求；
 - 在运行中热编辑提供商元数据或凭据，并在仍有其他已测试路由时删除提供商；
 - 启动、停止、重启和查看代理 Worker；
@@ -55,7 +55,7 @@ npx @cluic/codex-remote-proxy ui
 
 总览会展示本机 Codex 的 ChatGPT 鉴权模式、订阅类型，以及实际返回的归一化额度窗口；系统页只保留紧凑的账号与路由状态。已知 5 小时和 7 天窗口会显示友好名称，但不会为缺失窗口伪造数据或预留空间。账号快照每五分钟自动刷新，也可以手动刷新。登录启动的 Supervisor 在查找 `codex` 时会自动把当前 Node 可执行文件目录加入 `PATH`，不再依赖交互式 Shell。无效的 `model_catalog_json`、无效 Codex 配置和找不到 Codex 命令会分别显示安全错误码与处理建议；自定义 Provider 路由仍可正常工作。
 
-路由默认保持 `custom_only`。在总览或系统页开启 `account_first` 后，运行中的 Worker 会热更新，无需重启。只有 `POST /responses` 和 `POST /v1/responses` 可以优先使用 ChatGPT 账号；账号不可用或明确限流时进入自定义提供商池。启用的路由规则组可以让每个精确请求模型采用独立的提供商顺序；未命中的模型以及未列出的备用提供商仍按权重排序。使用自定义模型范围的提供商，只有在完成该候选自身的模型映射后，目标模型位于其列表中才会参与路由；健康冷却始终优先。一旦请求可能已经送达，自定义 POST 就不会被自动回放。只有在上游连接尚未建立时失败的有界 Responses 请求，才会在同一请求内安全转移。非 Responses 请求绝不会回放，回放缓冲上限为 8 MiB。
+路由默认保持 `custom_only`。在总览或系统页开启 `account_first` 后，运行中的 Worker 会热更新，无需重启。只有 `POST /responses` 和 `POST /v1/responses` 可以优先使用 ChatGPT 账号；账号不可用或明确限流时进入自定义提供商池。启用的路由规则组中，每条规则可以让多个精确请求模型共享同一提供商顺序；未命中的模型以及未列出的备用提供商仍按权重排序。模型启停会在该候选完成模型映射后判断：默认启用新模型时，精确停用项会被排除；默认停用时，只有精确启用项可参与路由。健康冷却始终优先。一旦请求可能已经送达，自定义 POST 就不会被自动回放。只有在上游连接尚未建立时失败的有界 Responses 请求，才会在同一请求内安全转移。非 Responses 请求绝不会回放，回放缓冲上限为 8 MiB。
 
 系统页可在无需管理员权限的情况下开启“登录时启动”。CRP 会写入一个带项目标记、属于当前用户的 macOS LaunchAgent、Linux systemd user unit 或 Windows Startup 命令，并在下次登录时使用同一 `CRP_HOME` 启动已安装 CLI。如果 Node 或包安装路径随后变化，系统页会把受管启动项标记为过期，用户可以明确修复或停用。停用只会通过已校验身份的文件描述符把受管 inode 改写为惰性配置，不会以存在竞态的方式删除保留路径或 Linux wants 链接。保留路径上如果已有外部普通文件、链接或其他不安全对象，页面会显示冲突；CRP 不会覆盖或删除它，也不会借机修改共享启动目录的权限。
 
@@ -158,26 +158,26 @@ Detached Supervisor 启动只使用一次性、严格白名单化的 IPC 错误�
 
 `-v` 和 `--version` 只输出已安装版本，不发现或启动 CRP。`crp version` 会核对已安装包与运行中 Supervisor 的版本。`crp update --check` 只查询 npm；`crp update` 仅允许在已验证的全局 npm 安装中执行，先完成安装，再只关闭安装前确认的同一个 Supervisor，最后恢复更新前 Supervisor/Worker 是否运行。如果新版本无法恢复运行状态，CRP 会重新安装旧版本并恢复原状态，然后返回 `UPDATE_ROLLED_BACK`；回滚本身失败才返回带明确手动恢复命令的 `UPDATE_RECOVERY_FAILED`。源码目录和 `npx` 缓存不会被原地修改，而会收到明确的全局安装提示。
 
-`provider test`、`activate`、`delete` 和 `models` 必须且只能提供一个选择器：`--id` 或 `--name`。名称通过公开 provider 列表做精确的大小写不敏感匹配。`provider models` 会向 `<base-url>/models` 发起带鉴权、禁止重定向的刷新；Admin API 另提供独立的缓存读取。模型发现有界，并会在进入缓存或输出前拒绝任何包含完整 credential 的模型 ID。它独立于 Responses 兼容性测试，因此模型端点缺失或不兼容不会修改 provider 的测试或激活状态，刷新失败也不会清除最后一次成功目录。
+`provider test`、`activate`、`delete` 和 `models` 必须且只能提供一个选择器：`--id` 或 `--name`。名称通过公开 provider 列表做精确的大小写不敏感匹配。`provider models` 会从提供商已配置的发现路径发起带鉴权、禁止重定向的刷新；默认把 `/models` 追加到基础地址，Admin API 和 Web UI 可以修改该路径并单独读取缓存结果。模型发现有界，并会在进入缓存或输出前拒绝任何包含完整 credential 的模型 ID。它独立于 Responses 兼容性测试，因此模型端点缺失或不兼容不会修改 provider 的测试或激活状态，刷新失败也不会清除最后一次成功目录。
 
 CLI 发起的兼容性测试（包括 `provider add --model`）只会在当前没有 Provider 时请求首次选中，普通 Web Providers 页面现在也会发出同样的请求。第一个成功候选在 Worker 已停止时通过原子 compare-and-set 胜出。选中只写入 `activeProviderId`，绝不会启动或重新配置 Worker，也不会调用受 readiness gate 保护的显式 activation 路由；界面会刷新服务端状态确认结果。仍需显式运行 `crp start`。未提供 `activateIfNone` 的 Admin 调用继续保持不自动选中。条件式 Web Setup 同样会选择该行为，并按 `保存 Provider -> 测试并 CAS 选中 -> 配置 Codex/修复历史 -> 启动 Worker` 执行。
 
 ## 从 0.2.2 升级
 
-当前版本会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 6。已有且有效的 schema-2 至 schema-5 registry 会先备份再原子升级；schema-2/schema-3 提供商获得中性的默认权重 `100`，后续 schema 的权重以及 schema-5 模型映射会保留。已有提供商默认使用自动模型范围，新路由规则组集合为空，原有路由和 Capture 设置保持不变。Schema 检查与替换同时持有迁移锁和常规 ProviderRegistry 写锁，并在报告成功前 fsync 备份及发布目录项。
+当前版本会在 Supervisor 首次启动时，把 pre-supervisor 扁平配置迁移到 provider registry schema 7。已有且有效的 schema-2 至 schema-6 registry 会先备份再原子升级；schema-2/schema-3 提供商获得中性的默认权重 `100`，后续 schema 的权重以及 schema-5 模型映射会保留。Schema-6 的单模型规则会变成只含一个模型的集合，自动/自定义模型范围会分别迁移为等价的“新模型默认启用/默认停用”，原有自定义白名单会成为已启用的手工模型。原有路由和 Capture 设置保持不变。Schema 检查与替换同时持有迁移锁和常规 ProviderRegistry 写锁，并在报告成功前 fsync 备份及发布目录项。
 
 1. 停止旧的托管代理。
 2. 私下备份 `~/.codex-remote-proxy/` 和 `~/.codex/config.toml`；所有备份都应视为包含敏感信息。
 3. 运行 `crp ui`。
 4. 检查迁移得到的 `Default` 提供商，运行兼容性测试，并且只在测试通过后激活。
 
-如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建 `custom_only` 模式、权重 `100`、未激活、未测试、自动模型范围且映射/路由规则组为空的 schema-6 provider registry，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。schema-2 至 schema-5 升级也会保留字节完全一致的备份；验证或发布失败时恢复原始字节。
+如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建 `custom_only` 模式、权重 `100`、未激活、未测试、默认 `/models` 获取路径、新模型默认启用且映射/路由规则组为空的 schema-7 provider registry，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。schema-2 至 schema-6 升级也会保留字节完全一致的备份；验证或发布失败时恢复原始字节。
 
 如果多个旧配置源包含不同凭据，迁移会在创建备份、访问凭据存储、写入 registry 或修改任一源文件之前返回 `MIGRATION_INPUT_INVALID`。CRP 不会自动选择其中一个凭据；该冲突只能在经过操作员审查的真实 HOME 迁移中解决。
 
 如果事务在提交前失败，CRP 会尝试恢复原始字节，并且只删除能够证明属于本次事务的 registry 与凭据状态；外部替换的文件不会被删除。出现 `MIGRATION_COMMITTED_DEGRADED`、`MIGRATION_COMMITTED_LOCK_DEGRADED` 或 `MIGRATION_ROLLBACK_DEGRADED`，表示最终状态不确定或需要修复：停止 CRP，不要连续重试，保留备份，并在修改文件前查看 Activity 中已脱敏的错误码。处于降级状态时，CRP 不会擅自用备份自动覆盖当前状态。
 
-回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-6 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
+回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-7 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
 
 ## 开发验证
 

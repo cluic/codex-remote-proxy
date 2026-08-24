@@ -55,6 +55,7 @@ const PROVIDER_FIELDS = new Set([
   "name",
   "weight",
   "supportedModels",
+  "disabledModels",
   "upstream",
   "proxy"
 ]);
@@ -279,6 +280,8 @@ function isValidProviderCandidate(provider) {
     && provider.weight >= 1
     && provider.weight <= 1_000
     && isValidSupportedModels(provider.supportedModels)
+    && Array.isArray(provider.disabledModels)
+    && isValidSupportedModels(provider.disabledModels)
     && isPlainObject(provider.upstream)
     && hasExactFields(provider.upstream, UPSTREAM_FIELDS)
     && isValidBaseUrl(provider.upstream.baseUrl)

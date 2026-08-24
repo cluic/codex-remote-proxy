@@ -19,6 +19,8 @@ export interface Provider {
   modelMappingGroupId: string | null;
   supportedModelsMode: "auto" | "custom";
   supportedModels: string[];
+  modelsPath: string;
+  customModels: string[];
   lastTestAt: string | null;
   lastTestStatus: TestStatus;
   lastTestCode: string | null;
@@ -70,7 +72,7 @@ export interface ModelMappingGroupInput {
 }
 
 export interface RoutingRule {
-  model: string;
+  models: string[];
   providerIds: string[];
 }
 
@@ -254,6 +256,16 @@ export interface ModelCatalog {
   expiresAt: string | null;
   mode: "auto" | "custom";
   configuredModels: string[];
+  modelsPath: string;
+  defaultEnabled: boolean;
+  customModels: string[];
+  discoveredModels: string[];
+  entries: Array<{
+    id: string;
+    discovered: boolean;
+    custom: boolean;
+    enabled: boolean;
+  }>;
   models: string[];
 }
 

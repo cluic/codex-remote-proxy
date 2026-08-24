@@ -48,6 +48,7 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
         name: "Restart fixture",
         weight: 100,
         supportedModels: null,
+        disabledModels: [],
         upstream: {
           baseUrl: `http://127.0.0.1:${upstreamPort}`,
           apiKey: SECRET,

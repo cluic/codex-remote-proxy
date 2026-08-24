@@ -22,6 +22,8 @@ const PUBLIC_PROVIDER_FIELDS = [
   "modelMappingGroupId",
   "supportedModelsMode",
   "supportedModels",
+  "modelsPath",
+  "customModels",
   "lastTestAt",
   "lastTestStatus",
   "lastTestCode",
@@ -68,6 +70,7 @@ const METRIC_MAX_COUNT = 1_000_000_000_000;
 const METRIC_MAX_TOKEN_TOTAL = 9_000_000_000_000_000;
 const METRIC_MAX_LATENCY_MS = 300_000;
 const MAX_SUPERVISOR_PID = 4_294_967_295;
+const MAX_PROVIDER_MODELS_BODY_BYTES = 3 * 1_024 * 1_024;
 const ACCOUNT_PHASES = new Set(["idle", "starting", "ready", "unavailable", "closed"]);
 const ACCOUNT_AUTH_MODES = new Set([
   "apikey",
@@ -280,13 +283,17 @@ function projectRoutingRuleGroup(group) {
     name: projectMetricText(group?.name, 100),
     rules: Array.isArray(group?.rules)
       ? group.rules.slice(0, 100).map((rule) => ({
-          model: projectMetricText(rule?.model, 256),
+          models: Array.isArray(rule?.models)
+            ? rule.models.slice(0, 100)
+                .map((model) => projectMetricText(model, 256))
+                .filter(Boolean)
+            : [],
           providerIds: Array.isArray(rule?.providerIds)
             ? rule.providerIds.slice(0, 100)
                 .map((id) => projectMetricText(id, 128))
                 .filter(Boolean)
             : []
-        })).filter((rule) => rule.model !== null && rule.providerIds.length > 0)
+        })).filter((rule) => rule.models.length > 0 && rule.providerIds.length > 0)
       : [],
     active: group?.active === true,
     createdAt: projectMetricTimestamp(group?.createdAt),
@@ -344,6 +351,22 @@ function projectModelCatalog(catalog) {
     mode: catalog?.mode === "custom" ? "custom" : "auto",
     configuredModels: Array.isArray(catalog?.configuredModels)
       ? catalog.configuredModels.filter((model) => typeof model === "string").slice(0, 2_000)
+      : [],
+    modelsPath: projectMetricText(catalog?.modelsPath, 512) ?? "/models",
+    defaultEnabled: catalog?.defaultEnabled !== false,
+    customModels: Array.isArray(catalog?.customModels)
+      ? catalog.customModels.filter((model) => typeof model === "string").slice(0, 2_000)
+      : [],
+    discoveredModels: Array.isArray(catalog?.discoveredModels)
+      ? catalog.discoveredModels.filter((model) => typeof model === "string").slice(0, 2_000)
+      : [],
+    entries: Array.isArray(catalog?.entries)
+      ? catalog.entries.slice(0, 2_000).map((entry) => ({
+          id: projectMetricText(entry?.id, 256),
+          discovered: entry?.discovered === true,
+          custom: entry?.custom === true,
+          enabled: entry?.enabled === true
+        })).filter((entry) => entry.id !== null)
       : [],
     models: Array.isArray(catalog?.models)
       ? catalog.models.filter((model) => typeof model === "string").slice(0, 2_000)
@@ -971,11 +994,13 @@ export function createAdminServer({
   host = "127.0.0.1",
   port = 15101,
   maxBodyBytes = 64 * 1_024,
+  maxProviderModelsBodyBytes = MAX_PROVIDER_MODELS_BODY_BYTES,
   fetchImpl = globalThis.fetch,
   createRequestId = () => randomBytes(12).toString("base64url")
 } = {}) {
   if (host !== "127.0.0.1" || !Number.isInteger(port) || port < 0 || port > 65_535
     || !Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1
+    || !Number.isSafeInteger(maxProviderModelsBodyBytes) || maxProviderModelsBodyBytes < 1
     || typeof fetchImpl !== "function"
     || !auth || !providerService || !accountMonitor) {
     throw new TypeError("Admin server options are invalid.");
@@ -1448,16 +1473,40 @@ export function createAdminServer({
       return;
     }
     if (providerRoute?.action === "models" && request.method === "PATCH") {
-      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
-        allowed: ["mode", "models"],
-        required: ["mode", "models"]
-      });
-      if ((body.mode !== "auto" && body.mode !== "custom") || !Array.isArray(body.models)) {
+      const rawBody = await readJsonBody(request, maxProviderModelsBodyBytes);
+      const modern = isPlainObject(rawBody)
+        && Object.hasOwn(rawBody, "defaultEnabled");
+      const body = modern
+        ? exactObject(rawBody, {
+            allowed: ["modelsPath", "defaultEnabled", "customModels", "overrides"],
+            required: ["modelsPath", "defaultEnabled", "customModels", "overrides"]
+          })
+        : exactObject(rawBody, {
+            allowed: ["mode", "models"],
+            required: ["mode", "models"]
+          });
+      if (modern
+        ? typeof body.modelsPath !== "string"
+          || typeof body.defaultEnabled !== "boolean"
+          || !Array.isArray(body.customModels)
+          || !Array.isArray(body.overrides)
+        : (body.mode !== "auto" && body.mode !== "custom") || !Array.isArray(body.models)) {
         throw bodyError("API_BODY_INVALID");
       }
       const modelCatalog = await providerService.setProviderSupportedModels(
         providerRoute.id,
-        { mode: body.mode, models: body.models }
+        modern
+          ? {
+              mode: body.defaultEnabled ? "auto" : "custom",
+              models: body.overrides,
+              modelsPath: body.modelsPath,
+              customModels: body.customModels
+            }
+          : {
+              mode: body.mode,
+              models: body.models,
+              customModels: body.mode === "custom" ? body.models : []
+            }
       );
       sendJson(response, 200, { modelCatalog: projectModelCatalog(modelCatalog) });
       return;

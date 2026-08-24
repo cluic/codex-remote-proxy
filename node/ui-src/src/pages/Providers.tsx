@@ -17,6 +17,7 @@ import {
   type FormEvent,
   type MutableRefObject,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
@@ -68,8 +69,12 @@ type ProvidersProps = {
   onRefreshModels: (id: string) => Promise<ModelCatalog | null>;
   onUpdateModels: (
     id: string,
-    mode: "auto" | "custom",
-    models: string[]
+    input: {
+      modelsPath: string;
+      defaultEnabled: boolean;
+      customModels: string[];
+      overrides: string[];
+    }
   ) => Promise<ModelCatalog | null>;
 };
 
@@ -383,76 +388,300 @@ function ProviderForm({
   );
 }
 
+function sameStringSet(actual: Set<string>, expected: string[]): boolean {
+  return actual.size === expected.length && expected.every((value) => actual.has(value));
+}
+
 function SupportedModelsForm({
   catalog,
   t,
+  refreshing,
+  onRefresh,
   onSubmit
 }: {
   catalog: ModelCatalog;
   t: Translator;
-  onSubmit: (mode: "auto" | "custom", models: string[]) => Promise<boolean>;
+  refreshing: boolean;
+  onRefresh: () => Promise<void>;
+  onSubmit: (input: {
+    modelsPath: string;
+    defaultEnabled: boolean;
+    customModels: string[];
+    overrides: string[];
+  }) => Promise<boolean>;
 }) {
-  const [mode, setMode] = useState<"auto" | "custom">(catalog.mode);
-  const [modelsText, setModelsText] = useState(() => (
-    catalog.mode === "custom" ? catalog.configuredModels : catalog.models
-  ).join("\n"));
+  const [modelsPath, setModelsPath] = useState(catalog.modelsPath);
+  const [defaultEnabled, setDefaultEnabled] = useState(catalog.defaultEnabled);
+  const [customModels, setCustomModels] = useState(() => new Set(catalog.customModels));
+  const [overrides, setOverrides] = useState(() => new Set(catalog.configuredModels));
+  const [newModel, setNewModel] = useState("");
+  const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const entries = useMemo(() => {
+    const discovered = new Set(catalog.discoveredModels);
+    const modelIds = [];
+    const seen = new Set<string>();
+    for (const model of [...catalog.discoveredModels, ...customModels, ...overrides]) {
+      if (seen.has(model)) continue;
+      seen.add(model);
+      modelIds.push(model);
+    }
+    return modelIds.map((id) => ({
+      id,
+      discovered: discovered.has(id),
+      custom: customModels.has(id),
+      enabled: overrides.has(id) ? !defaultEnabled : defaultEnabled
+    }));
+  }, [catalog.discoveredModels, customModels, defaultEnabled, overrides]);
+
+  const visibleEntries = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return query
+      ? entries.filter((entry) => entry.id.toLowerCase().includes(query))
+      : entries;
+  }, [entries, search]);
+  const enabledCount = entries.filter((entry) => entry.enabled).length;
+  const settingsChanged = modelsPath !== catalog.modelsPath
+    || defaultEnabled !== catalog.defaultEnabled
+    || !sameStringSet(customModels, catalog.customModels)
+    || !sameStringSet(overrides, catalog.configuredModels)
+    || newModel.trim().length > 0;
+
+  const validModel = (model: string) => model.length > 0
+    && model.trim() === model
+    && [...model].length <= 256
+    && new TextEncoder().encode(model).length <= 512
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(model);
+
+  const addCustomModel = () => {
+    const model = newModel.trim();
+    if (!validModel(model)) {
+      setError(t("providers.modelNameInvalid"));
+      return;
+    }
+    if (new Set([...customModels, ...overrides, model]).size > 2_000) {
+      setError(t("providers.supportedModelsInvalid"));
+      return;
+    }
+    setCustomModels((current) => new Set(current).add(model));
+    setOverrides((current) => {
+      const next = new Set(current);
+      const enabled = next.has(model) ? !defaultEnabled : defaultEnabled;
+      if (!enabled) next.add(model);
+      return next;
+    });
+    setNewModel("");
+    setError(null);
+  };
+
+  const setDefaultPolicy = (nextDefault: boolean) => {
+    const nextOverrides = new Set<string>();
+    for (const entry of entries) {
+      if (entry.enabled !== nextDefault) nextOverrides.add(entry.id);
+    }
+    setDefaultEnabled(nextDefault);
+    setOverrides(nextOverrides);
+  };
+
+  const toggleModel = (model: string) => {
+    setOverrides((current) => {
+      const next = new Set(current);
+      if (next.has(model)) next.delete(model);
+      else next.add(model);
+      return next;
+    });
+  };
+
+  const deleteCustomModel = (model: string) => {
+    setCustomModels((current) => {
+      const next = new Set(current);
+      next.delete(model);
+      return next;
+    });
+    if (!catalog.discoveredModels.includes(model)) {
+      setOverrides((current) => {
+        const next = new Set(current);
+        next.delete(model);
+        return next;
+      });
+    }
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    const models = mode === "auto" ? [] : modelsText.split(/\r?\n/)
-      .map((model) => model.trim())
-      .filter(Boolean);
-    if (models.length > 2_000
-      || new Set(models).size !== models.length
-      || models.some((model) => [...model].length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(model))) {
+    const nextCustomModels = new Set(customModels);
+    const nextOverrides = new Set(overrides);
+    const pendingModel = newModel.trim();
+    if (pendingModel) {
+      if (!validModel(pendingModel)) {
+        setError(t("providers.modelNameInvalid"));
+        return;
+      }
+      nextCustomModels.add(pendingModel);
+      const enabled = nextOverrides.has(pendingModel) ? !defaultEnabled : defaultEnabled;
+      if (!enabled) nextOverrides.add(pendingModel);
+    }
+    let normalizedPath = null;
+    try {
+      const currentOrigin = window.location.origin;
+      const parsed = new URL(modelsPath, currentOrigin);
+      if (modelsPath.trim() === modelsPath
+        && modelsPath.startsWith("/")
+        && !/[\u0000-\u001f\u007f]/u.test(modelsPath)
+        && new TextEncoder().encode(modelsPath).length <= 1_536
+        && parsed.origin === currentOrigin
+        && parsed.pathname === modelsPath
+        && parsed.pathname !== "/"
+        && !modelsPath.includes("?")
+        && !modelsPath.includes("#")
+        && [...modelsPath].length <= 512) {
+        normalizedPath = modelsPath;
+      }
+    } catch {
+      normalizedPath = null;
+    }
+    if (normalizedPath === null
+      || nextCustomModels.size > 2_000
+      || nextOverrides.size > 2_000
+      || new Set([...nextCustomModels, ...nextOverrides]).size > 2_000) {
       setError(t("providers.supportedModelsInvalid"));
       return;
     }
     setError(null);
-    if (!await onSubmit(mode, models)) setError(t("providers.supportedModelsInvalid"));
+    if (!await onSubmit({
+      modelsPath: normalizedPath,
+      defaultEnabled,
+      customModels: [...nextCustomModels],
+      overrides: [...nextOverrides]
+    })) setError(t("providers.supportedModelsInvalid"));
   };
 
   return (
     <form id="provider-models-form" className="supported-models-form" onSubmit={submit} noValidate>
       {error ? <FormError>{error}</FormError> : null}
-      <SelectField
-        id="provider-supported-models-mode"
-        name="supportedModelsMode"
-        label={t("providers.supportedModelsMode")}
-        help={t("providers.supportedModelsModeHelp")}
-        value={mode}
-        onChange={(event) => {
-          const next = event.target.value as "auto" | "custom";
-          setMode(next);
-          if (next === "custom" && !modelsText.trim()) setModelsText(catalog.models.join("\n"));
-        }}
-      >
-        <option value="auto">{t("providers.supportedModelsAuto")}</option>
-        <option value="custom">{t("providers.supportedModelsCustom")}</option>
-      </SelectField>
-      {mode === "custom" ? (
-        <TextareaField
-          id="provider-supported-models"
-          name="supportedModels"
-          label={t("providers.supportedModelsList")}
-          help={t("providers.supportedModelsListHelp")}
-          value={modelsText}
-          onChange={(event) => setModelsText(event.target.value)}
-          rows={14}
+      <div className="model-catalog-config">
+        <Field
+          id="provider-models-path"
+          name="modelsPath"
+          label={t("providers.modelsPath")}
+          help={t("providers.modelsPathHelp")}
+          value={modelsPath}
+          maxLength={512}
           spellCheck={false}
           autoFocus
+          onChange={(event) => setModelsPath(event.target.value)}
         />
-      ) : (
-        <Notice title={t("providers.supportedModelsAuto")} tone="info">
-          <p>{t("providers.supportedModelsAutoHelp")}</p>
-        </Notice>
-      )}
-      {catalog.models.length > 0 ? (
-        <p className="supported-models-source">
-          {t("providers.discoveredModelHint", { count: catalog.models.length })}
+        <div className="model-default-policy">
+          <div>
+            <strong>{t("providers.defaultModelPolicy")}</strong>
+            <small>{t("providers.defaultModelPolicyHelp")}</small>
+          </div>
+          <label className="system-switch-control">
+            <span className="visually-hidden">{t("providers.defaultModelPolicy")}</span>
+            <input
+              type="checkbox"
+              checked={defaultEnabled}
+              onChange={(event) => setDefaultPolicy(event.target.checked)}
+            />
+            <span className="switch-track" aria-hidden="true"><span /></span>
+          </label>
+        </div>
+        {settingsChanged ? (
+          <Notice title={t("providers.modelsUnsavedTitle")} tone="warning">
+            <p>{t("providers.modelsUnsavedHelp")}</p>
+          </Notice>
+        ) : null}
+      </div>
+
+      <div className="model-catalog-toolbar">
+        <div>
+          <strong>{t("providers.catalogSummary", {
+            total: entries.length,
+            enabled: enabledCount
+          })}</strong>
+          <small>{t("providers.catalogSourceSummary", {
+            discovered: catalog.discoveredModels.length,
+            custom: customModels.size
+          })}</small>
+        </div>
+        <Button
+          disabled={settingsChanged || refreshing}
+          busy={refreshing}
+          onClick={() => void onRefresh()}
+        ><RefreshCw className="icon" aria-hidden="true" />{t("providers.refreshModels")}</Button>
+      </div>
+
+      <div className="model-add-row">
+        <Field
+          id="provider-custom-model"
+          name="customModel"
+          label={t("providers.addCustomModel")}
+          aria-describedby="provider-custom-model-help"
+          value={newModel}
+          maxLength={256}
+          spellCheck={false}
+          onChange={(event) => setNewModel(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            addCustomModel();
+          }}
+        />
+        <Button disabled={!newModel.trim()} onClick={addCustomModel}>
+          <Plus className="icon" aria-hidden="true" />{t("providers.addModel")}
+        </Button>
+        <p className="model-add-help" id="provider-custom-model-help">
+          {t("providers.addCustomModelHelp")}
         </p>
+      </div>
+
+      {entries.length > 0 ? (
+        <Field
+          id="provider-model-search"
+          name="modelSearch"
+          type="search"
+          label={t("providers.searchModels")}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
       ) : null}
+
+      <div className="model-management-list" role="list" aria-label={t("providers.modelCatalog")}>
+        {visibleEntries.map((entry) => (
+          <div className="model-management-row" role="listitem" key={entry.id}>
+            <div className="model-management-name">
+              <code title={entry.id}>{entry.id}</code>
+              <span>
+                {entry.discovered ? <StatusBadge tone="neutral">{t("providers.modelSourceDiscovered")}</StatusBadge> : null}
+                {entry.custom ? <StatusBadge tone="info">{t("providers.modelSourceCustom")}</StatusBadge> : null}
+              </span>
+            </div>
+            <label className="model-enabled-control">
+              <input
+                type="checkbox"
+                checked={entry.enabled}
+                aria-label={t(entry.enabled
+                  ? "providers.disableModel"
+                  : "providers.enableModel", { model: entry.id })}
+                onChange={() => toggleModel(entry.id)}
+              />
+              <span>{t(entry.enabled ? "providers.modelEnabled" : "providers.modelDisabled")}</span>
+            </label>
+            {entry.custom ? (
+              <IconButton
+                label={t("providers.deleteCustomModel", { model: entry.id })}
+                onClick={() => deleteCustomModel(entry.id)}
+              ><Trash2 aria-hidden="true" /></IconButton>
+            ) : <span className="model-row-spacer" />}
+          </div>
+        ))}
+        {visibleEntries.length === 0 ? (
+          <p className="catalog-empty">{entries.length === 0
+            ? t("providers.modelCatalogEmpty")
+            : t("providers.modelSearchEmpty")}</p>
+        ) : null}
+      </div>
     </form>
   );
 }
@@ -601,7 +830,12 @@ export function ProvidersPage({
                   <div><dt>{t("providers.testStatus")}</dt><dd><StatusBadge tone={testTone(provider.lastTestStatus)}>{testLabel(provider, t)}</StatusBadge></dd></div>
                   <div><dt>{t("providers.lastTest")}</dt><dd>{provider.lastTestAt ? formatDate(locale, provider.lastTestAt) : t("common.none")}</dd></div>
                   <div><dt>{t("providers.modelPolicy")}</dt><dd>{modelPolicy(provider, modelMappingGroups, t)}</dd></div>
-                  <div><dt>{t("providers.supportedModels")}</dt><dd>{provider.supportedModelsMode === "custom" ? t("providers.supportedModelsCount", { count: provider.supportedModels.length }) : t("providers.supportedModelsAuto")}</dd></div>
+                  <div><dt>{t("providers.supportedModels")}</dt><dd>{t("providers.modelPolicySummary", {
+                    policy: t(provider.supportedModelsMode === "auto"
+                      ? "providers.newModelsEnabled"
+                      : "providers.newModelsDisabled"),
+                    count: provider.customModels.length
+                  })}</dd></div>
                   <div><dt>{t("providers.credential")}</dt><dd>{provider.credentialConfigured ? t("common.configured") : t("common.notConfigured")}</dd></div>
                   <div className="provider-weight-fact">
                     <dt>{t("providers.weight")}</dt>
@@ -838,7 +1072,13 @@ export function ProvidersPage({
             <DefinitionList rows={[
               { label: t("providers.testStatus"), value: <StatusBadge tone={testTone(selected.lastTestStatus)}>{testLabel(selected, t)}</StatusBadge> },
               { label: t("providers.modelPolicy"), value: modelPolicy(selected, modelMappingGroups, t) },
-              { label: t("providers.supportedModels"), value: selected.supportedModelsMode === "custom" ? t("providers.supportedModelsCount", { count: selected.supportedModels.length }) : t("providers.supportedModelsAuto") },
+              { label: t("providers.modelsPath"), value: <code>{selected.modelsPath}</code> },
+              { label: t("providers.supportedModels"), value: t("providers.modelPolicySummary", {
+                policy: t(selected.supportedModelsMode === "auto"
+                  ? "providers.newModelsEnabled"
+                  : "providers.newModelsDisabled"),
+                count: selected.customModels.length
+              }) },
               { label: t("providers.credential"), value: selected.credentialConfigured ? t("common.configured") : t("common.notConfigured") },
               { label: t("providers.authMethod"), value: <code>{selected.authScheme ? `${selected.authScheme} / ${selected.authHeader}` : selected.authHeader}</code> },
               { label: t("providers.extraHeaderCount"), value: formatNumber(locale, Object.keys(selected.extraHeaders).length) },
@@ -855,7 +1095,7 @@ export function ProvidersPage({
                         ? "providers.catalogFresh"
                         : catalog.state === "stale"
                           ? "providers.catalogStale"
-                          : "providers.catalogMissing")} · ${t("providers.catalogCount", { count: catalog.models.length })}`
+                          : "providers.catalogMissing")} · ${t("providers.catalogCount", { count: catalog.entries.length })}`
                       : t("providers.catalogMissing")}</p>
                 </div>
                 <div className="catalog-actions">
@@ -871,8 +1111,13 @@ export function ProvidersPage({
                 </div>
               </div>
               {catalogError ? <ErrorNotice error={catalogError} t={t} /> : null}
-              {catalog?.models.length ? (
-                <ul className="model-list">{catalog.models.slice(0, 12).map((item) => <li key={item}><code title={item}>{item}</code></li>)}</ul>
+              {catalog?.entries.length ? (
+                <ul className="model-list">{catalog.entries.slice(0, 12).map((item) => (
+                  <li className={item.enabled ? undefined : "model-list-disabled"} key={item.id}>
+                    <code title={item.id}>{item.id}</code>
+                    <span>{t(item.enabled ? "providers.modelEnabled" : "providers.modelDisabled")}</span>
+                  </li>
+                ))}</ul>
               ) : <p className="catalog-empty">{t("providers.catalogMissing")}</p>}
             </section>
           </div>
@@ -931,7 +1176,7 @@ export function ProvidersPage({
         size="large"
         footer={(
           <>
-            <Button onClick={() => setMode("detail")}>{t("common.cancel")}</Button>
+            <Button onClick={() => setMode("detail")}>{t("common.close")}</Button>
             <Button
               variant="primary"
               type="submit"
@@ -945,14 +1190,17 @@ export function ProvidersPage({
         {catalogError ? <ErrorNotice error={catalogError} t={t} /> : null}
         {mode === "models" && selected && catalog ? (
           <SupportedModelsForm
-            key={`${selected.id}-${catalog.mode}-${catalog.configuredModels.join("|")}`}
+            key={`${selected.id}-${catalog.modelsPath}-${catalog.defaultEnabled}-${catalog.customModels.join("|")}-${catalog.configuredModels.join("|")}-${catalog.discoveredModels.join("|")}`}
             catalog={catalog}
             t={t}
-            onSubmit={async (catalogMode, models) => {
-              const updated = await onUpdateModels(selected.id, catalogMode, models);
+            refreshing={pending === `provider-models-${selected.id}`}
+            onRefresh={async () => {
+              await refreshCatalog();
+            }}
+            onSubmit={async (input) => {
+              const updated = await onUpdateModels(selected.id, input);
               if (updated) {
                 setCatalog(updated);
-                setMode("detail");
               }
               return updated !== null;
             }}

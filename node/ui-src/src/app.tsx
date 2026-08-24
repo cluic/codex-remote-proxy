@@ -460,12 +460,16 @@ export function App() {
 
   const updateProviderModels = useCallback(async (
     id: string,
-    mode: "auto" | "custom",
-    models: string[]
+    input: {
+      modelsPath: string;
+      defaultEnabled: boolean;
+      customModels: string[];
+      overrides: string[];
+    }
   ): Promise<ModelCatalog | null> => (
     await executeMutation(
       `provider-models-update-${id}`,
-      () => api.updateProviderModels(id, mode, models),
+      () => api.updateProviderModels(id, input),
       "notice.providerModelsUpdated"
     )
   ), [api, executeMutation]);

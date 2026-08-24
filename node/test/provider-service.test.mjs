@@ -225,6 +225,43 @@ function modelListResponse(models, { status = 200, payload } = {}) {
   });
 }
 
+function expectedModelCatalog(providerId, {
+  state = "missing",
+  fetchedAt = null,
+  expiresAt = null,
+  mode = "auto",
+  configuredModels = [],
+  modelsPath = "/models",
+  customModels = [],
+  discoveredModels = []
+} = {}) {
+  const defaultEnabled = mode === "auto";
+  const configured = new Set(configuredModels);
+  const discovered = new Set(discoveredModels);
+  const custom = new Set(customModels);
+  const ids = [...new Set([...configuredModels, ...customModels, ...discoveredModels])];
+  const entries = ids.map((id) => ({
+    id,
+    discovered: discovered.has(id),
+    custom: custom.has(id),
+    enabled: configured.has(id) ? !defaultEnabled : defaultEnabled
+  }));
+  return {
+    providerId,
+    state,
+    fetchedAt,
+    expiresAt,
+    models: entries.filter((entry) => entry.enabled).map((entry) => entry.id),
+    mode,
+    configuredModels,
+    modelsPath,
+    defaultEnabled,
+    customModels,
+    discoveredModels,
+    entries
+  };
+}
+
 function committedError(code, action = "Repair the residual state.") {
   return new CrpError(
     code,
@@ -435,7 +472,7 @@ test("running provider pools hot-apply provider edits and protect the final test
   assert.equal(credentials.values.get("credential-1"), replacement);
 });
 
-test("routing rules, custom model lists, and active-provider deletion hot-apply together", async (t) => {
+test("multi-model routing rules, model controls, and active-provider deletion hot-apply together", async (t) => {
   const { service, registry, credentials, workerManager } = makeHarness(t);
   const providerA = await service.createProvider(
     providerInput("Provider A"),
@@ -450,28 +487,50 @@ test("routing rules, custom model lists, and active-provider deletion hot-apply 
   await service.activate(providerA.id);
 
   const group = await service.createRoutingRuleGroup({
-    name: "Split Sol and Luna",
+    name: "Five-model split",
     rules: [
-      { model: "gpt-5.6-sol", providerIds: [providerA.id, providerB.id] },
-      { model: "gpt-5.6-luna", providerIds: [providerB.id, providerA.id] }
+      { models: ["M1", "M3", "M5"], providerIds: [providerA.id, providerB.id] },
+      { models: ["M2", "M4"], providerIds: [providerB.id, providerA.id] }
     ]
   });
   await service.setActiveRoutingRuleGroup(group.id);
   assert.deepEqual(
     workerManager.calls.at(-1)[1].settings.routing.providerPriorityRules,
-    group.rules
+    [
+      { model: "M1", providerIds: [providerA.id, providerB.id] },
+      { model: "M3", providerIds: [providerA.id, providerB.id] },
+      { model: "M5", providerIds: [providerA.id, providerB.id] },
+      { model: "M2", providerIds: [providerB.id, providerA.id] },
+      { model: "M4", providerIds: [providerB.id, providerA.id] }
+    ]
   );
 
   const catalog = await service.setProviderSupportedModels(providerB.id, {
     mode: "custom",
-    models: ["gpt-5.6-luna"]
+    models: ["M2", "M4"],
+    modelsPath: "/catalog/models",
+    customModels: ["M2", "M4"]
   });
   assert.equal(catalog.mode, "custom");
-  assert.deepEqual(catalog.configuredModels, ["gpt-5.6-luna"]);
+  assert.deepEqual(catalog.configuredModels, ["M2", "M4"]);
+  assert.equal(catalog.modelsPath, "/catalog/models");
   const providerBSnapshot = workerManager.calls.at(-1)[1].settings.providers.find(
     (candidate) => candidate.id === providerB.id
   );
-  assert.deepEqual(providerBSnapshot.supportedModels, ["gpt-5.6-luna"]);
+  assert.deepEqual(providerBSnapshot.supportedModels, ["M2", "M4"]);
+  assert.deepEqual(providerBSnapshot.disabledModels, []);
+
+  await service.setProviderSupportedModels(providerA.id, {
+    mode: "auto",
+    models: ["M3"],
+    modelsPath: "/models",
+    customModels: ["M5"]
+  });
+  const providerASnapshot = workerManager.calls.at(-1)[1].settings.providers.find(
+    (candidate) => candidate.id === providerA.id
+  );
+  assert.equal(providerASnapshot.supportedModels, null);
+  assert.deepEqual(providerASnapshot.disabledModels, ["M3"]);
 
   const deleted = await service.deleteProvider(providerA.id);
   assert.equal(deleted.id, providerA.id);
@@ -482,8 +541,8 @@ test("routing rules, custom model lists, and active-provider deletion hot-apply 
     [providerB.id]
   );
   assert.deepEqual(registry.getRoutingRuleGroup(group.id).rules, [
-    { model: "gpt-5.6-sol", providerIds: [providerB.id] },
-    { model: "gpt-5.6-luna", providerIds: [providerB.id] }
+    { models: ["M1", "M3", "M5"], providerIds: [providerB.id] },
+    { models: ["M2", "M4"], providerIds: [providerB.id] }
   ]);
 });
 
@@ -888,31 +947,30 @@ test("model discovery reads cache and refreshes a bounded authenticated catalog 
     authScheme: "Token",
     extraHeaders: { "x-region": "test" }
   }, secret);
+  await service.setProviderSupportedModels(provider.id, {
+    mode: "auto",
+    models: [],
+    modelsPath: "/catalog/list",
+    customModels: []
+  });
   const before = registry.getDocument();
 
-  assert.deepEqual(await service.getProviderModels(provider.id), {
-    providerId: provider.id,
-    state: "missing",
-    fetchedAt: null,
-    expiresAt: null,
-    mode: "auto",
-    configuredModels: [],
-    models: []
-  });
+  assert.deepEqual(
+    await service.getProviderModels(provider.id),
+    expectedModelCatalog(provider.id, { modelsPath: "/catalog/list" })
+  );
   const refreshed = await service.refreshProviderModels(provider.id);
-  assert.deepEqual(refreshed, {
-    providerId: provider.id,
+  assert.deepEqual(refreshed, expectedModelCatalog(provider.id, {
     state: "fresh",
     fetchedAt: NOW,
     expiresAt: "2026-07-14T02:00:00.000Z",
-    mode: "auto",
-    configuredModels: [],
-    models: ["model-b", "model-a"]
-  });
+    modelsPath: "/catalog/list",
+    discoveredModels: ["model-b", "model-a"]
+  }));
   assert.deepEqual(await service.getProviderModels(provider.id), refreshed);
 
   const [url, options] = requests[0];
-  assert.equal(url, "https://provider.example/root/v1/models");
+  assert.equal(url, "https://provider.example/root/v1/catalog/list");
   assert.equal(options.method, "GET");
   assert.equal(options.redirect, "manual");
   assert.equal(options.body, undefined);
@@ -979,15 +1037,12 @@ test("model refresh classifies failures, enforces bounds, and preserves the last
       (error) => error?.code === code
     );
     const cached = await service.getProviderModels(provider.id);
-    assert.deepEqual(cached, {
-      providerId: provider.id,
+    assert.deepEqual(cached, expectedModelCatalog(provider.id, {
       state: "stale",
       fetchedAt: stale.fetchedAt,
       expiresAt: stale.expiresAt,
-      mode: "auto",
-      configuredModels: [],
-      models: stale.models
-    });
+      discoveredModels: stale.models
+    }));
   }
   assert.equal(modelCache.putCalls.length, 0);
   assert.deepEqual(registry.getDocument(), before);
@@ -1020,15 +1075,12 @@ test("model refresh reports committed degradation when Activity fails after the 
   assert.equal(failure?.code, "PROVIDER_MODELS_COMMITTED_DEGRADED");
   assert.deepEqual(failure?.details, { committed: true, degraded: true });
   assert.equal(modelCache.putCalls.length, 1);
-  assert.deepEqual(await service.getProviderModels(provider.id), {
-    providerId: provider.id,
+  assert.deepEqual(await service.getProviderModels(provider.id), expectedModelCatalog(provider.id, {
     state: "fresh",
     fetchedAt: NOW,
     expiresAt: "2026-07-14T02:00:00.000Z",
-    mode: "auto",
-    configuredModels: [],
-    models: ["model-a", "model-b"]
-  });
+    discoveredModels: ["model-a", "model-b"]
+  }));
   assert.equal(fetchCalls, 1);
   await service.getProviderModels(provider.id);
   assert.equal(fetchCalls, 1);
@@ -1062,15 +1114,12 @@ test("model refresh preserves cache-lock repair guidance after a committed cache
   assert.deepEqual(failure?.details, { committed: true, degraded: true });
   assert.equal(failure?.action, cacheRepairAction);
   assert.doesNotMatch(failure?.action ?? "", /Activity/i);
-  assert.deepEqual(await service.getProviderModels(provider.id), {
-    providerId: provider.id,
+  assert.deepEqual(await service.getProviderModels(provider.id), expectedModelCatalog(provider.id, {
     state: "fresh",
     fetchedAt: NOW,
     expiresAt: "2026-07-14T02:00:00.000Z",
-    mode: "auto",
-    configuredModels: [],
-    models: ["model-a"]
-  });
+    discoveredModels: ["model-a"]
+  }));
 });
 
 test("model discovery rejects credential-bearing model ids before any public or cached projection", async (t) => {
@@ -1112,15 +1161,12 @@ test("model discovery rejects credential-bearing model ids before any public or 
   assert.equal(failure?.action?.includes(secret) ?? false, false);
   assert.equal(failure?.cause?.message?.includes(secret) ?? false, false);
   assert.equal(failure?.code, "PROVIDER_MODELS_INVALID_RESPONSE");
-  assert.deepEqual(cached, {
-    providerId: provider.id,
+  assert.deepEqual(cached, expectedModelCatalog(provider.id, {
     state: "stale",
     fetchedAt: previous.fetchedAt,
     expiresAt: previous.expiresAt,
-    mode: "auto",
-    configuredModels: [],
-    models: previous.models
-  });
+    discoveredModels: previous.models
+  }));
   assert.equal(modelCache.putCalls.length, 0);
   assert.equal(registry.getDocument().activeProviderId, null);
 });

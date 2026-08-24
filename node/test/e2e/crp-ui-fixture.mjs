@@ -289,12 +289,45 @@ function publicProvider(input = {}, index = 0) {
     modelMappingGroupId: input.modelMappingGroupId ?? null,
     supportedModelsMode: input.supportedModelsMode ?? "auto",
     supportedModels: structuredClone(input.supportedModels ?? []),
+    modelsPath: input.modelsPath ?? "/models",
+    customModels: structuredClone(input.customModels ?? []),
     lastTestAt: Object.hasOwn(input, "lastTestAt") ? input.lastTestAt : now,
     lastTestStatus: input.lastTestStatus ?? "passed",
     lastTestCode: Object.hasOwn(input, "lastTestCode") ? input.lastTestCode : null,
     createdAt: input.createdAt ?? now,
     updatedAt: input.updatedAt ?? now,
     credentialConfigured: input.credentialConfigured ?? true
+  };
+}
+
+function projectFixtureModelCatalog(provider, catalog = {}) {
+  const discoveredModels = structuredClone(catalog.models ?? []);
+  const configuredModels = structuredClone(provider.supportedModels);
+  const customModels = structuredClone(provider.customModels);
+  const defaultEnabled = provider.supportedModelsMode === "auto";
+  const discovered = new Set(discoveredModels);
+  const configured = new Set(configuredModels);
+  const custom = new Set(customModels);
+  const modelIds = [...new Set([...configuredModels, ...customModels, ...discoveredModels])];
+  const entries = modelIds.map((id) => ({
+    id,
+    discovered: discovered.has(id),
+    custom: custom.has(id),
+    enabled: configured.has(id) ? !defaultEnabled : defaultEnabled
+  }));
+  return {
+    providerId: provider.id,
+    state: catalog.state ?? "missing",
+    fetchedAt: Object.hasOwn(catalog, "fetchedAt") ? catalog.fetchedAt : null,
+    expiresAt: Object.hasOwn(catalog, "expiresAt") ? catalog.expiresAt : null,
+    mode: provider.supportedModelsMode,
+    configuredModels,
+    modelsPath: provider.modelsPath,
+    defaultEnabled,
+    customModels,
+    discoveredModels,
+    entries,
+    models: entries.filter((entry) => entry.enabled).map((entry) => entry.id)
   };
 }
 
@@ -748,60 +781,50 @@ function createServices({ upstream }) {
       if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
       calls.push({ operation: "getProviderModels", id });
       const catalog = modelCatalogs.get(id) ?? {
-        providerId: id,
         state: "missing",
         fetchedAt: null,
         expiresAt: null,
         models: []
       };
-      return structuredClone({
-        ...catalog,
-        mode: provider.supportedModelsMode,
-        configuredModels: structuredClone(provider.supportedModels)
-      });
+      return structuredClone(projectFixtureModelCatalog(provider, catalog));
     },
     async refreshProviderModels(id) {
       rejectNextMutation("refreshProviderModels");
       const provider = state.providers.find((item) => item.id === id);
       if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
       const modelCatalog = {
-        providerId: id,
         state: "fresh",
         fetchedAt: MODEL_CATALOG_FETCHED_AT,
         expiresAt: MODEL_CATALOG_EXPIRES_AT,
-        mode: provider.supportedModelsMode,
-        configuredModels: structuredClone(provider.supportedModels),
         models: ["gpt-5.1-codex-mini", "fixture-model"]
       };
       modelCatalogs.set(id, modelCatalog);
       calls.push({ operation: "refreshProviderModels", id });
       addActivity("provider", "models", id);
-      return structuredClone(modelCatalog);
+      return structuredClone(projectFixtureModelCatalog(provider, modelCatalog));
     },
     async setProviderSupportedModels(id, input) {
       rejectNextMutation("setProviderSupportedModels");
       const provider = state.providers.find((item) => item.id === id);
       if (!provider) throw new CrpError("PROVIDER_NOT_FOUND", "Missing provider.", "Refresh.", { status: 404 });
+      const priorModelsPath = provider.modelsPath;
       provider.supportedModelsMode = input.mode;
       provider.supportedModels = structuredClone(input.models);
+      provider.modelsPath = input.modelsPath ?? provider.modelsPath;
+      provider.customModels = structuredClone(input.customModels ?? provider.customModels);
       provider.updatedAt = "2026-07-13T08:36:00.000Z";
       hotApplyIfRunning();
+      if (provider.modelsPath !== priorModelsPath) modelCatalogs.delete(id);
       const current = modelCatalogs.get(id) ?? {
-        providerId: id,
         state: "missing",
         fetchedAt: null,
         expiresAt: null,
         models: []
       };
-      const modelCatalog = {
-        ...current,
-        mode: input.mode,
-        configuredModels: structuredClone(input.models)
-      };
-      modelCatalogs.set(id, modelCatalog);
+      modelCatalogs.set(id, current);
       calls.push({ operation: "setProviderSupportedModels", id, input: structuredClone(input) });
       addActivity("provider", "models-update", id);
-      return structuredClone(modelCatalog);
+      return structuredClone(projectFixtureModelCatalog(provider, current));
     },
     async testProvider(id, model, { activateIfNone = false } = {}) {
       assert.ok(model.trim().length > 0);
@@ -1004,16 +1027,19 @@ function createServices({ upstream }) {
     seedModelCatalog(id, input = {}) {
       const provider = state.providers.find((candidate) => candidate.id === id);
       modelCatalogs.set(id, {
-        providerId: id,
         state: input.state ?? "fresh",
         fetchedAt: Object.hasOwn(input, "fetchedAt") ? input.fetchedAt : MODEL_CATALOG_FETCHED_AT,
         expiresAt: Object.hasOwn(input, "expiresAt") ? input.expiresAt : MODEL_CATALOG_EXPIRES_AT,
-        mode: input.mode ?? provider?.supportedModelsMode ?? "auto",
-        configuredModels: structuredClone(
-          input.configuredModels ?? provider?.supportedModels ?? []
-        ),
         models: structuredClone(input.models ?? ["gpt-5.1-codex-mini", "fixture-model"])
       });
+      if (provider) {
+        provider.supportedModelsMode = input.mode ?? provider.supportedModelsMode;
+        provider.supportedModels = structuredClone(
+          input.configuredModels ?? provider.supportedModels
+        );
+        provider.modelsPath = input.modelsPath ?? provider.modelsPath;
+        provider.customModels = structuredClone(input.customModels ?? provider.customModels);
+      }
     },
     providerService,
     activityStore: {

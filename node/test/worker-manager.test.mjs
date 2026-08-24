@@ -34,6 +34,7 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
         name: "Primary",
         weight: 100,
         supportedModels: null,
+        disabledModels: [],
         upstream,
         proxy
       }],

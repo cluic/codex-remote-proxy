@@ -143,6 +143,7 @@ test("fingerprints only canonical non-credential request settings", () => {
   const secondCredential = "second-credential-placeholder";
   const first = createProviderSourceFingerprint({
     baseUrl: "https://example.test/v1",
+    modelsPath: "/models",
     authHeader: "authorization",
     authScheme: "Bearer",
     extraHeaders: { "x-region": "east", "x-tenant": "one" },
@@ -152,6 +153,7 @@ test("fingerprints only canonical non-credential request settings", () => {
   });
   const reordered = createProviderSourceFingerprint({
     baseUrl: "https://example.test/v1",
+    modelsPath: "/models",
     authHeader: "authorization",
     authScheme: "Bearer",
     extraHeaders: { "x-tenant": "one", "x-region": "east" },
@@ -167,6 +169,14 @@ test("fingerprints only canonical non-credential request settings", () => {
   assert.equal(first, reordered);
   assert.notEqual(first, createProviderSourceFingerprint({
     baseUrl: "https://other.example.test/v1",
+    modelsPath: "/models",
+    authHeader: "authorization",
+    authScheme: "Bearer",
+    extraHeaders: { "x-region": "east", "x-tenant": "one" }
+  }));
+  assert.notEqual(first, createProviderSourceFingerprint({
+    baseUrl: "https://example.test/v1",
+    modelsPath: "/catalog/models",
     authHeader: "authorization",
     authScheme: "Bearer",
     extraHeaders: { "x-region": "east", "x-tenant": "one" }
@@ -176,6 +186,7 @@ test("fingerprints only canonical non-credential request settings", () => {
 test("fingerprints provider-valid empty auth schemes and header values", () => {
   assert.match(createProviderSourceFingerprint({
     baseUrl: "https://example.test/v1",
+    modelsPath: "/models",
     authHeader: "x-api-key",
     authScheme: "",
     extraHeaders: { "x-optional-context": "" }

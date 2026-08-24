@@ -207,6 +207,7 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
       name: "Primary",
       weight: 100,
       supportedModels: null,
+      disabledModels: [],
       upstream,
       proxy
     }],

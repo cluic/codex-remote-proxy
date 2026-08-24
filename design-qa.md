@@ -75,13 +75,17 @@ The start-at-login setting exposes its platform/user-level boundary directly, an
 - The management flow creates a group, assigns it through Provider settings, edits its target, and prevents deletion while referenced. The final screenshot has no overlay, clipping, overlap, or horizontal overflow at 1440 × 900.
 - Full Chromium E2E matrix: 54/54 passed across English/Chinese and 1440/1024/390 layout checks.
 
-## Routing Rules Page QA
+## Routing Rules and Provider Models QA
 
-- Browser-rendered implementation: `output/playwright/task11/routing-rules-manages-prov-bd650-ies-per-model-routing-rules-chromium/routing-rules-1440x900.png`
-- Verified state: English writable session, running Worker, custom `Provider Beta` model availability, and one active group that prefers Provider Alpha for `gpt-5.6-sol` and Provider Beta for `gpt-5.6-luna`.
-- The group list, active-state marker, exact model count, fallback explanation, provider ranks, and live-apply notice remain readable in the first 1440 × 900 viewport. Actions have stable text/icon targets and the success notice is a non-reflowing overlay.
-- The browser flow manages the provider model list, creates and activates a two-model group, edits its name while live, confirms a newer generation, scans for protected values, and verifies no page-level overflow. The shared bilingual matrix also opens Routing Rules at 1440, 1024, and 390 widths.
-- Visual review found no actionable P0, P1, or P2 issue. The transient success toast overlaps only the unused top-right page-action region and remains closable.
+- Verified on 2026-08-24.
+- Routing Rules implementation: `output/playwright/task11/routing-rules-manages-prov-b6b37-dels-into-two-routing-rules-chromium/routing-rules-1440x900.png`
+- Provider model management: `output/playwright/task11/routing-rules-manages-prov-b6b37-dels-into-two-routing-rules-chromium/provider-models-1440x900.png`
+- Verified state: English writable session, running Worker, `Provider Beta` using a configurable `/models` catalog path, five discovered models plus one manual model, one explicitly disabled model, and one active group with two rules covering five models. The first rule sends `M1`, `M3`, and `M5` through Provider Alpha first; the second sends `M2` and `M4` through Provider Beta first.
+- One routing rule now accepts multiple model chips, so the group expresses model sets rather than repeating an identical Provider chain for every model. The group list, active marker, rule count, assigned-model count, fallback explanation, Provider ranks, and hot-apply notice remain readable in the first 1440 × 900 viewport.
+- The Provider model dialog keeps the catalog path, newly discovered-model default, refresh action, manual add/delete action, search, source badges, per-model enable state, and summary counts in one scrollable modal. Discovered models can be enabled or disabled; user-added models can also be deleted. The footer remains fixed without obscuring the scrollable list.
+- The browser flow changes and saves the catalog path, refreshes discovery, disables a discovered model, adds and removes manual models, creates and activates the two-rule/five-model group, edits it while live, confirms a newer generation, scans for protected values, and verifies no page-level overflow. The shared bilingual matrix also opens Routing Rules at 1440, 1024, and 390 widths.
+- Follow-up visual review aligns the Add model action exactly with its 42 px input control; the help copy occupies a separate grid row and moves before the full-width action on mobile.
+- Full Chromium E2E matrix: 55/55 passed. Visual review found no actionable P0, P1, or P2 issue.
 
 ## Product Hardening QA
 

@@ -42,6 +42,8 @@ function publicProvider(overrides = {}) {
     modelMappingGroupId: null,
     supportedModelsMode: "auto",
     supportedModels: [],
+    modelsPath: "/models",
+    customModels: [],
     lastTestAt: null,
     lastTestStatus: "untested",
     lastTestCode: null,
@@ -209,6 +211,16 @@ function createServices() {
         expiresAt: "2026-07-13T00:00:00.000Z",
         mode: "auto",
         configuredModels: [],
+        modelsPath: "/models",
+        defaultEnabled: true,
+        customModels: [],
+        discoveredModels: ["cached-model"],
+        entries: [{
+          id: "cached-model",
+          discovered: true,
+          custom: false,
+          enabled: true
+        }],
         models: ["cached-model"],
         apiKey: SECRET
       };
@@ -222,20 +234,47 @@ function createServices() {
         expiresAt: "2026-07-14T00:00:00.000Z",
         mode: "auto",
         configuredModels: [],
+        modelsPath: "/models",
+        defaultEnabled: true,
+        customModels: [],
+        discoveredModels: ["fresh-model"],
+        entries: [{
+          id: "fresh-model",
+          discovered: true,
+          custom: false,
+          enabled: true
+        }],
         models: ["fresh-model"],
         credentialRef: CREDENTIAL_REF
       };
     },
     async setProviderSupportedModels(id, input) {
       calls.push(["setProviderSupportedModels", id, input]);
+      const defaultEnabled = input.mode === "auto";
+      const configuredModels = [...input.models];
+      const customModels = [...(input.customModels ?? [])];
+      const configured = new Set(configuredModels);
+      const custom = new Set(customModels);
+      const modelIds = [...new Set([...configuredModels, ...customModels, "fresh-model"])];
+      const entries = modelIds.map((modelId) => ({
+        id: modelId,
+        discovered: modelId === "fresh-model",
+        custom: custom.has(modelId),
+        enabled: configured.has(modelId) ? !defaultEnabled : defaultEnabled
+      }));
       return {
         providerId: id,
         state: "fresh",
         fetchedAt: "2026-07-13T00:00:00.000Z",
         expiresAt: "2026-07-14T00:00:00.000Z",
         mode: input.mode,
-        configuredModels: [...input.models],
-        models: ["fresh-model"]
+        configuredModels,
+        modelsPath: input.modelsPath ?? "/models",
+        defaultEnabled,
+        customModels,
+        discoveredModels: ["fresh-model"],
+        entries,
+        models: entries.filter((entry) => entry.enabled).map((entry) => entry.id)
       };
     },
     async activate(id) {
@@ -1091,15 +1130,15 @@ test("routes every approved Admin API operation through injected services", asyn
     ["GET", "/api/v1/routing-rule-groups", undefined, 200],
     ["POST", "/api/v1/routing-rule-groups", {
       routingRuleGroup: {
-        name: "Sol preferred",
-        rules: [{ model: "gpt-5.6-sol", providerIds: ["provider-2"] }]
+        name: "Workload preferred",
+        rules: [{ models: ["M1", "M3", "M5"], providerIds: ["provider-2"] }]
       }
     }, 201],
     ["GET", "/api/v1/routing-rule-groups/routing-1", undefined, 200],
     ["PATCH", "/api/v1/routing-rule-groups/routing-1", {
       routingRuleGroup: {
-        name: "Sol preferred updated",
-        rules: [{ model: "gpt-5.6-sol", providerIds: ["provider-2", "provider-1"] }]
+        name: "Workload preferred updated",
+        rules: [{ models: ["M1", "M3", "M5"], providerIds: ["provider-2", "provider-1"] }]
       }
     }, 200],
     ["PATCH", "/api/v1/routing-rule-groups/active", { id: "routing-1" }, 200],
@@ -1687,6 +1726,11 @@ test("model catalog routes distinguish cached reads from refreshes with strict p
       expiresAt: "2026-07-13T00:00:00.000Z",
       mode: "auto",
       configuredModels: [],
+      modelsPath: "/models",
+      defaultEnabled: true,
+      customModels: [],
+      discoveredModels: ["cached-model"],
+      entries: [{ id: "cached-model", discovered: true, custom: false, enabled: true }],
       models: ["cached-model"]
     }
   });
@@ -1705,18 +1749,30 @@ test("model catalog routes distinguish cached reads from refreshes with strict p
       expiresAt: "2026-07-14T00:00:00.000Z",
       mode: "auto",
       configuredModels: [],
+      modelsPath: "/models",
+      defaultEnabled: true,
+      customModels: [],
+      discoveredModels: ["fresh-model"],
+      entries: [{ id: "fresh-model", discovered: true, custom: false, enabled: true }],
       models: ["fresh-model"]
     }
   });
   const configured = await harness.request("/api/v1/providers/provider-1/models", {
     method: "PATCH",
     headers: { ...headers, "content-type": "application/json" },
-    body: JSON.stringify({ mode: "custom", models: ["gpt-5.6-sol"] })
+    body: JSON.stringify({
+      modelsPath: "/catalog/models",
+      defaultEnabled: false,
+      customModels: ["M1", "M3"],
+      overrides: ["M1"]
+    })
   });
   assertNoSensitiveResponse(configured);
   assert.equal(configured.response.status, 200, configured.text);
   assert.equal(configured.json.modelCatalog.mode, "custom");
-  assert.deepEqual(configured.json.modelCatalog.configuredModels, ["gpt-5.6-sol"]);
+  assert.equal(configured.json.modelCatalog.modelsPath, "/catalog/models");
+  assert.deepEqual(configured.json.modelCatalog.configuredModels, ["M1"]);
+  assert.deepEqual(configured.json.modelCatalog.customModels, ["M1", "M3"]);
   assert.deepEqual(
     harness.calls.filter(([operation]) => (
       operation.includes("ProviderModels") || operation === "setProviderSupportedModels"
@@ -1726,10 +1782,35 @@ test("model catalog routes distinguish cached reads from refreshes with strict p
       ["refreshProviderModels", "provider-1"],
       ["setProviderSupportedModels", "provider-1", {
         mode: "custom",
-        models: ["gpt-5.6-sol"]
+        models: ["M1"],
+        modelsPath: "/catalog/models",
+        customModels: ["M1", "M3"]
       }]
     ]
   );
+
+  const largeModels = Array.from({ length: 300 }, (_, index) => (
+    `model-${index}-${"x".repeat(240)}`
+  ));
+  const largeBody = JSON.stringify({
+    modelsPath: "/models",
+    defaultEnabled: false,
+    customModels: largeModels,
+    overrides: largeModels
+  });
+  assert.ok(Buffer.byteLength(largeBody) > 64 * 1_024);
+  const largeConfigured = await harness.request("/api/v1/providers/provider-1/models", {
+    method: "PATCH",
+    headers: { ...headers, "content-type": "application/json" },
+    body: largeBody
+  });
+  assertNoSensitiveResponse(largeConfigured);
+  assert.equal(largeConfigured.response.status, 200, largeConfigured.text);
+  assert.equal(largeConfigured.json.modelCatalog.customModels.length, largeModels.length);
+  const largeCall = harness.calls.at(-1);
+  assert.equal(largeCall[0], "setProviderSupportedModels");
+  assert.equal(largeCall[2].models.length, largeModels.length);
+  assert.equal(largeCall[2].customModels.length, largeModels.length);
 
   const bodyRejected = await harness.request("/api/v1/providers/provider-1/models", {
     method: "POST",
