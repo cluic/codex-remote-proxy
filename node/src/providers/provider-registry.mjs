@@ -24,6 +24,7 @@ import {
 } from "./provider-schema.mjs";
 
 export const ROUTING_MODES = Object.freeze(["custom_only", "account_first"]);
+export const PROXY_HOSTS = Object.freeze(["127.0.0.1", "0.0.0.0"]);
 export const MAX_MODEL_MAPPING_GROUPS = 50;
 export const MAX_MODEL_MAPPING_RULES = 50;
 export const MAX_ROUTING_RULE_GROUPS = 50;
@@ -31,6 +32,7 @@ export const MAX_ROUTING_RULES = 100;
 export const MAX_ROUTING_RULE_MODELS = 100;
 export const MAX_ROUTING_RULE_PROVIDERS = 100;
 const ROUTING_MODE_SET = new Set(ROUTING_MODES);
+const PROXY_HOST_SET = new Set(PROXY_HOSTS);
 const MAX_MAPPING_NAME_CODE_POINTS = 100;
 const MAX_MODEL_ID_CODE_POINTS = 256;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/;
@@ -53,13 +55,14 @@ const ROUTING_RULE_GROUP_FIELDS = new Set([
 ]);
 const ROUTING_RULE_FIELDS = new Set(["models", "providerIds"]);
 const FIXED_SETTINGS = Object.freeze({
-  proxyHost: "127.0.0.1",
   proxyPort: 15100,
   adminHost: "127.0.0.1",
   adminPort: 15101
 });
 const DEFAULT_SETTINGS = Object.freeze({
+  proxyHost: "127.0.0.1",
   ...FIXED_SETTINGS,
+  apiKeyAuthEnabled: false,
   captureEnabled: false,
   routingMode: "custom_only",
   routingRuleGroupId: null
@@ -120,7 +123,7 @@ function noChange(result) {
 
 function emptyDocument() {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     activeProviderId: null,
     providers: [],
     modelMappingGroups: [],
@@ -414,7 +417,7 @@ export function validateProviderRegistryDocument(document) {
     if (!validateExactFields(document, DOCUMENT_FIELDS)) {
       throw new Error("invalid document fields");
     }
-    if (document.schemaVersion !== 7) {
+    if (document.schemaVersion !== 8) {
       throw new Error("unsupported schema version");
     }
     if (!Array.isArray(document.providers)) {
@@ -435,6 +438,14 @@ export function validateProviderRegistryDocument(document) {
       if (document.settings[key] !== value) {
         throw new Error("fixed settings changed");
       }
+    }
+    if (!PROXY_HOST_SET.has(document.settings.proxyHost)) {
+      throw new Error("invalid proxy host");
+    }
+    if (typeof document.settings.apiKeyAuthEnabled !== "boolean"
+      || (document.settings.proxyHost === "0.0.0.0"
+        && document.settings.apiKeyAuthEnabled !== true)) {
+      throw new Error("invalid API key authentication setting");
     }
     if (!ROUTING_MODE_SET.has(document.settings.routingMode)) {
       throw new Error("invalid routing mode");
@@ -1399,6 +1410,86 @@ export class ProviderRegistry {
       if (document.settings.captureEnabled !== expectedEnabled) return noChange(false);
       if (expectedEnabled === enabled) return noChange(true);
       document.settings.captureEnabled = enabled;
+      return true;
+    });
+  }
+
+  setProxyHost(host) {
+    if (!PROXY_HOST_SET.has(host)) {
+      throw inputError(
+        "PROXY_HOST_INVALID",
+        "The proxy listen address is invalid.",
+        "Choose 127.0.0.1 or 0.0.0.0."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.proxyHost === host) return noChange(host);
+      document.settings.proxyHost = host;
+      if (host === "0.0.0.0") document.settings.apiKeyAuthEnabled = true;
+      return host;
+    });
+  }
+
+  setProxyHostIfCurrent(expectedHost, host) {
+    if (!PROXY_HOST_SET.has(expectedHost) || !PROXY_HOST_SET.has(host)) {
+      throw inputError(
+        "PROXY_HOST_INVALID",
+        "The proxy listen address is invalid.",
+        "Choose 127.0.0.1 or 0.0.0.0."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.proxyHost !== expectedHost) return noChange(false);
+      if (expectedHost === host) return noChange(true);
+      document.settings.proxyHost = host;
+      if (host === "0.0.0.0") document.settings.apiKeyAuthEnabled = true;
+      return true;
+    });
+  }
+
+  setApiKeyAuthEnabled(enabled) {
+    if (typeof enabled !== "boolean") {
+      throw inputError(
+        "API_KEY_AUTH_SETTING_INVALID",
+        "The API key authentication setting is invalid.",
+        "Choose whether client API key authentication is required."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.proxyHost === "0.0.0.0" && enabled !== true) {
+        throw inputError(
+          "API_KEY_AUTH_REQUIRED",
+          "API key authentication is required for public listening.",
+          "Switch the proxy to 127.0.0.1 before disabling API key authentication.",
+          409
+        );
+      }
+      if (document.settings.apiKeyAuthEnabled === enabled) return noChange(enabled);
+      document.settings.apiKeyAuthEnabled = enabled;
+      return enabled;
+    });
+  }
+
+  setApiKeyAuthEnabledIfCurrent(expectedEnabled, enabled) {
+    if (typeof expectedEnabled !== "boolean" || typeof enabled !== "boolean") {
+      throw inputError(
+        "API_KEY_AUTH_SETTING_INVALID",
+        "The API key authentication setting is invalid.",
+        "Choose whether client API key authentication is required."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.apiKeyAuthEnabled !== expectedEnabled) return noChange(false);
+      if (document.settings.proxyHost === "0.0.0.0" && enabled !== true) {
+        throw inputError(
+          "API_KEY_AUTH_REQUIRED",
+          "API key authentication is required for public listening.",
+          "Switch the proxy to 127.0.0.1 before disabling API key authentication.",
+          409
+        );
+      }
+      if (expectedEnabled === enabled) return noChange(true);
+      document.settings.apiKeyAuthEnabled = enabled;
       return true;
     });
   }

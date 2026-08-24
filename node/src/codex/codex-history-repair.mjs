@@ -713,8 +713,13 @@ function renderedDocument(lines, lineEnding) {
   return `${lines.join(lineEnding)}${lineEnding}`;
 }
 
-export function patchCodexProviderConfigText(text, proxyUrl) {
+export function patchCodexProviderConfigText(text, proxyUrl, localAccessToken = null) {
   normalizedUrl(proxyUrl);
+  if (localAccessToken !== null
+    && (typeof localAccessToken !== "string"
+      || !/^[A-Za-z0-9_-]{43}$/.test(localAccessToken))) {
+    throw invalid();
+  }
   let document = scanTomlDocument(text);
   const rootAssignments = assignmentsAt(document, ["model_provider"]);
   const rootConflicts = document.statements.filter(
@@ -760,7 +765,12 @@ export function patchCodexProviderConfigText(text, proxyUrl) {
     [[...providerPath, "name"], "name", '"OpenAI"'],
     [[...providerPath, "base_url"], "base_url", JSON.stringify(proxyUrl)],
     [[...providerPath, "wire_api"], "wire_api", '"responses"'],
-    [[...providerPath, "requires_openai_auth"], "requires_openai_auth", "true"]
+    [[...providerPath, "requires_openai_auth"], "requires_openai_auth", "true"],
+    ...(localAccessToken === null ? [] : [[
+      [...providerPath, "http_headers", "x-crp-local-token"],
+      'http_headers."x-crp-local-token"',
+      JSON.stringify(localAccessToken)
+    ]])
   ];
   const directContext = (statement) => {
     if (statement.section === null && startsWithPath(statement.key, providerPath)) {
@@ -823,7 +833,19 @@ export function patchCodexProviderConfigText(text, proxyUrl) {
           && !samePath(statement.absolutePath, path)
         : startsWithPath(statement.path, path)
     );
-    if (childConflicts.length > 0) throw invalid();
+    const parentConflicts = document.statements.filter(
+      (statement) => statement.kind === "assignment"
+        && startsWithPath(path, statement.absolutePath)
+        && !samePath(statement.absolutePath, path)
+    );
+    const tableConflicts = document.statements.filter(
+      (statement) => (statement.kind === "table" || statement.kind === "array-table")
+        && statement.path.length > providerPath.length
+        && (startsWithPath(path, statement.path) || startsWithPath(statement.path, path))
+    );
+    if (childConflicts.length > 0 || parentConflicts.length > 0 || tableConflicts.length > 0) {
+      throw invalid();
+    }
     if (matches.length === 1) {
       const [statement] = matches;
       if (directContext(statement) !== context) throw invalid();

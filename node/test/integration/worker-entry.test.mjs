@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { validateChildMessage } from "../../src/worker/protocol.mjs";
+import { AccessKeyStore } from "../../src/access-key-store.mjs";
 
 const WORKER_ENTRY_PATH = fileURLToPath(new URL("../../src/worker/worker-entry.mjs", import.meta.url));
 const EVENT_DEADLINE_MS = 3000;
@@ -217,6 +218,11 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
       enabled: false,
       dbPath: join(configPath, "..", "traffic.sqlite3")
     },
+    access: {
+      enabled: false,
+      dbPath: join(configPath, "..", "access-keys.sqlite3"),
+      localToken: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
     routing: {
       mode: "custom_only",
       providerPriorityRules: [],
@@ -339,6 +345,94 @@ test("worker configures once, proxies traffic, reports public state, and shuts d
   const exit = await waitForExit(worker.child);
   assert.deepEqual(exit, { code: 0, signal: null });
   assert.equal(worker.output().includes(settings.upstream.apiKey), false);
+});
+
+test("worker enforces durable client key limits while its local Codex token bypasses user quotas", async (t) => {
+  const dir = makeTempDir("crp-worker-access");
+  mkdirSync(dir, { recursive: true });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const observedAccessHeaders = [];
+  const upstream = http.createServer((req, res) => {
+    observedAccessHeaders.push({
+      accessKey: req.headers["x-crp-api-key"] ?? null,
+      localToken: req.headers["x-crp-local-token"] ?? null
+    });
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end('{"ok":true}');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+
+  const configPath = join(dir, "proxy-config.json");
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}`,
+    configPath
+  });
+  settings.access.enabled = true;
+  const accessSecret = "crp_worker_access_0123456789abcdef";
+  const accessStore = new AccessKeyStore({
+    path: settings.access.dbPath,
+    now: () => Date.parse("2030-01-01T00:00:00.000Z"),
+    createId: () => "worker-key"
+  });
+  accessStore.create({
+    name: "Worker integration",
+    secret: accessSecret,
+    expiresAt: null,
+    requestLimit: 1
+  });
+  t.after(() => accessStore.close());
+  writeFileSync(configPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+
+  const worker = spawnWorker(t);
+  await worker.waitForMessage((message) => message?.type === "ready", "worker ready");
+  await sendMessage(worker.child, {
+    version: 1,
+    type: "configure",
+    requestId: "configure-access",
+    generation: 1,
+    settings
+  });
+  const configured = await worker.waitForMessage(
+    (message) => message?.type === "configured" && message.requestId === "configure-access",
+    "worker access configured"
+  );
+  const origin = `http://127.0.0.1:${configured.state.listenPort}`;
+
+  const health = await fetch(`${origin}/_proxy/health`);
+  assert.equal(health.status, 200);
+  assert.equal(accessStore.get("worker-key").requestCount, 0);
+
+  const missing = await fetch(`${origin}/responses`, { method: "POST", body: "{}" });
+  assert.equal(missing.status, 401);
+  const accepted = await fetch(`${origin}/responses`, {
+    method: "POST",
+    headers: { "x-crp-api-key": accessSecret },
+    body: "{}"
+  });
+  assert.equal(accepted.status, 200);
+  await accepted.arrayBuffer();
+  assert.equal(accessStore.get("worker-key").requestCount, 1);
+  const exhausted = await fetch(`${origin}/responses`, {
+    method: "POST",
+    headers: { "x-crp-api-key": accessSecret },
+    body: "{}"
+  });
+  assert.equal(exhausted.status, 429);
+
+  const local = await fetch(`${origin}/responses`, {
+    method: "POST",
+    headers: { "x-crp-local-token": settings.access.localToken },
+    body: "{}"
+  });
+  assert.equal(local.status, 200);
+  await local.arrayBuffer();
+  assert.equal(accessStore.get("worker-key").requestCount, 1);
+  assert.deepEqual(observedAccessHeaders, [
+    { accessKey: null, localToken: null },
+    { accessKey: null, localToken: null }
+  ]);
 });
 
 test("worker drain rejects new traffic and waits for an in-flight request before acknowledging", async (t) => {

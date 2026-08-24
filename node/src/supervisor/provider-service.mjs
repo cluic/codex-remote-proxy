@@ -149,6 +149,26 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
       "Provider weight must be updated through the routing control.",
       "Use the provider weight control and try again."
     ],
+    API_KEY_AUTH_UPDATE_FAILED: [
+      "API key authentication could not be hot-applied.",
+      "Review Worker health and try the access-control change again."
+    ],
+    API_KEY_AUTH_ROLLBACK_DEGRADED: [
+      "The API key authentication change failed and the prior live state could not be restored.",
+      "Stop CRP and repair the provider registry before restarting."
+    ],
+    API_KEY_AUTH_COMMITTED_DEGRADED: [
+      "API key authentication was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    PROXY_HOST_UPDATE_FAILED: [
+      "The proxy listen address could not be updated.",
+      "Stop the proxy Worker before changing its listen address."
+    ],
+    PROXY_HOST_COMMITTED_DEGRADED: [
+      "The proxy listen address was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
     MODEL_MAPPING_CREATE_COMMITTED_DEGRADED: [
       "The model mapping group was created, but persistence cleanup degraded.",
       "Stop CRP and repair the residual provider-registry state before restarting."
@@ -1623,6 +1643,122 @@ export class ProviderService {
     });
   }
 
+  setApiKeyAuthEnabled(enabled) {
+    return this.#runExclusive(async () => {
+      const previous = this.registry.getDocument().settings.apiKeyAuthEnabled;
+      if (enabled === previous) {
+        return {
+          apiKeyAuthEnabled: enabled,
+          generation: this.confirmedGeneration,
+          worker: publicWorkerState(this.workerManager.getPublicState())
+        };
+      }
+      let applied;
+      try {
+        applied = await this.#executeHotRegistryMutation({
+          mutate: () => this.registry.setApiKeyAuthEnabled(enabled),
+          reconcile: (document) => document.settings.apiKeyAuthEnabled === enabled
+            ? enabled
+            : undefined,
+          failureCode: "API_KEY_AUTH_UPDATE_FAILED",
+          rollbackCode: "API_KEY_AUTH_ROLLBACK_DEGRADED"
+        });
+      } catch (error) {
+        await this.#safeRecordSettingsFailure("api-key-auth", error, { enabled });
+        throw error;
+      }
+      const details = { enabled, generation: applied.generation };
+      if (applied.commitWarning) {
+        const committed = serviceError("API_KEY_AUTH_COMMITTED_DEGRADED", {
+          cause: applied.commitWarning,
+          details: { committed: true, degraded: true, generation: applied.generation }
+        });
+        await this.#recordSettingsCommitted("api-key-auth", committed, details);
+        throw committed;
+      }
+      try {
+        await this.#recordSettings("api-key-auth", "success", null, {
+          enabled,
+          generation: applied.generation
+        });
+      } catch (error) {
+        const committed = serviceError("API_KEY_AUTH_COMMITTED_DEGRADED", {
+          cause: error,
+          details: { committed: true, degraded: true, generation: applied.generation }
+        });
+        await this.#recordSettingsCommitted("api-key-auth", committed, details);
+        throw committed;
+      }
+      return {
+        apiKeyAuthEnabled: enabled,
+        generation: applied.generation,
+        worker: applied.worker
+      };
+    });
+  }
+
+  setProxyHost(host) {
+    return this.#runExclusive(async () => {
+      const before = this.workerManager.getPublicState();
+      if (before?.phase !== "stopped") {
+        const error = serviceError("PROXY_HOST_UPDATE_FAILED", { status: 409 });
+        await this.#safeRecordSettingsFailure("proxy-host", error, { host });
+        throw error;
+      }
+      const document = this.registry.getDocument();
+      if (document.settings.proxyHost === host) {
+        return {
+          proxyHost: host,
+          apiKeyAuthEnabled: document.settings.apiKeyAuthEnabled
+        };
+      }
+      let settings;
+      let commitWarning = null;
+      try {
+        try {
+          this.registry.setProxyHost(host);
+        } catch (error) {
+          const observed = this.registry.getDocument();
+          if (!isCommittedError(error) || observed.settings.proxyHost !== host) throw error;
+          commitWarning = error;
+        }
+        settings = this.registry.getDocument().settings;
+      } catch (error) {
+        const failure = error instanceof CrpError
+          ? error
+          : serviceError("PROXY_HOST_UPDATE_FAILED", { cause: error });
+        await this.#safeRecordSettingsFailure("proxy-host", failure, { host });
+        throw failure;
+      }
+      const details = { host, apiKeyAuthEnabled: settings.apiKeyAuthEnabled };
+      if (commitWarning) {
+        const committed = serviceError("PROXY_HOST_COMMITTED_DEGRADED", {
+          cause: commitWarning,
+          details: { committed: true, degraded: true }
+        });
+        await this.#recordSettingsCommitted("proxy-host", committed, details);
+        throw committed;
+      }
+      try {
+        await this.#recordSettings("proxy-host", "success", null, {
+          host,
+          apiKeyAuthEnabled: settings.apiKeyAuthEnabled
+        });
+      } catch (error) {
+        const committed = serviceError("PROXY_HOST_COMMITTED_DEGRADED", {
+          cause: error,
+          details: { committed: true, degraded: true }
+        });
+        await this.#recordSettingsCommitted("proxy-host", committed, details);
+        throw committed;
+      }
+      return {
+        proxyHost: settings.proxyHost,
+        apiKeyAuthEnabled: settings.apiKeyAuthEnabled
+      };
+    });
+  }
+
   async getStatus() {
     const document = this.registry.getDocument();
     const activeProfile = document.activeProviderId === null
@@ -2008,8 +2144,13 @@ export class ProviderService {
     const accountSnapshot = this.getAccountRoutingSnapshot();
     const runtimeConfigPath = this.paths.runtimeConfigPath;
     const capturePath = this.paths.capturePath;
+    const accessKeyDbPath = this.paths.accessKeyDbPath;
+    const localAccessToken = this.options.localAccessToken;
     if (typeof runtimeConfigPath !== "string" || runtimeConfigPath.length === 0
-      || typeof capturePath !== "string" || capturePath.length === 0) {
+      || typeof capturePath !== "string" || capturePath.length === 0
+      || typeof accessKeyDbPath !== "string" || accessKeyDbPath.length === 0
+      || typeof localAccessToken !== "string"
+      || !/^[A-Za-z0-9_-]{43}$/.test(localAccessToken)) {
       throw serviceError("PROVIDER_ACTIVATION_FAILED");
     }
     if (!Number.isSafeInteger(accountSnapshot?.revision)
@@ -2099,6 +2240,11 @@ export class ProviderService {
           enabled: document.settings.captureEnabled,
           dbPath: capturePath
         },
+        access: {
+          enabled: document.settings.apiKeyAuthEnabled,
+          dbPath: accessKeyDbPath,
+          localToken: localAccessToken
+        },
         routing: {
           mode: routingMode ?? document.settings.routingMode,
           accountRevision: accountSnapshot.revision,
@@ -2143,13 +2289,17 @@ export class ProviderService {
   }
 
   async #safeRecordSettingsFailure(action, error, details = {}) {
-    const fallbackCode = action === "capture"
-      ? "CAPTURE_SETTING_UPDATE_FAILED"
-      : action.startsWith("model-mapping-")
+    const directFallbackCodes = {
+      capture: "CAPTURE_SETTING_UPDATE_FAILED",
+      "api-key-auth": "API_KEY_AUTH_UPDATE_FAILED",
+      "proxy-host": "PROXY_HOST_UPDATE_FAILED"
+    };
+    const fallbackCode = directFallbackCodes[action]
+      ?? (action.startsWith("model-mapping-")
         ? "MODEL_MAPPING_UPDATE_FAILED"
         : action.startsWith("routing-rule-")
           ? "ROUTING_RULE_UPDATE_FAILED"
-          : "ROUTING_MODE_UPDATE_FAILED";
+          : "ROUTING_MODE_UPDATE_FAILED");
     try {
       await this.#recordSettings(action, "failed", stableErrorCode(
         error,

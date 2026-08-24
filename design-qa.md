@@ -100,4 +100,14 @@ The start-at-login setting exposes its platform/user-level boundary directly, an
 
 No actionable P0, P1, or P2 visual findings remain in the final 1440 × 900 evidence.
 
+## Client API Keys and Public Listening QA
+
+- Verified on 2026-08-24.
+- System implementation: `output/playwright/task11/access-keys-manages-write--5d572-cation-for-public-listening-chromium/system-access-keys-1440x900.png`
+- Verified state: English writable session, stopped Worker, `0.0.0.0` selected, client authentication visibly required and locked, and one active key with a future expiration plus a five-request lifetime limit.
+- The create flow generates a 256-bit browser-side value, keeps the complete value in the secret input only until submission, clears both React state and the live DOM before the request is released, and never renders or records that value in the fixture response/call log. The edit flow submits only changed metadata, then disable, enable, and irreversible delete all settle through the real UI mutation path.
+- The API-key value input and Generate key action have identical vertical position and 42 px control height. The populated table keeps name/hint, status, usage, a realistic two-line expiration, last-used value, and all three row actions inside the card at the 1440 px viewport; no action is clipped by the scroll boundary.
+- Switching to all-interface listening forces authentication on and disables the switch. Listen-address changes remain unavailable while the Worker is running. The shared responsive matrix also opens System in English and Chinese at 1440, 1024, and 390 widths without page-level horizontal overflow.
+- Full Chromium E2E matrix: 56/56 passed. Visual review found no actionable P0, P1, or P2 issue.
+
 final result: passed

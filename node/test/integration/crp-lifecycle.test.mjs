@@ -196,6 +196,13 @@ function createServices() {
       }
     },
     diagnosticsService: { exportDiagnostics: async () => ({ created: true }) },
+    accessKeyService: {
+      list: () => [],
+      get: () => null,
+      create: () => null,
+      update: () => null,
+      delete: () => null
+    },
     getWorkerPid: () => workerPid
   };
 }

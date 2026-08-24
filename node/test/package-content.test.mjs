@@ -11,6 +11,7 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "bin/crp.mjs",
   "package.json",
   "proxy-config.example.json",
+  "src/access-key-store.mjs",
   "src/capture-config.mjs",
   "src/capture-store.mjs",
   "src/codex/codex-config.mjs",
@@ -28,6 +29,7 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "src/shared/errors.mjs",
   "src/shared/build-info.mjs",
   "src/shared/paths.mjs",
+  "src/shared/private-token.mjs",
   "src/supervisor/activity-store.mjs",
   "src/supervisor/account-monitor.mjs",
   "src/supervisor/admin-server.mjs",
@@ -64,11 +66,14 @@ const FORBIDDEN_TOP_LEVEL_DIRECTORIES = new Set([
 ]);
 const FORBIDDEN_RUNTIME_NAMES = new Set([
   ".env",
+  "access-keys.sqlite3",
   "activity.jsonl",
   "auth.json",
   "control-token",
+  "cli-preferences.json",
   "credentials.json",
   "metrics.json",
+  "local-access-token",
   "provider-model-cache.json",
   "providers.json",
   "secrets.json",
@@ -160,10 +165,13 @@ test("npm pack invocation uses an explicit command interpreter only on Windows",
 
 test("exact package path comparison detects every extra and missing path", () => {
   const reviewed = [...REVIEWED_PACKAGE_PATHS];
-  assert.equal(REVIEWED_PACKAGE_PATHS.size, 42);
+  assert.equal(REVIEWED_PACKAGE_PATHS.size, 44);
   assert.deepEqual(comparePackagePaths(reviewed), { missing: [], unexpected: [] });
 
   const runtimeExtras = [
+    "access-keys.sqlite3",
+    "cli-preferences.json",
+    "local-access-token",
     "secrets.json",
     "state.json",
     "metrics.json",

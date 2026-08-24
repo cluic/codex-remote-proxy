@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { AccessKeysPanel } from "../components/AccessKeysPanel";
 import {
   Button,
   DefinitionList,
@@ -29,6 +30,9 @@ import {
 } from "../components/Primitives";
 import { formatDate, type Translator } from "../i18n";
 import type {
+  AccessKey,
+  AccessKeyInput,
+  AccessKeyPatch,
   BootstrapResult,
   DiagnosticResult,
   Locale,
@@ -43,6 +47,7 @@ type SystemProps = {
   t: Translator;
   status: StatusResponse;
   settings: Settings;
+  accessKeys: AccessKey[];
   activeProvider: Provider | null;
   metrics: MetricsOverview | null;
   readOnly: boolean;
@@ -52,6 +57,11 @@ type SystemProps = {
   onRefreshAccount: () => void;
   onRoutingModeChange: (mode: "custom_only" | "account_first") => void;
   onAutoStartChange: (enabled: boolean) => void;
+  onApiKeyAuthChange: (enabled: boolean) => void;
+  onProxyHostChange: (host: "127.0.0.1" | "0.0.0.0") => void;
+  onCreateAccessKey: (input: AccessKeyInput) => Promise<boolean>;
+  onUpdateAccessKey: (id: string, patch: AccessKeyPatch) => Promise<boolean>;
+  onDeleteAccessKey: (id: string) => Promise<boolean>;
 };
 
 function storageLabel(state: MetricsOverview["storageState"] | null, t: Translator): string {
@@ -94,6 +104,7 @@ export function SystemPage({
   t,
   status,
   settings,
+  accessKeys,
   activeProvider,
   metrics,
   readOnly,
@@ -102,21 +113,40 @@ export function SystemPage({
   onGenerateDiagnostics,
   onRefreshAccount,
   onRoutingModeChange,
-  onAutoStartChange
+  onAutoStartChange,
+  onApiKeyAuthChange,
+  onProxyHostChange,
+  onCreateAccessKey,
+  onUpdateAccessKey,
+  onDeleteAccessKey
 }: SystemProps) {
   const [prepareOpen, setPrepareOpen] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BootstrapResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticResult | null>(null);
   const [routingSelection, setRoutingSelection] = useState(settings.routingMode);
   const [autoStartSelection, setAutoStartSelection] = useState(settings.autoStartEnabled);
+  const [proxyHostSelection, setProxyHostSelection] = useState(settings.proxyHost ?? "127.0.0.1");
+  const [apiKeyAuthSelection, setApiKeyAuthSelection] = useState(settings.apiKeyAuthEnabled);
   useEffect(() => {
     if (pending !== "routing-mode") setRoutingSelection(settings.routingMode);
   }, [pending, settings.routingMode]);
   useEffect(() => {
     if (pending !== "autostart-setting") setAutoStartSelection(settings.autoStartEnabled);
   }, [pending, settings.autoStartEnabled]);
+  useEffect(() => {
+    if (pending !== "proxy-host-setting") {
+      setProxyHostSelection(settings.proxyHost ?? "127.0.0.1");
+    }
+  }, [pending, settings.proxyHost]);
+  useEffect(() => {
+    if (pending !== "api-key-auth-setting") {
+      setApiKeyAuthSelection(settings.apiKeyAuthEnabled);
+    }
+  }, [pending, settings.apiKeyAuthEnabled]);
 
   const workerRunning = status.worker?.phase === "running" && status.worker.state?.listening === true;
+  const workerStopped = status.worker?.phase === "stopped";
+  const workerConfigurable = workerStopped || status.worker?.phase === "running";
   const mutationsDisabled = readOnly || pending !== null;
   const prepare = async () => {
     setPrepareOpen(false);
@@ -184,6 +214,58 @@ export function SystemPage({
           <Panel>
             <PanelHeader title={t("system.preferences")} description={t("system.preferencesHelp")} />
             <div className="system-settings-list">
+              <div className="system-setting-row">
+                <span className="system-setting-icon"><Network aria-hidden="true" /></span>
+                <span className="system-setting-copy">
+                  <strong>{t("system.proxyListenAddress")}</strong>
+                  <small>{t(!workerStopped
+                    ? "system.proxyListenStopHelp"
+                    : proxyHostSelection === "0.0.0.0"
+                      ? "system.proxyListenPublicHelp"
+                      : "system.proxyListenLocalHelp")}</small>
+                </span>
+                <select
+                  className="system-inline-select"
+                  aria-label={t("system.proxyListenAddress")}
+                  value={proxyHostSelection}
+                  disabled={mutationsDisabled || !workerStopped}
+                  onChange={(event) => {
+                    const host = event.target.value as "127.0.0.1" | "0.0.0.0";
+                    setProxyHostSelection(host);
+                    if (host === "0.0.0.0") setApiKeyAuthSelection(true);
+                    onProxyHostChange(host);
+                  }}
+                >
+                  <option value="127.0.0.1">127.0.0.1</option>
+                  <option value="0.0.0.0">0.0.0.0</option>
+                </select>
+              </div>
+              <div className="system-setting-row">
+                <span className="system-setting-icon"><LockKeyhole aria-hidden="true" /></span>
+                <span className="system-setting-copy">
+                  <strong>{t("system.apiKeyAuth")}</strong>
+                  <small>{t(settings.apiKeyAuthRequired
+                    ? "system.apiKeyAuthRequired"
+                    : !workerConfigurable
+                      ? "system.apiKeyAuthPhaseHelp"
+                      : apiKeyAuthSelection
+                        ? "system.apiKeyAuthOn"
+                        : "system.apiKeyAuthOff")}</small>
+                </span>
+                <label className="system-switch-control">
+                  <span className="visually-hidden">{t("system.apiKeyAuth")}</span>
+                  <input
+                    type="checkbox"
+                    checked={apiKeyAuthSelection}
+                    disabled={mutationsDisabled || !workerConfigurable || settings.apiKeyAuthRequired}
+                    onChange={(event) => {
+                      setApiKeyAuthSelection(event.target.checked);
+                      onApiKeyAuthChange(event.target.checked);
+                    }}
+                  />
+                  <span className="switch-track" aria-hidden="true"><span /></span>
+                </label>
+              </div>
               <div className="system-setting-row">
                 <span className="system-setting-icon"><Power aria-hidden="true" /></span>
                 <span className="system-setting-copy">
@@ -286,6 +368,17 @@ export function SystemPage({
               </div>
             </div>
           </Panel>
+
+          <AccessKeysPanel
+            locale={locale}
+            t={t}
+            accessKeys={accessKeys}
+            readOnly={readOnly}
+            pending={pending}
+            onCreate={onCreateAccessKey}
+            onUpdate={onUpdateAccessKey}
+            onDelete={onDeleteAccessKey}
+          />
 
           <Panel>
             <PanelHeader

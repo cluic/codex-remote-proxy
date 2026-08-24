@@ -86,6 +86,8 @@
 - Retryable POST routing may replay only before upstream delivery is possible; uncertain delivery must cool the provider for later requests.
 - Managed startup mutations must prove marker and inode identity, publish without clobber, disable through inert content, and preserve foreign paths and shared-directory modes.
 - Running provider pools must reject eligible configuration mutations unless the resulting snapshot is hot-applied and confirmed; failed probes must not invalidate a live snapshot.
+- Per-request runtime settings must be captured once and reused by authentication and routing.
+- Post-commit audit failures must report committed degradation or remain safely best-effort; they must not misreport the primary mutation as uncommitted.
 - Generic feature copy must describe the complete contract instead of naming incidental example models.
 - Generated UI verification must use the declared `verify:ui-build` package script.
 - UI validation helpers must not introduce non-loopback absolute URL literals.

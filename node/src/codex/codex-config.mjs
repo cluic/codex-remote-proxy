@@ -804,13 +804,14 @@ function writeFileAtomically(
   }
 }
 
-export function patchCodexConfigText(text, proxyUrl) {
-  return patchCodexProviderConfigText(text, proxyUrl);
+export function patchCodexConfigText(text, proxyUrl, localAccessToken = null) {
+  return patchCodexProviderConfigText(text, proxyUrl, localAccessToken);
 }
 
 export async function bootstrapCodexConfig({
   configPath,
   proxyUrl,
+  localAccessToken = null,
   now = () => new Date(),
   fileOperations: fileOverrides = DEFAULT_FILE_OPERATIONS,
   historyRepair = DEFAULT_HISTORY_REPAIR,
@@ -858,7 +859,7 @@ export async function bootstrapCodexConfig({
     const source = readConfigSource(configPath, fileOperations, { missing: true });
     const sourceExists = source !== null;
     const originalText = source?.text ?? "";
-    const patchedText = patchCodexConfigText(originalText, proxyUrl);
+    const patchedText = patchCodexConfigText(originalText, proxyUrl, localAccessToken);
     const targetBytes = Buffer.from(patchedText, "utf8");
     const transition = historyRepair.plan({
       sourceExists,

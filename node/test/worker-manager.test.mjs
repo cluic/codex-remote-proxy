@@ -41,6 +41,11 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
       upstream,
       proxy,
       capture: { enabled: false, dbPath: "/tmp/crp-worker-manager/traffic.sqlite3" },
+      access: {
+        enabled: false,
+        dbPath: "/tmp/crp-worker-manager/access-keys.sqlite3",
+        localToken: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
       routing: {
         mode: "custom_only",
         providerPriorityRules: [],
@@ -148,6 +153,7 @@ class FakeChild extends EventEmitter {
         const requestId = this.script.configureRequestId ?? message.requestId;
         this.emit("message", childMessage("configured", requestId, {
           generation: message.generation,
+          listenHost: message.settings.server.host,
           listenPort: message.settings.server.port
         }));
         callback?.(null);
@@ -158,6 +164,7 @@ class FakeChild extends EventEmitter {
         const requestId = this.script.configureRequestId ?? message.requestId;
         this.emit("message", childMessage("configured", requestId, {
           generation: message.generation,
+          listenHost: message.settings.server.host,
           listenPort: message.settings.server.port
         }));
       }
@@ -343,6 +350,20 @@ test("start waits for ready, correlated configure, and matching health before ru
   assert.equal(harness.healthCalls.length, 1);
   assert.equal(harness.children[0].sent[0].type, "configure");
   assert.equal(harness.children[0].sent[0].settings.upstream.apiKey, SECRET);
+});
+
+test("public bind snapshots still use loopback health probes and release the public listener", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.manager.close());
+  const snapshot = makeSnapshot();
+  snapshot.settings.server.host = "0.0.0.0";
+  snapshot.settings.access.enabled = true;
+
+  const running = await settle(harness.manager.start(snapshot), harness.clock);
+  assert.equal(running.state.listenHost, "0.0.0.0");
+  assert.deepEqual(harness.healthCalls, ["http://127.0.0.1:15100/_proxy/health"]);
+  await settle(harness.manager.stop(), harness.clock);
+  assert.deepEqual(harness.portChecks.at(-1), { host: "0.0.0.0", port: 15100 });
 });
 
 test("default worker forks stay hidden across start, restart, and crash recovery", async (t) => {

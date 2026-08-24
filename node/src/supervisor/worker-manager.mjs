@@ -299,7 +299,10 @@ export class WorkerManager {
       this.#expectedEpochs.add(epoch);
       try {
         await this.#terminateChild(child, epoch);
-        await this.#waitForPortFree(this.#host, this.#port);
+        await this.#waitForPortFree(
+          this.#workerState?.listenHost ?? this.#lastSnapshot?.settings?.server?.host ?? this.#host,
+          this.#port
+        );
       } catch (error) {
         const code = error?.code === "WORKER_PORT_BUSY" ? "WORKER_PORT_BUSY" : "WORKER_STOP_FAILED";
         failure = managerError(code);
@@ -333,7 +336,7 @@ export class WorkerManager {
       settings: snapshot?.settings
     };
     validateParentMessage(configureMessage);
-    if (snapshot.settings.server.host !== this.#host || snapshot.settings.server.port !== this.#port) {
+    if (snapshot.settings.server.port !== this.#port) {
       throw managerError("WORKER_START_FAILED");
     }
     this.#rememberMetricProviders(snapshot.generation, snapshot, providerId);
@@ -373,7 +376,7 @@ export class WorkerManager {
       });
       if (configured.state.phase !== "running"
         || configured.state.generation !== snapshot.generation
-        || configured.state.listenHost !== this.#host
+        || configured.state.listenHost !== snapshot.settings.server.host
         || configured.state.listenPort !== this.#port) {
         throw managerError("WORKER_PROTOCOL_INVALID");
       }
@@ -399,7 +402,7 @@ export class WorkerManager {
       let cleanupError = null;
       try {
         await this.#terminateChild(child, epoch);
-        await this.#waitForPortFree(this.#host, this.#port);
+        await this.#waitForPortFree(snapshot.settings.server.host, this.#port);
       } catch (cleanupFailure) {
         cleanupError = cleanupFailure;
       }
@@ -444,7 +447,7 @@ export class WorkerManager {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
     if (snapshot.generation <= this.#generation
-      || snapshot.settings.server.host !== this.#host
+      || snapshot.settings.server.host !== this.#lastSnapshot?.settings?.server?.host
       || snapshot.settings.server.port !== this.#port) {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
@@ -464,7 +467,7 @@ export class WorkerManager {
       || child !== this.#child
       || configured.state.phase !== "running"
       || configured.state.generation !== snapshot.generation
-      || configured.state.listenHost !== this.#host
+      || configured.state.listenHost !== snapshot.settings.server.host
       || configured.state.listenPort !== this.#port) {
       throw managerError("WORKER_PROTOCOL_INVALID");
     }
@@ -557,7 +560,10 @@ export class WorkerManager {
       } else {
         await this.#terminateChild(child, epoch);
       }
-      await this.#waitForPortFree(this.#host, this.#port);
+      await this.#waitForPortFree(
+        this.#workerState?.listenHost ?? this.#lastSnapshot?.settings?.server?.host ?? this.#host,
+        this.#port
+      );
     } catch (error) {
       const code = error?.code === "WORKER_PORT_BUSY" ? "WORKER_PORT_BUSY" : "WORKER_STOP_FAILED";
       failure = managerError(code);
@@ -605,7 +611,7 @@ export class WorkerManager {
     } catch {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
-    if (cloned.settings.server.host !== this.#host || cloned.settings.server.port !== this.#port) {
+    if (cloned.settings.server.port !== this.#port) {
       throw managerError("WORKER_SNAPSHOT_INVALID");
     }
     return cloned;
@@ -760,7 +766,10 @@ export class WorkerManager {
       if (!this.#canRecover(recoveryVersion)) return;
       let attemptStarted = false;
       const recovery = Promise.resolve()
-        .then(() => this.#waitForPortFree(this.#host, this.#port))
+        .then(() => this.#waitForPortFree(
+          this.#lastSnapshot?.settings?.server?.host ?? this.#host,
+          this.#port
+        ))
         .then(() => {
           if (!this.#canRecover(recoveryVersion)) return undefined;
           return this.#runRecoveryWhenReady(() => {
@@ -938,7 +947,7 @@ export class WorkerManager {
 
   async #verifyHealth(generation) {
     const healthPromise = Promise.resolve()
-      .then(() => this.#fetch(`http://${this.#host}:${this.#port}/_proxy/health`))
+      .then(() => this.#fetch(`http://127.0.0.1:${this.#port}/_proxy/health`))
       .then(async (response) => {
         if (!response?.ok) throw managerError("WORKER_HEALTH_FAILED");
         const health = await response.json();

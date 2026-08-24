@@ -50,6 +50,11 @@ function makeSettings() {
       enabled: false,
       dbPath: "/tmp/crp-worker/traffic.sqlite3"
     },
+    access: {
+      enabled: false,
+      dbPath: "/tmp/crp-worker/access-keys.sqlite3",
+      localToken: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
     routing: {
       mode: "custom_only",
       accountRevision: 1,
@@ -172,6 +177,12 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
   invalidRoutingMode.routing.mode = "automatic";
   const invalidAccountState = makeSettings();
   invalidAccountState.routing.account.authMode = "unknown-mode";
+  const missingAccess = makeSettings();
+  delete missingAccess.access;
+  const invalidLocalToken = makeSettings();
+  invalidLocalToken.access.localToken = "too-short";
+  const unauthenticatedPublicBind = makeSettings();
+  unauthenticatedPublicBind.server.host = "0.0.0.0";
 
   for (const settings of [
     missingServer,
@@ -184,6 +195,9 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
     invalidModelMode,
     invalidRoutingMode,
     invalidAccountState,
+    missingAccess,
+    invalidLocalToken,
+    unauthenticatedPublicBind,
     missingModelOverride,
     blankModelOverride,
     duplicateModelMappings,
@@ -208,6 +222,16 @@ test("configure rejects incomplete, extra, and invalid runtime settings before w
     requestId: "configure-legacy-model",
     generation: 1,
     settings: controlModelOverride
+  }));
+  const authenticatedPublicBind = makeSettings();
+  authenticatedPublicBind.server.host = "0.0.0.0";
+  authenticatedPublicBind.access.enabled = true;
+  assert.doesNotThrow(() => validateParentMessage({
+    version: 1,
+    type: "configure",
+    requestId: "configure-public-bind",
+    generation: 3,
+    settings: authenticatedPublicBind
   }));
   const mapped = makeSettings();
   mapped.proxy.modelMappings = [

@@ -83,6 +83,11 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
         modelMappings: []
       },
       capture: { enabled: false, dbPath: join(dir, "traffic.sqlite3") },
+      access: {
+        enabled: false,
+        dbPath: join(dir, "access-keys.sqlite3"),
+        localToken: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
       routing: {
         mode: "custom_only",
         providerPriorityRules: [],

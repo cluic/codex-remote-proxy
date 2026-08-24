@@ -197,8 +197,10 @@ function makeHarness(t, overrides = {}) {
     createTimeoutSignal: () => ({ aborted: false }),
     paths: {
       runtimeConfigPath: join(root, "node", "proxy-config.json"),
-      capturePath: join(root, "traffic.sqlite3")
+      capturePath: join(root, "traffic.sqlite3"),
+      accessKeyDbPath: join(root, "access-keys.sqlite3")
     },
+    localAccessToken: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     ...overrides
   });
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -1894,7 +1896,7 @@ test("routing mode persists without starting a stopped Worker", async (t) => {
 });
 
 test("routing mode hot-applies an increasing Worker generation", async (t) => {
-  const { service, registry, workerManager } = makeHarness(t);
+  const { root, service, registry, workerManager } = makeHarness(t);
   const provider = await service.createProvider(providerInput(), makeSecret("routing-hot"));
   registry.markTest(provider.id, { status: "passed" });
   registry.setActive(provider.id);
@@ -2056,4 +2058,120 @@ test("Capture setting persists while stopped and hot-applies to a running Worker
       { result: "success", details: { enabled: false, generation: 2 } }
     ]
   );
+});
+
+test("API key authentication hot-applies while listen-address changes require a stopped Worker", async (t) => {
+  const { root, service, registry, workerManager } = makeHarness(t);
+  const provider = await service.createProvider(providerInput(), makeSecret("access-control"));
+  registry.markTest(provider.id, { status: "passed" });
+  registry.setActive(provider.id);
+  await service.startProxy();
+  workerManager.calls.length = 0;
+
+  const enabled = await service.setApiKeyAuthEnabled(true);
+  assert.equal(enabled.apiKeyAuthEnabled, true);
+  assert.equal(enabled.generation, 2);
+  assert.equal(registry.getDocument().settings.apiKeyAuthEnabled, true);
+  assert.equal(workerManager.calls[0][0], "applySnapshot");
+  assert.deepEqual(workerManager.calls[0][1].settings.access, {
+    enabled: true,
+    dbPath: join(root, "access-keys.sqlite3"),
+    localToken: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  });
+
+  await assert.rejects(() => service.setProxyHost("0.0.0.0"), {
+    code: "PROXY_HOST_UPDATE_FAILED"
+  });
+  await service.stopProxy();
+  const host = await service.setProxyHost("0.0.0.0");
+  assert.deepEqual(host, { proxyHost: "0.0.0.0", apiKeyAuthEnabled: true });
+  await assert.rejects(() => service.setApiKeyAuthEnabled(false), {
+    code: "API_KEY_AUTH_REQUIRED"
+  });
+});
+
+test("access-control commits report persistence and Activity degradation without reverting state", async (t) => {
+  await t.test("Activity failure after commit", async (t) => {
+    class OneShotAccessActivity extends MemoryActivity {
+      failedActions = new Set();
+
+      append(event) {
+        if (["api-key-auth", "proxy-host"].includes(event.action)
+          && event.result === "success"
+          && !this.failedActions.has(event.action)) {
+          this.failedActions.add(event.action);
+          throw new Error("injected access-control Activity failure");
+        }
+        super.append(event);
+      }
+    }
+    const activity = new OneShotAccessActivity();
+    const { service, registry } = makeHarness(t, { activityStore: activity });
+
+    await assert.rejects(
+      () => service.setApiKeyAuthEnabled(true),
+      (error) => error?.code === "API_KEY_AUTH_COMMITTED_DEGRADED"
+        && error.details.committed === true
+        && error.details.degraded === true
+    );
+    assert.equal(registry.getDocument().settings.apiKeyAuthEnabled, true);
+
+    await assert.rejects(
+      () => service.setProxyHost("0.0.0.0"),
+      (error) => error?.code === "PROXY_HOST_COMMITTED_DEGRADED"
+        && error.details.committed === true
+        && error.details.degraded === true
+    );
+    assert.equal(registry.getDocument().settings.proxyHost, "0.0.0.0");
+    assert.equal(registry.getDocument().settings.apiKeyAuthEnabled, true);
+    assert.deepEqual(
+      activity.events.map(({ action, result, errorCode }) => ({ action, result, errorCode })),
+      [
+        {
+          action: "api-key-auth",
+          result: "degraded",
+          errorCode: "API_KEY_AUTH_COMMITTED_DEGRADED"
+        },
+        {
+          action: "proxy-host",
+          result: "degraded",
+          errorCode: "PROXY_HOST_COMMITTED_DEGRADED"
+        }
+      ]
+    );
+  });
+
+  await t.test("registry cleanup failure after commit", async (t) => {
+    const { service, registry, activity } = makeHarness(t);
+    const originalSetAuth = registry.setApiKeyAuthEnabled.bind(registry);
+    registry.setApiKeyAuthEnabled = (enabled) => {
+      originalSetAuth(enabled);
+      throw committedError("PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED");
+    };
+    await assert.rejects(
+      () => service.setApiKeyAuthEnabled(true),
+      (error) => error?.code === "API_KEY_AUTH_COMMITTED_DEGRADED"
+        && error.details.committed === true
+    );
+    assert.equal(registry.getDocument().settings.apiKeyAuthEnabled, true);
+
+    const originalSetHost = registry.setProxyHost.bind(registry);
+    registry.setProxyHost = (host) => {
+      originalSetHost(host);
+      throw committedError("PROVIDER_REGISTRY_COMMITTED_LOCK_DEGRADED");
+    };
+    await assert.rejects(
+      () => service.setProxyHost("0.0.0.0"),
+      (error) => error?.code === "PROXY_HOST_COMMITTED_DEGRADED"
+        && error.details.committed === true
+    );
+    assert.equal(registry.getDocument().settings.proxyHost, "0.0.0.0");
+    assert.deepEqual(
+      activity.events.map(({ action, result }) => ({ action, result })),
+      [
+        { action: "api-key-auth", result: "degraded" },
+        { action: "proxy-host", result: "degraded" }
+      ]
+    );
+  });
 });

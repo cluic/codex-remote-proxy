@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = {
   proxyPort: 15100,
   adminHost: "127.0.0.1",
   adminPort: 15101,
+  apiKeyAuthEnabled: false,
   captureEnabled: false,
   routingMode: "custom_only",
   routingRuleGroupId: null
@@ -93,7 +94,7 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
   });
 
   assert.deepEqual(registry.getDocument(), {
-    schemaVersion: 7,
+    schemaVersion: 8,
     activeProviderId: null,
     providers: [],
     modelMappingGroups: [],
@@ -637,7 +638,7 @@ test("loads a legacy controlled model override and allows replacing it safely", 
   }), { id: "provider-legacy", now: FIXED_NOW });
   legacy.modelOverride = "legacy\tmodel";
   writeFileSync(registryPath, `${JSON.stringify({
-    schemaVersion: 7,
+    schemaVersion: 8,
     activeProviderId: null,
     providers: [legacy],
     modelMappingGroups: [],
@@ -805,6 +806,28 @@ test("persists Capture as a compare-and-set global setting", (t) => {
     () => registry.setCaptureEnabled("yes"),
     assertCrpError("CAPTURE_SETTING_INVALID", 400)
   );
+});
+
+test("public listening forces API key authentication while loopback remains configurable", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({ path: registryPath, now: () => FIXED_NOW });
+
+  assert.equal(registry.setApiKeyAuthEnabled(true), true);
+  assert.equal(registry.getDocument().settings.apiKeyAuthEnabled, true);
+  assert.equal(registry.setApiKeyAuthEnabledIfCurrent(true, false), true);
+  assert.equal(registry.getDocument().settings.apiKeyAuthEnabled, false);
+
+  assert.equal(registry.setProxyHost("0.0.0.0"), "0.0.0.0");
+  assert.deepEqual(registry.getDocument().settings, {
+    ...DEFAULT_SETTINGS,
+    proxyHost: "0.0.0.0",
+    apiKeyAuthEnabled: true
+  });
+  assert.throws(() => registry.setApiKeyAuthEnabled(false), {
+    code: "API_KEY_AUTH_REQUIRED"
+  });
+  assert.equal(registry.setProxyHostIfCurrent("0.0.0.0", "127.0.0.1"), true);
+  assert.equal(registry.setApiKeyAuthEnabled(false), false);
 });
 
 test("updates provider weight through compare-and-set without invalidating compatibility", (t) => {

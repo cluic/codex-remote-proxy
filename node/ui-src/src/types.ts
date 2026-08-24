@@ -182,6 +182,8 @@ export interface Settings {
   proxyPort: number | null;
   adminHost: string | null;
   adminPort: number | null;
+  apiKeyAuthEnabled: boolean;
+  apiKeyAuthRequired: boolean;
   captureEnabled: boolean;
   routingMode: "custom_only" | "account_first";
   credentialBackend: string | null;
@@ -190,6 +192,31 @@ export interface Settings {
   autoStartState: "enabled" | "disabled" | "stale" | "conflict" | "unavailable";
   autoStartPlatform: string | null;
 }
+
+export interface AccessKey {
+  id: string;
+  name: string;
+  keyHint: string;
+  enabled: boolean;
+  expiresAt: string | null;
+  requestLimit: number | null;
+  requestCount: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastUsedAt: string | null;
+}
+
+export interface AccessKeyInput {
+  name: string;
+  secret: string;
+  expiresAt: string | null;
+  requestLimit: number | null;
+}
+
+export type AccessKeyPatch = Partial<Pick<
+  AccessKey,
+  "name" | "enabled" | "expiresAt" | "requestLimit"
+>>;
 
 export interface ActivityEvent {
   timestamp: string | null;
@@ -368,6 +395,7 @@ export interface WorkspaceData {
   providerPresets: ProviderPreset[];
   modelMappingGroups: ModelMappingGroup[];
   routingRuleGroups: RoutingRuleGroup[];
+  accessKeys: AccessKey[];
   settings: Settings;
 }
 

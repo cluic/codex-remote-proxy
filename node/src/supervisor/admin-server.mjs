@@ -67,6 +67,8 @@ const METRIC_RESULTS = [
   "clientAbort"
 ];
 const METRIC_MAX_COUNT = 1_000_000_000_000;
+const ACCESS_KEY_MAX_REQUESTS = 1_000_000_000_000;
+const ACCESS_KEY_MAX_REQUEST_COUNT = 9_000_000_000_000_000;
 const METRIC_MAX_TOKEN_TOTAL = 9_000_000_000_000_000;
 const METRIC_MAX_LATENCY_MS = 300_000;
 const MAX_SUPERVISOR_PID = 4_294_967_295;
@@ -404,6 +406,8 @@ function projectSettings(settings) {
     proxyPort: Number.isInteger(settings?.proxyPort) ? settings.proxyPort : null,
     adminHost: typeof settings?.adminHost === "string" ? settings.adminHost : null,
     adminPort: Number.isInteger(settings?.adminPort) ? settings.adminPort : null,
+    apiKeyAuthEnabled: settings?.apiKeyAuthEnabled === true,
+    apiKeyAuthRequired: settings?.proxyHost === "0.0.0.0",
     captureEnabled: settings?.captureEnabled === true,
     routingMode: ROUTING_MODES.has(settings?.routingMode)
       ? settings.routingMode
@@ -419,6 +423,33 @@ function projectSettings(settings) {
     autoStartPlatform: typeof settings?.autoStartPlatform === "string"
       ? settings.autoStartPlatform
       : null
+  };
+}
+
+function projectAccessKey(key) {
+  const requestLimit = key?.requestLimit === null
+    ? null
+    : (Number.isSafeInteger(key?.requestLimit)
+        && key.requestLimit >= 1
+        && key.requestLimit <= ACCESS_KEY_MAX_REQUESTS
+      ? key.requestLimit
+      : null);
+  const requestCount = Number.isSafeInteger(key?.requestCount)
+    && key.requestCount >= 0
+    && key.requestCount <= ACCESS_KEY_MAX_REQUEST_COUNT
+    ? key.requestCount
+    : 0;
+  return {
+    id: typeof key?.id === "string" ? key.id : null,
+    name: typeof key?.name === "string" ? key.name : null,
+    keyHint: typeof key?.keyHint === "string" ? key.keyHint : null,
+    enabled: key?.enabled === true,
+    expiresAt: typeof key?.expiresAt === "string" ? key.expiresAt : null,
+    requestLimit,
+    requestCount,
+    createdAt: typeof key?.createdAt === "string" ? key.createdAt : null,
+    updatedAt: typeof key?.updatedAt === "string" ? key.updatedAt : null,
+    lastUsedAt: typeof key?.lastUsedAt === "string" ? key.lastUsedAt : null
   };
 }
 
@@ -797,6 +828,14 @@ function projectShutdownAcceptance(state) {
   };
 }
 
+async function appendActivityBestEffort(activityStore, event) {
+  try {
+    await activityStore.append(event);
+  } catch {
+    // The primary access-key mutation remains authoritative when Activity is unavailable.
+  }
+}
+
 function supervisorIdentityChanged() {
   return new CrpError(
     "SUPERVISOR_IDENTITY_CHANGED",
@@ -901,6 +940,21 @@ function parseRoutingRuleGroupRoute(pathname) {
   return { id };
 }
 
+function parseAccessKeyRoute(pathname) {
+  const prefix = `${API_PREFIX}/access-keys/`;
+  if (!pathname.startsWith(prefix)) return null;
+  const rawId = pathname.slice(prefix.length);
+  if (rawId.length === 0 || rawId.includes("/")) return null;
+  let id;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    return null;
+  }
+  if (id.length === 0 || id.length > 128 || /[\\/\u0000-\u001f\u007f]/.test(id)) return null;
+  return { id };
+}
+
 function providerNotFound() {
   return new CrpError(
     "PROVIDER_NOT_FOUND",
@@ -922,6 +976,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/provider-presets`, ["GET"]],
     [`${API_PREFIX}/routing-rule-groups`, ["GET", "POST"]],
     [`${API_PREFIX}/routing-rule-groups/active`, ["PATCH"]],
+    [`${API_PREFIX}/access-keys`, ["GET", "POST"]],
     [`${API_PREFIX}/providers`, ["GET", "POST"]],
     [`${API_PREFIX}/proxy/start`, ["POST"]],
     [`${API_PREFIX}/proxy/stop`, ["POST"]],
@@ -935,6 +990,7 @@ function allowedMethods(pathname) {
   if (exact.has(pathname)) return exact.get(pathname);
   if (parseModelMappingRoute(pathname)) return ["GET", "PATCH", "DELETE"];
   if (parseRoutingRuleGroupRoute(pathname)) return ["GET", "PATCH", "DELETE"];
+  if (parseAccessKeyRoute(pathname)) return ["GET", "PATCH", "DELETE"];
   const providerRoute = parseProviderRoute(pathname);
   if (!providerRoute) return null;
   if (providerRoute.action === null) return ["GET", "PATCH", "DELETE"];
@@ -982,6 +1038,7 @@ export function createAdminServer({
   auth,
   providerService,
   activityStore,
+  accessKeyService,
   settingsService,
   codexService,
   diagnosticsService,
@@ -1002,7 +1059,7 @@ export function createAdminServer({
     || !Number.isSafeInteger(maxBodyBytes) || maxBodyBytes < 1
     || !Number.isSafeInteger(maxProviderModelsBodyBytes) || maxProviderModelsBodyBytes < 1
     || typeof fetchImpl !== "function"
-    || !auth || !providerService || !accountMonitor) {
+    || !auth || !providerService || !accessKeyService || !accountMonitor) {
     throw new TypeError("Admin server options are invalid.");
   }
 
@@ -1590,13 +1647,88 @@ export function createAdminServer({
       });
       return;
     }
+    if (url.pathname === `${API_PREFIX}/access-keys` && request.method === "GET") {
+      sendJson(response, 200, {
+        accessKeys: accessKeyService.list().map(projectAccessKey)
+      });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/access-keys` && request.method === "POST") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["accessKey"],
+        required: ["accessKey"]
+      });
+      const input = exactObject(body.accessKey, {
+        allowed: ["name", "secret", "expiresAt", "requestLimit"],
+        required: ["name", "secret", "expiresAt", "requestLimit"]
+      });
+      const accessKey = accessKeyService.create(input);
+      await appendActivityBestEffort(activityStore, {
+        category: "settings",
+        action: "access-key-create",
+        providerId: null,
+        result: "success",
+        errorCode: null,
+        details: { keyId: accessKey.id }
+      });
+      sendJson(response, 201, { accessKey: projectAccessKey(accessKey) });
+      return;
+    }
+    const accessKeyRoute = parseAccessKeyRoute(url.pathname);
+    if (accessKeyRoute && request.method === "GET") {
+      sendJson(response, 200, {
+        accessKey: projectAccessKey(accessKeyService.get(accessKeyRoute.id))
+      });
+      return;
+    }
+    if (accessKeyRoute && request.method === "PATCH") {
+      const body = exactObject(await readJsonBody(request, maxBodyBytes), {
+        allowed: ["accessKey"],
+        required: ["accessKey"]
+      });
+      const patch = exactObject(body.accessKey, {
+        allowed: ["name", "enabled", "expiresAt", "requestLimit"]
+      });
+      if (Object.keys(patch).length === 0) throw bodyError("API_BODY_INVALID");
+      const accessKey = accessKeyService.update(accessKeyRoute.id, patch);
+      await appendActivityBestEffort(activityStore, {
+        category: "settings",
+        action: "access-key-update",
+        providerId: null,
+        result: "success",
+        errorCode: null,
+        details: { keyId: accessKey.id, enabled: accessKey.enabled }
+      });
+      sendJson(response, 200, { accessKey: projectAccessKey(accessKey) });
+      return;
+    }
+    if (accessKeyRoute && request.method === "DELETE") {
+      await requireEmptyBody(request, maxBodyBytes);
+      const accessKey = accessKeyService.delete(accessKeyRoute.id);
+      await appendActivityBestEffort(activityStore, {
+        category: "settings",
+        action: "access-key-delete",
+        providerId: null,
+        result: "success",
+        errorCode: null,
+        details: { keyId: accessKey.id }
+      });
+      sendJson(response, 200, { accessKey: projectAccessKey(accessKey) });
+      return;
+    }
     if (url.pathname === `${API_PREFIX}/settings` && request.method === "GET") {
       sendJson(response, 200, { settings: projectSettings(await settingsService.getSettings()) });
       return;
     }
     if (url.pathname === `${API_PREFIX}/settings` && request.method === "PATCH") {
       const patch = exactObject(await readJsonBody(request, maxBodyBytes), {
-        allowed: ["autoStartEnabled", "captureEnabled", "routingMode"]
+        allowed: [
+          "apiKeyAuthEnabled",
+          "autoStartEnabled",
+          "captureEnabled",
+          "proxyHost",
+          "routingMode"
+        ]
       });
       if (Object.keys(patch).length !== 1) {
         throw bodyError("API_BODY_INVALID");
@@ -1608,9 +1740,20 @@ export function createAdminServer({
         });
         return;
       }
+      if (Object.hasOwn(patch, "proxyHost")) {
+        if (patch.proxyHost !== "127.0.0.1" && patch.proxyHost !== "0.0.0.0") {
+          throw bodyError("API_BODY_INVALID");
+        }
+        sendJson(response, 200, {
+          settings: projectSettings(await settingsService.updateSettings(patch))
+        });
+        return;
+      }
       const booleanValue = Object.hasOwn(patch, "captureEnabled")
         ? patch.captureEnabled
-        : patch.autoStartEnabled;
+        : Object.hasOwn(patch, "apiKeyAuthEnabled")
+          ? patch.apiKeyAuthEnabled
+          : patch.autoStartEnabled;
       if (typeof booleanValue !== "boolean") throw bodyError("API_BODY_INVALID");
       sendJson(response, 200, {
         settings: projectSettings(await settingsService.updateSettings(patch))
