@@ -66,7 +66,7 @@ test("traces the live model route and its conditional account fallback", async (
   await expect(candidates.nth(1)).toContainText("Provider Alpha");
   expect(await board.locator(".route-path-connector").first().evaluate((element) => (
     getComputedStyle(element, "::after").animationName
-  ))).toBe("route-pulse-x");
+  ))).toBe("route-flow-segment");
 
   const customScreenshot = testInfo.outputPath("route-preview-custom-1440x900.png");
   crp.registerAttachment(customScreenshot);
@@ -80,12 +80,15 @@ test("traces the live model route and its conditional account fallback", async (
   await expect.poll(() => crp.state.routingMode).toBe("account_first");
   await expect(board.getByText("ChatGPT route")).toBeVisible();
   await expect(board.locator(".route-preview-primary-lane")).toContainText("ChatGPT account");
+  const fallbackToggle = board.getByRole("button", { name: "Show the conditional fallback path" });
+  await expect(fallbackToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(fallbackToggle).toContainText("Interactive workloads");
+  await expect(fallbackToggle).toContainText("Provider Beta");
+  await expect(fallbackToggle).toContainText("vendor/gpt-5.6-sol");
   const fallbackLane = board.locator(".route-preview-fallback-lane");
-  await expect(fallbackLane).toBeVisible();
-  await expect(fallbackLane).toContainText("Interactive workloads");
-  await expect(fallbackLane).toContainText("Provider Beta aliases");
-  const desktopBoardHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
-  expect(desktopBoardHeight).toBeLessThanOrEqual(320);
+  await expect(fallbackLane).not.toBeVisible();
+  const collapsedDesktopHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
+  expect(collapsedDesktopHeight).toBeLessThanOrEqual(290);
   await expect(board.locator(".route-preview-details")).not.toHaveAttribute("open", "");
 
   const desktopScreenshot = testInfo.outputPath("route-preview-account-fallback-1440x900.png");
@@ -95,13 +98,33 @@ test("traces the live model route and its conditional account fallback", async (
     path: desktopScreenshot,
     contentType: "image/png"
   });
+
+  await fallbackToggle.click();
+  await expect(board.getByRole("button", { name: "Hide the conditional fallback path" }))
+    .toHaveAttribute("aria-expanded", "true");
+  await expect(fallbackLane).toBeVisible();
+  await expect(fallbackLane).toContainText("Interactive workloads");
+  await expect(fallbackLane).toContainText("Provider Beta aliases");
+  const expandedDesktopHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
+  expect(expandedDesktopHeight).toBeLessThanOrEqual(370);
+
+  const expandedDesktopScreenshot = testInfo.outputPath("route-preview-account-fallback-expanded-1440x900.png");
+  crp.registerAttachment(expandedDesktopScreenshot);
+  await board.screenshot({ path: expandedDesktopScreenshot, animations: "disabled" });
+  await testInfo.attach("route-preview-account-fallback-expanded-1440x900", {
+    path: expandedDesktopScreenshot,
+    contentType: "image/png"
+  });
+  await board.getByRole("button", { name: "Hide the conditional fallback path" }).click();
+  await expect(fallbackToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(fallbackLane).not.toBeVisible();
   await assertLayoutIntegrity(page);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(board).toBeVisible();
   expect(await board.locator(".route-path-connector").first().evaluate((element) => (
     getComputedStyle(element, "::after").animationName
-  ))).toBe("route-pulse-x");
+  ))).toBe("route-flow-segment");
   const mobileBoardHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
   expect(mobileBoardHeight).toBeLessThanOrEqual(500);
   await assertLayoutIntegrity(page);

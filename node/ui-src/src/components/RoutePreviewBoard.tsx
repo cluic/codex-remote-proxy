@@ -1,5 +1,7 @@
 import {
+  ArrowRight,
   Bot,
+  ChevronDown,
   CircleAlert,
   GitBranch,
   ListTree,
@@ -186,6 +188,7 @@ export function RoutePreviewBoard({
 }: RoutePreviewBoardProps) {
   const headingId = useId();
   const listId = useId();
+  const fallbackId = useId();
   const suggestedModels = useMemo(() => {
     const models: string[] = [];
     const seen = new Set<string>();
@@ -204,6 +207,7 @@ export function RoutePreviewBoard({
   const [result, setResult] = useState<{ model: string; preview: RoutePreview } | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
+  const [fallbackExpanded, setFallbackExpanded] = useState(false);
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const sequenceRef = useRef(0);
   const userEditedRef = useRef(false);
@@ -213,6 +217,10 @@ export function RoutePreviewBoard({
       setModel(suggestedModels[0]);
     }
   }, [model, suggestedModels]);
+
+  useEffect(() => {
+    setFallbackExpanded(false);
+  }, [model, routeRevision]);
 
   useEffect(() => {
     const sequence = ++sequenceRef.current;
@@ -432,21 +440,54 @@ export function RoutePreviewBoard({
               </div>
 
               {preview.route === "account" && preview.account.fallbackAvailable && primary ? (
-                <div className="route-preview-fallback-lane">
-                  <div className="route-preview-lane-label">
-                    <span><GitBranch aria-hidden="true" />{t("routePreview.conditionalFallback")}</span>
-                    <small>{t("routePreview.fallbackCondition")}</small>
+                <section className={cx(
+                  "route-preview-fallback-disclosure",
+                  fallbackExpanded && "is-open"
+                )} aria-label={t("routePreview.conditionalFallback")}>
+                  <button
+                    type="button"
+                    className="route-preview-fallback-toggle"
+                    aria-expanded={fallbackExpanded}
+                    aria-controls={fallbackId}
+                    aria-describedby={`${fallbackId}-description ${fallbackId}-summary`}
+                    aria-label={t(fallbackExpanded
+                      ? "routePreview.collapseFallback"
+                      : "routePreview.expandFallback")}
+                    onClick={() => setFallbackExpanded((expanded) => !expanded)}
+                  >
+                    <span className="route-preview-fallback-icon" aria-hidden="true"><GitBranch /></span>
+                    <span className="route-preview-fallback-copy" id={`${fallbackId}-description`}>
+                      <strong>{t("routePreview.conditionalFallback")}</strong>
+                      <small>{t("routePreview.fallbackCondition")}</small>
+                    </span>
+                    <span className="route-preview-fallback-summary" id={`${fallbackId}-summary`}>
+                      <span>{ruleTitle(preview, t)}</span>
+                      <ArrowRight />
+                      <strong>{primary.providerName}</strong>
+                      <code>{primary.targetModel ?? model}</code>
+                    </span>
+                    <ChevronDown className="route-preview-fallback-chevron" aria-hidden="true" />
+                  </button>
+                  <div
+                    id={fallbackId}
+                    className="route-preview-fallback-reveal"
+                    aria-hidden={!fallbackExpanded}
+                  >
+                    <div className="route-preview-fallback-reveal-inner">
+                      <div className="route-preview-fallback-lane">
+                        <div className="route-preview-chain is-conditional">
+                          <CustomRouteSteps
+                            model={model}
+                            preview={preview}
+                            primary={primary}
+                            conditional
+                            t={t}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="route-preview-chain is-conditional">
-                    <CustomRouteSteps
-                      model={model}
-                      preview={preview}
-                      primary={primary}
-                      conditional
-                      t={t}
-                    />
-                  </div>
-                </div>
+                </section>
               ) : null}
             </div>
 
