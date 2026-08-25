@@ -98,6 +98,7 @@
 - SQLite test fixtures must close every database handle before deleting their temporary directory.
 - SVG endpoint labels must anchor inward so platform font metrics cannot overflow the viewport.
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
+- Compact responsive route diagrams must preserve internal containment instead of relying on off-canvas horizontal overflow.
 - Routing previews must share the live scheduler and label conditional fallbacks and predicted outlets without claiming a guaranteed final provider.
 
 ## Required Checks

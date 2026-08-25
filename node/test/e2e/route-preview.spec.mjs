@@ -84,6 +84,9 @@ test("traces the live model route and its conditional account fallback", async (
   await expect(fallbackLane).toBeVisible();
   await expect(fallbackLane).toContainText("Interactive workloads");
   await expect(fallbackLane).toContainText("Provider Beta aliases");
+  const desktopBoardHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
+  expect(desktopBoardHeight).toBeLessThanOrEqual(320);
+  await expect(board.locator(".route-preview-details")).not.toHaveAttribute("open", "");
 
   const desktopScreenshot = testInfo.outputPath("route-preview-account-fallback-1440x900.png");
   crp.registerAttachment(desktopScreenshot);
@@ -96,11 +99,11 @@ test("traces the live model route and its conditional account fallback", async (
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(board).toBeVisible();
-  const connectorSize = await board.locator(".route-path-connector").first().evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return { width: rect.width, height: rect.height };
-  });
-  expect(connectorSize.height).toBeGreaterThan(connectorSize.width);
+  expect(await board.locator(".route-path-connector").first().evaluate((element) => (
+    getComputedStyle(element, "::after").animationName
+  ))).toBe("route-pulse-x");
+  const mobileBoardHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
+  expect(mobileBoardHeight).toBeLessThanOrEqual(500);
   await assertLayoutIntegrity(page);
   const mobileScreenshot = testInfo.outputPath("route-preview-account-fallback-390x844.png");
   crp.registerAttachment(mobileScreenshot);

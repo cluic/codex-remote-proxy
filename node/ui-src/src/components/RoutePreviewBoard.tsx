@@ -6,7 +6,6 @@ import {
   RadioTower,
   RefreshCw,
   Search,
-  Server,
   ShieldCheck,
   Shuffle,
   Waypoints
@@ -43,6 +42,7 @@ type RoutePreviewBoardProps = {
 };
 
 type PathNodeProps = {
+  className?: string;
   icon: ReactNode;
   eyebrow: string;
   title: string;
@@ -61,9 +61,9 @@ function isPreviewableModel(value: string): boolean {
     && !MODEL_CONTROL_PATTERN.test(value);
 }
 
-function PathNode({ icon, eyebrow, title, detail, tone = "neutral" }: PathNodeProps) {
+function PathNode({ className, icon, eyebrow, title, detail, tone = "neutral" }: PathNodeProps) {
   return (
-    <article className={cx("route-path-node", `route-path-node-${tone}`)}>
+    <article className={cx("route-path-node", `route-path-node-${tone}`, className)}>
       <span className="route-path-node-icon" aria-hidden="true">{icon}</span>
       <div>
         <small>{eyebrow}</small>
@@ -132,7 +132,7 @@ function ruleDetail(preview: RoutePreview, t: Translator): string {
     : t("routePreview.weightOrder");
 }
 
-function CustomRoutePath({
+function CustomRouteSteps({
   model,
   preview,
   primary,
@@ -147,21 +147,13 @@ function CustomRoutePath({
 }) {
   const targetModel = primary.targetModel ?? model;
   return (
-    <div className={cx("route-preview-chain", conditional && "is-conditional")}>
+    <>
       <PathNode
         icon={<ListTree />}
         eyebrow={t("routePreview.routingRule")}
         title={ruleTitle(preview, t)}
         detail={ruleDetail(preview, t)}
         tone={preview.routingRule ? "active" : "neutral"}
-      />
-      <PathConnector conditional={conditional} />
-      <PathNode
-        icon={<Server />}
-        eyebrow={t("routePreview.providerQueue")}
-        title={primary.providerName}
-        detail={t("routePreview.providerRank", { rank: primary.order ?? 1, weight: primary.weight })}
-        tone={primary.availability === "ready" ? "active" : "warning"}
       />
       <PathConnector conditional={conditional} />
       <PathNode
@@ -179,7 +171,7 @@ function CustomRoutePath({
         detail={targetModel}
         tone="active"
       />
-    </div>
+    </>
   );
 }
 
@@ -276,8 +268,34 @@ export function RoutePreviewBoard({
         <div className="route-preview-heading">
           <span className="route-preview-heading-icon" aria-hidden="true"><Waypoints /></span>
           <div>
-            <h2 id={headingId}>{t("routePreview.title")}</h2>
-            <p>{t("routePreview.description")}</p>
+            <div className="route-preview-title-line">
+              <h2 id={headingId}>{t("routePreview.title")}</h2>
+              {preview ? (
+                <StatusBadge tone={preview.route === "unavailable" ? "danger" : "info"} icon={false}>
+                  {t(preview.route === "account"
+                    ? "routePreview.accountRoute"
+                    : preview.route === "custom"
+                      ? "routePreview.customRoute"
+                      : "routePreview.noRoute")}
+                </StatusBadge>
+              ) : null}
+            </div>
+            <div className="route-preview-heading-meta">
+              <p>{t("routePreview.description")}</p>
+              {preview ? (
+                <div className="route-preview-source">
+                  <StatusBadge tone={preview.source === "live" ? "success" : "neutral"}>
+                    {t(preview.source === "live" ? "routePreview.liveRuntime" : "routePreview.configuredSnapshot")}
+                  </StatusBadge>
+                  <span>{preview.source === "live"
+                    ? t("routePreview.generation", { value: preview.generation })
+                    : t("routePreview.workerStopped")}</span>
+                  {preview.evaluatedAt ? (
+                    <time dateTime={preview.evaluatedAt}>{formatDate(locale, preview.evaluatedAt, true)}</time>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
         <div className="route-preview-controls">
@@ -343,102 +361,104 @@ export function RoutePreviewBoard({
           </div>
         ) : (
           <>
-            <div className="route-preview-summary">
-              <div className="route-preview-source">
-                <StatusBadge tone={preview.source === "live" ? "success" : "neutral"}>
-                  {t(preview.source === "live" ? "routePreview.liveRuntime" : "routePreview.configuredSnapshot")}
-                </StatusBadge>
-                <span>{preview.source === "live"
-                  ? t("routePreview.generation", { value: preview.generation })
-                  : t("routePreview.workerStopped")}</span>
-                {preview.evaluatedAt ? (
-                  <time dateTime={preview.evaluatedAt}>{formatDate(locale, preview.evaluatedAt, true)}</time>
-                ) : null}
+            <div className="route-preview-lanes">
+              <div className="route-preview-primary-lane">
+                <div className="route-preview-lane-label">
+                  <span>{t("routePreview.primaryPath")}</span>
+                  <small>{preview.route === "custom"
+                    ? accountReason(preview.account.reason, t)
+                    : t("routePreview.currentDecision")}</small>
+                </div>
+                <div className={cx(
+                  "route-preview-chain",
+                  preview.route === "custom" && "route-preview-chain-long"
+                )}>
+                  <PathNode
+                    className="route-path-node-request"
+                    icon={<Bot />}
+                    eyebrow={t("routePreview.request")}
+                    title={model}
+                    detail={t("routePreview.incomingModel")}
+                    tone="active"
+                  />
+                  <PathConnector />
+                  <PathNode
+                    className="route-path-node-account"
+                    icon={<ShieldCheck />}
+                    eyebrow={t("routePreview.accountGate")}
+                    title={accountReason(preview.account.reason, t)}
+                    detail={preview.account.enabled
+                      ? t("routePreview.accountPreferenceOn")
+                      : t("routePreview.accountPreferenceOff")}
+                    tone={preview.account.selected ? "active" : "neutral"}
+                  />
+                  {preview.route === "account" ? (
+                    <>
+                      <PathConnector />
+                      <PathNode
+                        icon={<RadioTower />}
+                        eyebrow={t("routePreview.predictedOutlet")}
+                        title={t("overview.chatgptAccount")}
+                        detail={model}
+                        tone="active"
+                      />
+                    </>
+                  ) : preview.route === "unavailable" ? (
+                    <>
+                      <PathConnector />
+                      <PathNode
+                        icon={<CircleAlert />}
+                        eyebrow={t("routePreview.noRoute")}
+                        title={t("routePreview.noEligibleProvider")}
+                        detail={t(preview.reason === "provider_pool_unavailable"
+                          ? "routePreview.providerPoolUnavailable"
+                          : "routePreview.modelUnavailable")}
+                        tone="danger"
+                      />
+                    </>
+                  ) : primary ? (
+                    <>
+                      <PathConnector />
+                      <CustomRouteSteps
+                        model={model}
+                        preview={preview}
+                        primary={primary}
+                        conditional={false}
+                        t={t}
+                      />
+                    </>
+                  ) : null}
+                </div>
               </div>
-              <StatusBadge tone={preview.route === "unavailable" ? "danger" : "info"} icon={false}>
-                {t(preview.route === "account"
-                  ? "routePreview.accountRoute"
-                  : preview.route === "custom"
-                    ? "routePreview.customRoute"
-                    : "routePreview.noRoute")}
-              </StatusBadge>
-            </div>
 
-            <div className="route-preview-primary-lane">
-              <div className="route-preview-lane-label">
-                <span>{t("routePreview.primaryPath")}</span>
-                <small>{preview.route === "custom" && preview.account.enabled
-                  ? accountReason(preview.account.reason, t)
-                  : t("routePreview.currentDecision")}</small>
-              </div>
-              <div className="route-preview-chain route-preview-entry-chain">
-                <PathNode
-                  icon={<Bot />}
-                  eyebrow={t("routePreview.request")}
-                  title={model}
-                  detail={t("routePreview.incomingModel")}
-                  tone="active"
-                />
-                <PathConnector />
-                <PathNode
-                  icon={<ShieldCheck />}
-                  eyebrow={t("routePreview.accountGate")}
-                  title={accountReason(preview.account.reason, t)}
-                  detail={preview.account.enabled
-                    ? t("routePreview.accountPreferenceOn")
-                    : t("routePreview.accountPreferenceOff")}
-                  tone={preview.account.selected ? "active" : "neutral"}
-                />
-                {preview.route === "account" ? (
-                  <>
-                    <PathConnector />
-                    <PathNode
-                      icon={<RadioTower />}
-                      eyebrow={t("routePreview.predictedOutlet")}
-                      title={t("overview.chatgptAccount")}
-                      detail={model}
-                      tone="active"
+              {preview.route === "account" && preview.account.fallbackAvailable && primary ? (
+                <div className="route-preview-fallback-lane">
+                  <div className="route-preview-lane-label">
+                    <span><GitBranch aria-hidden="true" />{t("routePreview.conditionalFallback")}</span>
+                    <small>{t("routePreview.fallbackCondition")}</small>
+                  </div>
+                  <div className="route-preview-chain is-conditional">
+                    <CustomRouteSteps
+                      model={model}
+                      preview={preview}
+                      primary={primary}
+                      conditional
+                      t={t}
                     />
-                  </>
-                ) : preview.route === "unavailable" ? (
-                  <>
-                    <PathConnector />
-                    <PathNode
-                      icon={<CircleAlert />}
-                      eyebrow={t("routePreview.noRoute")}
-                      title={t("routePreview.noEligibleProvider")}
-                      detail={t(preview.reason === "provider_pool_unavailable"
-                        ? "routePreview.providerPoolUnavailable"
-                        : "routePreview.modelUnavailable")}
-                      tone="danger"
-                    />
-                  </>
-                ) : null}
-              </div>
-              {preview.route === "custom" && primary ? (
-                <CustomRoutePath model={model} preview={preview} primary={primary} conditional={false} t={t} />
+                  </div>
+                </div>
               ) : null}
             </div>
 
-            {preview.route === "account" && preview.account.fallbackAvailable && primary ? (
-              <div className="route-preview-fallback-lane">
-                <div className="route-preview-lane-label">
-                  <span><GitBranch aria-hidden="true" />{t("routePreview.conditionalFallback")}</span>
-                  <small>{t("routePreview.fallbackCondition")}</small>
-                </div>
-                <CustomRoutePath model={model} preview={preview} primary={primary} conditional t={t} />
-              </div>
-            ) : null}
-
             {visibleCandidates.length > 0 ? (
               <section className="route-preview-candidates" aria-label={t("routePreview.candidateOrder")}>
-                <header>
+                <div className="route-preview-candidates-label">
+                  <ListTree aria-hidden="true" />
                   <div>
-                    <h3>{t("routePreview.candidateOrder")}</h3>
-                    <p>{t("routePreview.candidateHelp")}</p>
+                    <strong>{t("routePreview.candidateOrder")}</strong>
+                    <span>{t("routePreview.providerCount", { count: preview.candidates.length })}</span>
                   </div>
-                  <span>{t("routePreview.providerCount", { count: preview.candidates.length })}</span>
-                </header>
+                </div>
                 <ol>
                   {visibleCandidates.map((candidate) => (
                     <li className={cx("route-preview-candidate", `is-${candidate.availability}`)} key={candidate.providerId}>
@@ -456,15 +476,22 @@ export function RoutePreviewBoard({
                   ))}
                 </ol>
                 {hiddenCandidateCount > 0 ? (
-                  <p className="route-preview-more">{t("routePreview.moreProviders", { count: hiddenCandidateCount })}</p>
+                  <span className="route-preview-more">{t("routePreview.moreProviders", { count: hiddenCandidateCount })}</span>
                 ) : null}
               </section>
             ) : null}
 
-            <footer className="route-preview-footnote">
-              <GitBranch aria-hidden="true" />
-              <span>{t("routePreview.conditionalNote")}</span>
-            </footer>
+            <details className="route-preview-details">
+              <summary>
+                <GitBranch aria-hidden="true" />
+                <span>{t("routePreview.decisionDetails")}</span>
+                <small>{t("routePreview.decisionDetailsHint")}</small>
+              </summary>
+              <div>
+                <p>{t("routePreview.candidateHelp")}</p>
+                <p>{t("routePreview.conditionalNote")}</p>
+              </div>
+            </details>
             {error ? (
               <p className="route-preview-stale" aria-live="polite">
                 {t("routePreview.refreshFailed")} <code>{error.code}</code>
