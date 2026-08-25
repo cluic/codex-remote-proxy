@@ -295,6 +295,25 @@ test("worker configures once, proxies traffic, reports public state, and shuts d
   assert.equal(configured.state.listenHost, "127.0.0.1");
   assert.ok(configured.state.listenPort > 0);
 
+  await sendMessage(worker.child, {
+    version: 1,
+    type: "route-preview",
+    requestId: "route-preview-1",
+    model: "preview-model"
+  });
+  const routePreview = await worker.waitForMessage(
+    (message) => message?.type === "route-preview" && message.requestId === "route-preview-1",
+    "worker route preview"
+  );
+  assert.equal(JSON.stringify(routePreview).includes(settings.upstream.apiKey), false);
+  validateChildMessage(routePreview);
+  assert.equal(routePreview.preview.source, "live");
+  assert.equal(routePreview.preview.generation, 1);
+  assert.equal(routePreview.preview.route, "custom");
+  assert.equal(routePreview.preview.reason, "custom_only");
+  assert.equal(routePreview.preview.customPrimaryProviderId, "provider-1");
+  assert.equal(routePreview.preview.candidates[0].providerName, "Primary");
+
   const proxyUrl = `http://127.0.0.1:${configured.state.listenPort}`;
   const proxyResponse = await fetch(`${proxyUrl}/responses`, {
     method: "POST",

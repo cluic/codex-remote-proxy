@@ -119,6 +119,7 @@ class FakeWorkerManager {
     this.generation = 0;
     this.calls = [];
     this.failure = null;
+    this.preview = null;
   }
 
   getPublicState() {
@@ -168,6 +169,14 @@ class FakeWorkerManager {
     this.calls.push(["stop"]);
     this.phase = "stopped";
     return this.getPublicState();
+  }
+
+  async previewRoute(model) {
+    this.calls.push(["previewRoute", model]);
+    if (this.preview) return structuredClone(this.preview);
+    const error = new Error("not running");
+    error.code = "WORKER_NOT_RUNNING";
+    throw error;
   }
 }
 
@@ -546,6 +555,95 @@ test("multi-model routing rules, model controls, and active-provider deletion ho
     { models: ["M1", "M3", "M5"], providerIds: [providerB.id] },
     { models: ["M2", "M4"], providerIds: [providerB.id] }
   ]);
+});
+
+test("route previews explain configured and live routing with group metadata", async (t) => {
+  const { service, registry, workerManager } = makeHarness(t);
+  const providerA = await service.createProvider(
+    providerInput("Provider A"),
+    makeSecret("preview-a")
+  );
+  const providerB = await service.createProvider(
+    providerInput("Provider B", "https://provider-b.example/v1"),
+    makeSecret("preview-b")
+  );
+  registry.markTest(providerA.id, { status: "passed" });
+  registry.markTest(providerB.id, { status: "passed" });
+  const mappingGroup = await service.createModelMappingGroup({
+    name: "Provider B aliases",
+    rules: [{ sourceModel: "model-a", targetModel: "vendor/model-a" }]
+  });
+  await service.updateProvider(providerB.id, { modelMappingGroupId: mappingGroup.id });
+  await service.setProviderSupportedModels(providerB.id, {
+    mode: "custom",
+    models: ["vendor/model-a"],
+    modelsPath: "/models",
+    customModels: ["vendor/model-a"]
+  });
+  registry.markTest(providerB.id, { status: "passed" });
+  const routingGroup = await service.createRoutingRuleGroup({
+    name: "Interactive traffic",
+    rules: [{ models: ["model-a"], providerIds: [providerB.id, providerA.id] }]
+  });
+  await service.setActiveRoutingRuleGroup(routingGroup.id);
+
+  const configured = await service.previewRoute("model-a");
+  assert.equal(configured.source, "configured");
+  assert.equal(configured.route, "custom");
+  assert.equal(configured.customPrimaryProviderId, providerB.id);
+  assert.deepEqual(configured.routingRule, {
+    groupId: routingGroup.id,
+    groupName: "Interactive traffic",
+    providerIds: [providerB.id, providerA.id]
+  });
+  assert.deepEqual(configured.candidates[0].mappingGroup, {
+    id: mappingGroup.id,
+    name: "Provider B aliases"
+  });
+  assert.equal(configured.candidates[0].targetModel, "vendor/model-a");
+
+  workerManager.phase = "running";
+  workerManager.generation = 7;
+  workerManager.preview = {
+    source: "live",
+    generation: 7,
+    evaluatedAt: "2030-01-01T00:00:00.000Z",
+    route: "custom",
+    reason: "custom_only",
+    account: {
+      enabled: false,
+      selected: false,
+      reason: "custom_only",
+      fallbackAvailable: true
+    },
+    matchedPriorityRule: true,
+    customPrimaryProviderId: providerB.id,
+    candidates: [{
+      providerId: providerB.id,
+      providerName: "Provider B",
+      weight: 100,
+      targetModel: "vendor/model-a",
+      transformation: "mapping",
+      availability: "ready",
+      coolingUntil: null,
+      order: 1
+    }]
+  };
+  const live = await service.previewRoute("model-a");
+  assert.equal(live.source, "live");
+  assert.equal(live.generation, 7);
+  assert.equal(live.routingRule.groupName, "Interactive traffic");
+  assert.equal(live.candidates[0].mappingGroup.name, "Provider B aliases");
+  assert.deepEqual(workerManager.calls.at(-1), ["previewRoute", "model-a"]);
+
+  const sentinel = "route-preview-secret-sentinel";
+  await assert.rejects(
+    service.previewRoute(` ${sentinel}`),
+    (error) => {
+      assert.equal(String(error?.message).includes(sentinel), false);
+      return error?.code === "ROUTE_PREVIEW_INPUT_INVALID" && error.status === 400;
+    }
+  );
 });
 
 test("a failed live compatibility probe does not invalidate the running provider snapshot", async (t) => {

@@ -1,14 +1,23 @@
 import { validateHeaderValue } from "node:http";
 
 import { isValidAccountRoutingState } from "../routing/account-routing.mjs";
+import { isRoutePreviewModel, isValidRoutePreview } from "../routing/route-preview.mjs";
 
 export const PROTOCOL_VERSION = 1;
 
-const PARENT_TYPES = new Set(["configure", "account-state", "drain", "shutdown", "status"]);
+const PARENT_TYPES = new Set([
+  "configure",
+  "account-state",
+  "route-preview",
+  "drain",
+  "shutdown",
+  "status"
+]);
 const CHILD_STATE_TYPES = new Set(["ready", "configured", "drained", "status"]);
 const CHILD_TYPES = new Set([
   ...CHILD_STATE_TYPES,
   "account-state-applied",
+  "route-preview",
   "fatal",
   "metric"
 ]);
@@ -16,6 +25,8 @@ const BASE_FIELDS = new Set(["version", "type", "requestId"]);
 const CONFIGURE_FIELDS = new Set([...BASE_FIELDS, "generation", "settings"]);
 const ACCOUNT_STATE_FIELDS = new Set([...BASE_FIELDS, "revision", "state"]);
 const ACCOUNT_STATE_APPLIED_FIELDS = new Set([...BASE_FIELDS, "revision"]);
+const ROUTE_PREVIEW_REQUEST_FIELDS = new Set([...BASE_FIELDS, "model"]);
+const ROUTE_PREVIEW_FIELDS = new Set([...BASE_FIELDS, "preview"]);
 const CHILD_STATE_FIELDS = new Set([...BASE_FIELDS, "state"]);
 const FATAL_FIELDS = new Set([...BASE_FIELDS, "error"]);
 const METRIC_FIELDS = new Set([...BASE_FIELDS, "observation"]);
@@ -538,6 +549,13 @@ export function validateParentMessage(message) {
     }
     return message;
   }
+  if (message.type === "route-preview") {
+    if (!hasExactFields(message, ROUTE_PREVIEW_REQUEST_FIELDS)
+      || !isRoutePreviewModel(message.model)) {
+      throw protocolError();
+    }
+    return message;
+  }
   if (!hasExactFields(message, BASE_FIELDS)) {
     throw protocolError();
   }
@@ -565,6 +583,13 @@ export function validateChildMessage(message) {
     if (!hasExactFields(message, ACCOUNT_STATE_APPLIED_FIELDS)
       || !Number.isSafeInteger(message.revision)
       || message.revision <= 0) {
+      throw protocolError();
+    }
+    return message;
+  }
+  if (message.type === "route-preview") {
+    if (!hasExactFields(message, ROUTE_PREVIEW_FIELDS)
+      || !isValidRoutePreview(message.preview)) {
       throw protocolError();
     }
     return message;

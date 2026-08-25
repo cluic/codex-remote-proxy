@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 
 import { ApiError } from "../api";
 import { TrendExplorer } from "../components/Charts";
+import { RoutePreviewBoard } from "../components/RoutePreviewBoard";
 import {
   Button,
   EmptyState,
@@ -35,8 +36,11 @@ import type {
   Locale,
   MetricsOverview,
   MetricsWindow,
+  ModelMappingGroup,
   Provider,
   Route,
+  RoutePreview,
+  RoutingRuleGroup,
   Settings,
   StatusResponse
 } from "../types";
@@ -47,6 +51,8 @@ type OverviewProps = {
   status: StatusResponse;
   settings: Settings;
   providers: Provider[];
+  modelMappingGroups: ModelMappingGroup[];
+  routingRuleGroups: RoutingRuleGroup[];
   metrics: MetricsOverview | null;
   metricsError: ApiError | null;
   metricsWindow: MetricsWindow;
@@ -54,6 +60,7 @@ type OverviewProps = {
   pending: string | null;
   onNavigate: (route: Route) => void;
   onMetricsWindow: (window: MetricsWindow) => void;
+  onRoutePreview: (model: string, signal: AbortSignal) => Promise<RoutePreview>;
   onStart: () => void;
   onRestart: () => void;
   onPrepareCodex: () => void;
@@ -102,6 +109,8 @@ export function OverviewPage({
   status,
   settings,
   providers,
+  modelMappingGroups,
+  routingRuleGroups,
   metrics,
   metricsError,
   metricsWindow,
@@ -109,6 +118,7 @@ export function OverviewPage({
   pending,
   onNavigate,
   onMetricsWindow,
+  onRoutePreview,
   onStart,
   onRestart,
   onPrepareCodex,
@@ -313,6 +323,16 @@ export function OverviewPage({
           </IconButton>
         </div>
       </section>
+
+      <RoutePreviewBoard
+        locale={locale}
+        t={t}
+        metrics={metrics}
+        modelMappingGroups={modelMappingGroups}
+        routingRuleGroups={routingRuleGroups}
+        routeRevision={`${status.generation}:${status.worker?.phase ?? "stopped"}:${settings.routingMode}:${status.account.updatedAt ?? "unknown"}`}
+        onPreview={onRoutePreview}
+      />
 
       <section className="metrics-section overview-metrics" aria-labelledby="metrics-heading">
         <header className="overview-metrics-toolbar">

@@ -116,3 +116,84 @@ test("orders providers per exact model rule and enforces custom model availabili
     ["provider-c"]
   );
 });
+
+test("explains the exact ordered route without exposing provider configuration", () => {
+  const scheduler = new ProviderScheduler({ now: () => 1_000 });
+  const candidates = [
+    {
+      id: "provider-a",
+      name: "Provider A",
+      weight: 500,
+      supportedModels: ["model-a"],
+      disabledModels: [],
+      proxy: { modelMode: "passthrough", modelOverride: null, modelMappings: [] },
+      upstream: { apiKey: "must-not-be-projected" }
+    },
+    {
+      id: "provider-b",
+      name: "Provider B",
+      weight: 100,
+      supportedModels: ["vendor/model-a"],
+      disabledModels: [],
+      proxy: {
+        modelMode: "passthrough",
+        modelOverride: null,
+        modelMappings: [{ sourceModel: "model-a", targetModel: "vendor/model-a" }]
+      },
+      upstream: { apiKey: "also-private" }
+    },
+    {
+      id: "provider-c",
+      name: "Provider C",
+      weight: 900,
+      supportedModels: null,
+      disabledModels: ["model-a"],
+      proxy: { modelMode: "passthrough", modelOverride: null, modelMappings: [] }
+    }
+  ];
+  scheduler.markResponse("provider-b", 503);
+  const explanation = scheduler.explain(candidates, {
+    model: "model-a",
+    priorityRules: [{ model: "model-a", providerIds: ["provider-b", "provider-a"] }]
+  });
+  const serialized = JSON.stringify(explanation);
+  assert.equal(serialized.includes("must-not-be-projected"), false);
+  assert.equal(serialized.includes("also-private"), false);
+
+  assert.equal(explanation.matchedPriorityRule, true);
+  assert.deepEqual(explanation.candidates, [
+    {
+      providerId: "provider-a",
+      providerName: "Provider A",
+      weight: 500,
+      targetModel: null,
+      transformation: "passthrough",
+      support: "supported",
+      cooling: false,
+      blockedUntilMs: null,
+      order: 1
+    },
+    {
+      providerId: "provider-b",
+      providerName: "Provider B",
+      weight: 100,
+      targetModel: "vendor/model-a",
+      transformation: "mapping",
+      support: "supported",
+      cooling: true,
+      blockedUntilMs: 31_000,
+      order: null
+    },
+    {
+      providerId: "provider-c",
+      providerName: "Provider C",
+      weight: 900,
+      targetModel: null,
+      transformation: "passthrough",
+      support: "disabled",
+      cooling: false,
+      blockedUntilMs: null,
+      order: null
+    }
+  ]);
+});

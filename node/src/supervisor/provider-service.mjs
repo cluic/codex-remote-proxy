@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import { isValidAccountRoutingState } from "../routing/account-routing.mjs";
+import { ProviderScheduler } from "../routing/provider-scheduler.mjs";
+import {
+  buildRoutePreview,
+  isRoutePreviewModel
+} from "../routing/route-preview.mjs";
 import {
   createProviderSourceFingerprint,
   MAX_MODEL_ID_LENGTH,
@@ -268,6 +273,14 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
     CAPTURE_SETTING_COMMITTED_DEGRADED: [
       "The Capture setting was updated, but persistence cleanup degraded.",
       "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
+    ROUTE_PREVIEW_INPUT_INVALID: [
+      "The route preview model is invalid.",
+      "Enter one bounded model name and try again."
+    ],
+    ROUTE_PREVIEW_UNAVAILABLE: [
+      "The live route preview is unavailable.",
+      "Refresh CRP status and try the preview again."
     ]
   };
   const [message, action] = contracts[code] ?? [
@@ -395,6 +408,27 @@ export class ProviderService {
       ...structuredClone(group),
       active: document.settings.routingRuleGroupId === group.id
     }));
+  }
+
+  async previewRoute(model) {
+    if (!isRoutePreviewModel(model)) {
+      throw serviceError("ROUTE_PREVIEW_INPUT_INVALID", { status: 400 });
+    }
+    return await this.#runExclusive(async () => {
+      const workerState = this.workerManager.getPublicState();
+      let preview = null;
+      if (workerState?.phase === "running" && typeof this.workerManager.previewRoute === "function") {
+        try {
+          preview = await this.workerManager.previewRoute(model);
+        } catch (error) {
+          if (!["WORKER_NOT_RUNNING", "WORKER_IPC_SEND_FAILED", "WORKER_ACK_TIMEOUT"].includes(error?.code)) {
+            throw serviceError("ROUTE_PREVIEW_UNAVAILABLE", { status: 503, cause: error });
+          }
+        }
+      }
+      preview ??= await this.#buildConfiguredRoutePreview(model);
+      return this.#decorateRoutePreview(preview, model);
+    });
   }
 
   createModelMappingGroup(input) {
@@ -1930,6 +1964,115 @@ export class ProviderService {
   async #toPublic(profile) {
     const configured = await this.credentialStore.has(profile.credentialRef);
     return toPublicProvider(profile, configured);
+  }
+
+  async #buildConfiguredRoutePreview(model) {
+    const document = this.registry.getDocument();
+    const activeProviderId = document.activeProviderId;
+    const eligible = document.providers
+      .filter((provider) => provider.lastTestStatus === "passed")
+      .sort((left, right) => {
+        if (left.weight !== right.weight) return right.weight - left.weight;
+        if (left.id === activeProviderId && right.id !== activeProviderId) return -1;
+        if (right.id === activeProviderId && left.id !== activeProviderId) return 1;
+        const created = left.createdAt.localeCompare(right.createdAt);
+        return created === 0 ? left.id.localeCompare(right.id) : created;
+      });
+    const mappingGroups = new Map(
+      document.modelMappingGroups.map((group) => [group.id, group.rules])
+    );
+    const providers = [];
+    for (const candidate of eligible) {
+      try {
+        if (!await this.credentialStore.has(candidate.credentialRef)) continue;
+      } catch {
+        continue;
+      }
+      const defaultEnabled = candidate.supportedModelsMode === "auto";
+      providers.push({
+        id: candidate.id,
+        name: candidate.name,
+        weight: candidate.weight,
+        supportedModels: defaultEnabled ? null : [...candidate.supportedModels],
+        disabledModels: defaultEnabled ? [...candidate.supportedModels] : [],
+        proxy: {
+          modelMode: candidate.modelMode,
+          modelOverride: candidate.modelOverride,
+          modelMappings: candidate.modelMappingGroupId === null
+            ? []
+            : structuredClone(mappingGroups.get(candidate.modelMappingGroupId) ?? [])
+        }
+      });
+    }
+    const runtimeProviderIds = new Set(providers.map((provider) => provider.id));
+    const activeRoutingRuleGroup = document.settings.routingRuleGroupId === null
+      ? null
+      : document.routingRuleGroups.find(
+          (group) => group.id === document.settings.routingRuleGroupId
+        ) ?? null;
+    const providerPriorityRules = (activeRoutingRuleGroup?.rules ?? []).flatMap((rule) => {
+      const providerIds = rule.providerIds.filter((providerId) => runtimeProviderIds.has(providerId));
+      if (providerIds.length === 0) return [];
+      return rule.models.map((ruleModel) => ({ model: ruleModel, providerIds: [...providerIds] }));
+    });
+    const accountSnapshot = this.getAccountRoutingSnapshot();
+    const accountState = isValidAccountRoutingState(accountSnapshot?.state)
+      ? accountSnapshot.state
+      : DEFAULT_ACCOUNT_ROUTING_STATE;
+    const nowMs = Date.parse(this.now());
+    return buildRoutePreview({
+      source: "configured",
+      generation: 0,
+      settings: {
+        providers,
+        routing: {
+          mode: document.settings.routingMode,
+          providerPriorityRules
+        }
+      },
+      accountState,
+      providerScheduler: new ProviderScheduler({
+        now: () => Number.isFinite(nowMs) ? nowMs : Date.now()
+      }),
+      nowMs: Number.isFinite(nowMs) ? nowMs : Date.now(),
+      model
+    });
+  }
+
+  #decorateRoutePreview(preview, model) {
+    const document = this.registry.getDocument();
+    const activeGroup = document.settings.routingRuleGroupId === null
+      ? null
+      : document.routingRuleGroups.find(
+          (group) => group.id === document.settings.routingRuleGroupId
+        ) ?? null;
+    const matchedRule = activeGroup?.rules.find((rule) => rule.models.includes(model)) ?? null;
+    const profiles = new Map(document.providers.map((provider) => [provider.id, provider]));
+    const mappingGroups = new Map(
+      document.modelMappingGroups.map((group) => [group.id, group])
+    );
+    return {
+      ...preview,
+      routingRule: preview.matchedPriorityRule && activeGroup && matchedRule ? {
+        groupId: activeGroup.id,
+        groupName: activeGroup.name,
+        providerIds: [...matchedRule.providerIds]
+      } : null,
+      candidates: preview.candidates.map((candidate) => {
+        const profile = profiles.get(candidate.providerId);
+        const mappingGroup = candidate.transformation === "mapping"
+          && profile?.modelMappingGroupId
+          ? mappingGroups.get(profile.modelMappingGroupId) ?? null
+          : null;
+        return {
+          ...candidate,
+          mappingGroup: mappingGroup ? {
+            id: mappingGroup.id,
+            name: mappingGroup.name
+          } : null
+        };
+      })
+    };
   }
 
   async #startOrRestartProxy(action) {

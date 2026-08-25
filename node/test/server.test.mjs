@@ -955,6 +955,71 @@ test("weighted custom routing cools an HTTP failure and routes the next request 
   )));
 });
 
+test("live route preview shares the request scheduler's Provider cooldown state", async (t) => {
+  const primary = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = 503;
+      res.end();
+    });
+  });
+  const primaryPort = await listen(primary);
+  t.after(() => closeServer(primary));
+  const fallback = http.createServer((_req, res) => res.end());
+  const fallbackPort = await listen(fallback);
+  t.after(() => closeServer(fallback));
+  const providers = [
+    providerCandidate({
+      id: "preview-primary",
+      name: "Preview primary",
+      weight: 500,
+      baseUrl: `http://127.0.0.1:${primaryPort}`,
+      apiKey: "preview-primary-secret"
+    }),
+    providerCandidate({
+      id: "preview-fallback",
+      name: "Preview fallback",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${fallbackPort}`,
+      apiKey: "preview-fallback-secret"
+    })
+  ];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    captureEnabled: false
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 21, settings });
+  const app = createApp(settings, { settingsSource: source });
+  const proxyPort = await listen(app.server);
+  t.after(() => closeServer(app.server));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "preview-model", input: "cool primary" })
+  });
+  assert.equal(response.status, 503);
+  await response.arrayBuffer();
+
+  const preview = app.previewRoute("preview-model");
+  const serialized = JSON.stringify(preview);
+  assert.equal(serialized.includes("preview-primary-secret"), false);
+  assert.equal(serialized.includes("preview-fallback-secret"), false);
+  assert.equal(preview.source, "live");
+  assert.equal(preview.generation, 21);
+  assert.equal(preview.customPrimaryProviderId, "preview-fallback");
+  assert.deepEqual(preview.candidates.map(({ providerId, availability, order }) => ({
+    providerId,
+    availability,
+    order
+  })), [
+    { providerId: "preview-fallback", availability: "ready", order: 1 },
+    { providerId: "preview-primary", availability: "cooling", order: null }
+  ]);
+});
+
 test("model-aware routing applies per-model provider priority and custom availability", async (t) => {
   const observed = [];
   const createUpstream = (providerId) => http.createServer((req, res) => {

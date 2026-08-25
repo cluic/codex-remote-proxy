@@ -110,4 +110,17 @@ No actionable P0, P1, or P2 visual findings remain in the final 1440 × 900 evid
 - Switching to all-interface listening forces authentication on and disables the switch. Listen-address changes remain unavailable while the Worker is running. The shared responsive matrix also opens System in English and Chinese at 1440, 1024, and 390 widths without page-level horizontal overflow.
 - Full Chromium E2E matrix: 56/56 passed. Visual review found no actionable P0, P1, or P2 issue.
 
+## Overview Route Preview QA
+
+- Verified on 2026-08-25.
+- Custom-provider evidence: `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-custom-1440x900.png`
+- Account-first fallback evidence: `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-account-fallback-1440x900.png`
+- Mobile evidence: `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-account-fallback-390x844.png`
+- Verified state: a running generation-8 Worker, `gpt-5.6-sol`, an exact routing group preferring Provider Beta, a Provider Beta mapping to `vendor/gpt-5.6-sol`, and Provider Alpha as the second candidate.
+- In custom-only mode the board exposes request, account gate, matched routing group, Provider queue, model mapping, predicted outlet, and numbered candidate order. In account-first mode ChatGPT becomes the primary path and the same custom chain remains visible as a dashed conditional fallback.
+- Active connectors use the route pulse animation and conditional connectors use an amber dashed treatment. Reduced-motion preferences collapse animation duration through the existing global rule. The 390 px layout changes every chain to vertical connectors and passed the shared clipping, overlap, and document-overflow audit.
+- The source badge distinguishes live Worker state from a stopped configuration snapshot. Copy consistently says “predicted outlet” and explains same-request safe retry versus later-request cooldown, so the board does not promise a guaranteed destination.
+- The focused Chromium route-preview scenario passed in English at 1440 × 900 and 390 × 844. Visual review found no actionable P0, P1, or P2 issue.
+- Full Chromium E2E matrix: 57/57 passed.
+
 final result: passed

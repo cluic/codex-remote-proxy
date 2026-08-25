@@ -42,6 +42,7 @@ import type {
   Provider,
   ProviderInput,
   Route,
+  RoutePreview,
   RoutingRuleGroup,
   RoutingRuleGroupInput,
   SupervisorIdentity,
@@ -638,6 +639,10 @@ export function App() {
     });
   }, [api]);
 
+  const previewRoute = useCallback((model: string, signal: AbortSignal): Promise<RoutePreview> => (
+    api.getRoutePreview(model, signal)
+  ), [api]);
+
   useEffect(() => {
     if (route !== "overview" || accessMode === "initializing"
       || accessMode === "terminal" || accessMode === "stopped") return undefined;
@@ -809,6 +814,8 @@ export function App() {
           status={workspace.status}
           settings={workspace.settings}
           providers={workspace.providers}
+          modelMappingGroups={workspace.modelMappingGroups}
+          routingRuleGroups={workspace.routingRuleGroups}
           metrics={metrics}
           metricsError={metricsError}
           metricsWindow={metricsWindow}
@@ -816,6 +823,7 @@ export function App() {
           pending={pending}
           onNavigate={navigate}
           onMetricsWindow={changeMetricsWindow}
+          onRoutePreview={previewRoute}
           onStart={startProxy}
           onRestart={restartProxy}
           onPrepareCodex={() => void prepareCodex()}
