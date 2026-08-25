@@ -21,6 +21,7 @@ import os from "node:os";
 import { isDeepStrictEqual } from "node:util";
 
 import { bootstrapCodexConfig, patchCodexConfigText } from "../codex/codex-config.mjs";
+import { AccessKeyStore } from "../access-key-store.mjs";
 import {
   hasPendingCodexHistoryRepair,
   inspectPendingCodexHistoryRepair,
@@ -33,6 +34,7 @@ import { ProviderRegistry } from "../providers/provider-registry.mjs";
 import { projectAccountRoutingState } from "../routing/account-routing.mjs";
 import { CrpError } from "../shared/errors.mjs";
 import { getPaths } from "../shared/paths.mjs";
+import { loadOrCreatePrivateToken } from "../shared/private-token.mjs";
 import { ActivityStore } from "./activity-store.mjs";
 import { AccountMonitor } from "./account-monitor.mjs";
 import { createAdminServer } from "./admin-server.mjs";
@@ -75,6 +77,12 @@ function completePaths(home, provided) {
     modelCachePath: base.modelCachePath
       ?? resolve(base.globalHome, "provider-model-cache.json"),
     metricsPath: base.metricsPath ?? resolve(base.globalHome, "metrics.json"),
+    accessKeyDbPath: base.accessKeyDbPath
+      ?? resolve(base.globalHome, "access-keys.sqlite3"),
+    localAccessTokenPath: base.localAccessTokenPath
+      ?? resolve(base.globalHome, "local-access-token"),
+    cliPreferencesPath: base.cliPreferencesPath
+      ?? resolve(base.globalHome, "cli-preferences.json"),
     runtimeConfigPath: base.runtimeConfigPath
       ?? resolve(base.globalHome, "node", "proxy-config.json"),
     capturePath: base.capturePath ?? resolve(base.globalHome, "traffic.sqlite3")
@@ -254,6 +262,7 @@ function pathExists(path, fileOperations) {
 function createCodexService({
   paths,
   proxyUrl,
+  localAccessToken,
   fileOperations,
   bootstrapImpl,
   historyRepair
@@ -299,7 +308,7 @@ function createCodexService({
       const configLockedAfterPending = pathExists(configLockPath, operations);
       if (text !== null && !configLockedBeforeRead && !configLockedAfterRead
         && !configLockedAfterPending) {
-        const patchedText = patchCodexConfigText(text, proxyUrl);
+        const patchedText = patchCodexConfigText(text, proxyUrl, localAccessToken);
         const transition = planCodexProviderTransition({
           sourceExists: true,
           sourceText: text,
@@ -329,6 +338,7 @@ function createCodexService({
         const options = {
           configPath: paths.codexConfigPath,
           proxyUrl,
+          localAccessToken,
           historyRepair
         };
         if (fileOperations !== undefined) options.fileOperations = fileOperations;
@@ -381,6 +391,12 @@ function createSettingsService({
       }
       if (Object.hasOwn(patch, "captureEnabled")) {
         await providerService.setCaptureEnabled(patch.captureEnabled);
+      }
+      if (Object.hasOwn(patch, "apiKeyAuthEnabled")) {
+        await providerService.setApiKeyAuthEnabled(patch.apiKeyAuthEnabled);
+      }
+      if (Object.hasOwn(patch, "proxyHost")) {
+        await providerService.setProxyHost(patch.proxyHost);
       }
       if (Object.hasOwn(patch, "autoStartEnabled")) {
         autoStartService.setEnabled(patch.autoStartEnabled);
@@ -509,6 +525,8 @@ export async function createSupervisor({
   registryFactory = (options) => new ProviderRegistry(options),
   providerModelCacheFactory = (options) => new ProviderModelCache(options),
   metricsStoreFactory = (options) => new MetricsStore(options),
+  accessKeyStoreFactory = (options) => new AccessKeyStore(options),
+  privateTokenLoader = loadOrCreatePrivateToken,
   forwardingRecordsServiceFactory = (options) => new ForwardingRecordsService(options),
   autoStartServiceFactory = (options) => new AutoStartService(options),
   accountMonitorFactory = (options) => new AccountMonitor(options),
@@ -531,6 +549,7 @@ export async function createSupervisor({
   const settings = registry.getDocument().settings;
   let workerManager;
   let metricsStore;
+  let accessKeyStore;
   let forwardingRecordsService;
   let autoStartService;
   let accountMonitor;
@@ -556,6 +575,7 @@ export async function createSupervisor({
       await adminServer.close();
       await auth.close();
       await metricsStore.close();
+      accessKeyStore.close();
       await accountMonitor?.close?.();
       removeOwnedState(paths.statePath, ownedState, stateFileOperations);
     })();
@@ -567,15 +587,18 @@ export async function createSupervisor({
   };
   const requestShutdown = () => close();
   try {
-    const proxyUrl = `http://${settings.proxyHost}:${settings.proxyPort}`;
+    const proxyUrl = `http://127.0.0.1:${settings.proxyPort}`;
+    const localAccessToken = privateTokenLoader({ path: paths.localAccessTokenPath });
     codexService = createCodexService({
       paths,
       proxyUrl,
+      localAccessToken,
       fileOperations: codexFileOperations,
       bootstrapImpl: bootstrapCodex,
       historyRepair: codexHistoryRepair
     });
     metricsStore = metricsStoreFactory({ path: paths.metricsPath, now });
+    accessKeyStore = accessKeyStoreFactory({ path: paths.accessKeyDbPath });
     forwardingRecordsService = forwardingRecordsServiceFactory({
       path: paths.capturePath,
       listProviders: () => registry.list()
@@ -613,7 +636,8 @@ export async function createSupervisor({
         state: structuredClone(accountRoutingState)
       }),
       now,
-      paths
+      paths,
+      localAccessToken
     });
     autoStartService = autoStartServiceFactory({
       userHome: os.homedir(),
@@ -632,6 +656,7 @@ export async function createSupervisor({
       auth,
       providerService,
       activityStore,
+      accessKeyService: accessKeyStore,
       settingsService,
       codexService,
       diagnosticsService,
@@ -650,6 +675,7 @@ export async function createSupervisor({
     try { await auth?.close?.(); } catch {}
     try { await workerManager?.close?.(); } catch {}
     try { await metricsStore?.close?.(); } catch {}
+    try { accessKeyStore?.close?.(); } catch {}
     throw error;
   }
 

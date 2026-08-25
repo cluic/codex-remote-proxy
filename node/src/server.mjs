@@ -6,8 +6,14 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { URL } from "node:url";
 import zlib from "node:zlib";
+import { timingSafeEqual } from "node:crypto";
 import { Decompress as ZstdDecompress } from "fzstd";
 
+import {
+  ACCESS_KEY_HEADER,
+  AccessKeyStore,
+  LOCAL_ACCESS_HEADER
+} from "./access-key-store.mjs";
 import {
   createCaptureManager,
   DEFAULT_CAPTURE_DB_PATH,
@@ -33,6 +39,7 @@ const CAPTURE_BODY_MAX_BYTES = 1024 * 1024;
 const MODEL_OVERRIDE_MAX_BYTES = 8 * 1024 * 1024;
 const SSE_EVENT_MAX_BYTES = METRIC_USAGE_MAX_BYTES;
 const SSE_EVENT_MAX_DATA_LINES = 16 * 1024;
+const ACCESS_HEADERS = new Set([ACCESS_KEY_HEADER, LOCAL_ACCESS_HEADER]);
 
 export function isEstablishedUpstreamSocket(socket) {
   return socket !== null && typeof socket === "object" && socket.connecting === false;
@@ -130,10 +137,16 @@ export function loadConfig(configPath = resolveConfigPath()) {
     modelOverride: typeof modelOverride === "string" ? modelOverride.trim() : null,
     modelMappings: []
   };
+  const serverHost = typeof server.host === "string" && server.host
+    ? server.host
+    : "127.0.0.1";
+  if (serverHost !== "127.0.0.1") {
+    throw new Error("standalone server.host must remain 127.0.0.1; use the managed System settings for authenticated network listening");
+  }
   return {
     configPath,
     server: {
-      host: typeof server.host === "string" && server.host ? server.host : "127.0.0.1",
+      host: serverHost,
       port: Number.isInteger(server.port) ? server.port : 15100,
       logLevel: typeof server.logLevel === "string" && server.logLevel ? server.logLevel : "info"
     },
@@ -924,14 +937,18 @@ function providerProtectedValues(settings) {
 }
 
 function protectedHeaderValues(settings) {
-  return normalizeProtectedValues(providerProtectedValues(settings));
+  return normalizeProtectedValues([
+    ...providerProtectedValues(settings),
+    settings.access?.localToken
+  ]);
 }
 
 function protectedRequestValues(req, settings) {
   const values = providerProtectedValues(settings);
   for (let index = 0; index < req.rawHeaders.length; index += 2) {
     const name = req.rawHeaders[index].toLowerCase();
-    if (name === "authorization" || name === "chatgpt-account-id") {
+    if (name === "authorization" || name === "chatgpt-account-id"
+      || ACCESS_HEADERS.has(name)) {
       values.push(req.rawHeaders[index + 1]);
     }
   }
@@ -989,6 +1006,7 @@ export function buildUpstreamHeaders(req, settings, targetUrl, {
     const loweredKey = key.toLowerCase();
     if (
       loweredKey === "host" ||
+      ACCESS_HEADERS.has(loweredKey) ||
       HOP_BY_HOP_HEADERS.has(loweredKey) ||
       connectionHeaders.has(loweredKey) ||
       (stripAccountHeaders && loweredKey === "chatgpt-account-id") ||
@@ -1037,6 +1055,7 @@ export function buildAccountUpstreamHeaders(
     const value = req.rawHeaders[index + 1];
     const loweredKey = key.toLowerCase();
     if (loweredKey === "host"
+      || ACCESS_HEADERS.has(loweredKey)
       || HOP_BY_HOP_HEADERS.has(loweredKey)
       || connectionHeaders.has(loweredKey)
       || (customAuthHeader !== "authorization" && loweredKey === customAuthHeader)
@@ -1373,6 +1392,94 @@ function buildHealthPayload(settings, captureManager, settingsSource) {
   }, protectedValues);
 }
 
+function singleRawHeader(req, wantedName) {
+  const values = [];
+  for (let index = 0; index < req.rawHeaders.length; index += 2) {
+    if (req.rawHeaders[index].toLowerCase() === wantedName) {
+      values.push(req.rawHeaders[index + 1]);
+    }
+  }
+  if (values.length === 0) return undefined;
+  return values.length === 1 ? values[0] : null;
+}
+
+function secureEqual(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function isLoopbackAddress(value) {
+  if (typeof value !== "string") return false;
+  const normalized = value.toLowerCase();
+  return normalized === "::1"
+    || normalized === "127.0.0.1"
+    || normalized.startsWith("127.")
+    || normalized === "::ffff:127.0.0.1";
+}
+
+function bearerAccessKey(value) {
+  if (typeof value !== "string") return null;
+  const match = /^Bearer (crp_[A-Za-z0-9_-]{12,})$/.exec(value);
+  return match?.[1] ?? null;
+}
+
+function requestAccessAuthorization(req, settings, accessKeyStore, { health = false } = {}) {
+  if (settings.access?.enabled !== true) return { ok: true, source: "disabled" };
+  if (health && isLoopbackAddress(req.socket?.remoteAddress)) {
+    return { ok: true, source: "health" };
+  }
+  const localToken = singleRawHeader(req, LOCAL_ACCESS_HEADER);
+  if (isLoopbackAddress(req.socket?.remoteAddress)
+    && secureEqual(localToken, settings.access.localToken)) {
+    return { ok: true, source: "local" };
+  }
+  const dedicated = singleRawHeader(req, ACCESS_KEY_HEADER);
+  if (dedicated === null) {
+    return { ok: false, code: "API_KEY_INVALID", status: 401 };
+  }
+  const bearer = dedicated === undefined
+    ? bearerAccessKey(singleRawHeader(req, "authorization"))
+    : null;
+  const secret = dedicated ?? bearer;
+  if (secret === null) {
+    return { ok: false, code: "API_KEY_REQUIRED", status: 401 };
+  }
+  const authorized = accessKeyStore?.authorize(secret)
+    ?? { ok: false, code: "API_KEY_STORE_UNAVAILABLE", status: 503 };
+  return authorized.ok
+    ? { ...authorized, source: dedicated === undefined ? "authorization" : "header" }
+    : authorized;
+}
+
+function writeAccessError(response, authorization) {
+  if (authorization.status === 401) {
+    response.setHeader("WWW-Authenticate", 'Bearer realm="CRP"');
+  }
+  writeJson(response, authorization.status, {
+    error: {
+      code: authorization.code,
+      message: authorization.code === "API_KEY_REQUIRED"
+        ? "A valid CRP API key is required."
+        : authorization.code === "API_KEY_LIMIT_EXCEEDED"
+          ? "The CRP API key request limit has been reached."
+          : authorization.code === "API_KEY_STORE_UNAVAILABLE"
+            ? "CRP API key authentication is temporarily unavailable."
+            : "The CRP API key is not available for this request."
+    }
+  });
+}
+
+function withoutAuthorizationRawHeaders(rawHeaders) {
+  const filtered = [];
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (rawHeaders[index].toLowerCase() === "authorization") continue;
+    filtered.push(rawHeaders[index], rawHeaders[index + 1]);
+  }
+  return filtered;
+}
+
 function buildRequestContext({
   req,
   settings,
@@ -1480,8 +1587,12 @@ export function createServer(settings, {
   metricNow = Date.now,
   routingNow = Date.now,
   resolveAccountTarget = (target) => target,
-  providerScheduler = new ProviderScheduler({ now: routingNow })
+  providerScheduler = new ProviderScheduler({ now: routingNow }),
+  accessKeyStore = null
 } = {}) {
+  if (settings?.server?.host === "0.0.0.0" && settings?.access?.enabled !== true) {
+    throw new TypeError("public proxy listening requires API key authentication");
+  }
   let accountBlockedUntilMs = null;
   return http.createServer((req, res) => {
     if (!req.url) {
@@ -1489,22 +1600,37 @@ export function createServer(settings, {
       return;
     }
 
-    if (req.url === HEALTH_PATH) {
-      let healthSettings = settings;
-      try {
-        healthSettings = settingsSource?.current().settings ?? settings;
-      } catch {
-        // An unconfigured source still exposes its existing public health contract.
+    let active = settingsSource ? null : { generation: 0, settings };
+    let currentSettings = settings;
+    let settingsError = null;
+    try {
+      if (settingsSource) {
+        active = settingsSource.current();
+        currentSettings = active.settings;
       }
-      writeJson(res, 200, buildHealthPayload(healthSettings, captureManager, settingsSource));
+    } catch (error) {
+      settingsError = error;
+      // The normal runtime availability response below remains authoritative.
+    }
+
+    const accessAuthorization = requestAccessAuthorization(
+      req,
+      currentSettings,
+      accessKeyStore,
+      { health: req.url === HEALTH_PATH }
+    );
+    if (!accessAuthorization.ok) {
+      writeAccessError(res, accessAuthorization);
       return;
     }
 
-    let active;
-    try {
-      active = settingsSource ? settingsSource.current() : { generation: 0, settings };
-    } catch (error) {
-      const unavailable = error?.code === "RUNTIME_SETTINGS_UNAVAILABLE";
+    if (req.url === HEALTH_PATH) {
+      writeJson(res, 200, buildHealthPayload(currentSettings, captureManager, settingsSource));
+      return;
+    }
+
+    if (active === null) {
+      const unavailable = settingsError?.code === "RUNTIME_SETTINGS_UNAVAILABLE";
       writeJson(res, unavailable ? 503 : 500, {
         error: {
           code: unavailable ? "RUNTIME_SETTINGS_UNAVAILABLE" : "RUNTIME_SETTINGS_ERROR",
@@ -1548,7 +1674,9 @@ export function createServer(settings, {
       mode: requestSettings.routing?.mode ?? "custom_only",
       method: req.method,
       requestUrl: req.url,
-      rawHeaders: req.rawHeaders,
+      rawHeaders: accessAuthorization.source === "authorization"
+        ? withoutAuthorizationRawHeaders(req.rawHeaders)
+        : req.rawHeaders,
       accountState,
       localBlockedUntilMs: accountBlockedUntilMs,
       nowMs: routingNow()
@@ -2467,7 +2595,10 @@ export function createServer(settings, {
 export function createApp(settings = loadConfig(), {
   settingsSource,
   accountStateSource,
-  recordMetric
+  recordMetric,
+  accessKeyStore = settings.access?.dbPath
+    ? new AccessKeyStore({ path: settings.access.dbPath })
+    : null
 } = {}) {
   const protectedValues = protectedHeaderValues(settings);
   const captureManager = createCaptureManager({
@@ -2496,13 +2627,15 @@ export function createApp(settings = loadConfig(), {
     logFn: log,
     settingsSource,
     accountStateSource,
-    recordMetric
+    recordMetric,
+    accessKeyStore
   });
   server.on("close", () => {
     captureManager.close();
+    accessKeyStore?.close();
   });
 
-  return { server, settings, captureManager };
+  return { server, settings, captureManager, accessKeyStore };
 }
 
 export function startServer(settings = loadConfig()) {

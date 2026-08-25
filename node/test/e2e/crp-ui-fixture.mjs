@@ -361,6 +361,9 @@ function createServices({ upstream }) {
     testFailureCode: null,
     nextMutationError: null,
     routingMode: "custom_only",
+    proxyHost: "127.0.0.1",
+    apiKeyAuthEnabled: false,
+    accessKeys: [],
     captureEnabled: true,
     autoStartEnabled: false,
     forwardingRecords: [
@@ -1043,8 +1046,52 @@ function createServices({ upstream }) {
     },
     providerService,
     activityStore: {
+      async append(event) {
+        state.activities.unshift(structuredClone(event));
+      },
       list({ limit }) {
         return structuredClone(state.activities.slice(0, limit));
+      }
+    },
+    accessKeyService: {
+      list() {
+        return structuredClone(state.accessKeys);
+      },
+      get(id) {
+        const key = state.accessKeys.find((candidate) => candidate.id === id);
+        if (!key) throw new CrpError("ACCESS_KEY_NOT_FOUND", "API key missing.", "Refresh.", { status: 404 });
+        return structuredClone(key);
+      },
+      create(input) {
+        const key = {
+          id: `access-key-${state.accessKeys.length + 1}`,
+          name: input.name,
+          keyHint: `${input.secret.slice(0, 4)}…${input.secret.slice(-4)}`,
+          enabled: true,
+          expiresAt: input.expiresAt,
+          requestLimit: input.requestLimit,
+          requestCount: 0,
+          createdAt: STARTED_AT,
+          updatedAt: STARTED_AT,
+          lastUsedAt: null
+        };
+        state.accessKeys.push(key);
+        calls.push({ operation: "createAccessKey", id: key.id, name: key.name });
+        return structuredClone(key);
+      },
+      update(id, patch) {
+        const key = state.accessKeys.find((candidate) => candidate.id === id);
+        if (!key) throw new CrpError("ACCESS_KEY_NOT_FOUND", "API key missing.", "Refresh.", { status: 404 });
+        Object.assign(key, structuredClone(patch), { updatedAt: STARTED_AT });
+        calls.push({ operation: "updateAccessKey", id, patch: structuredClone(patch) });
+        return structuredClone(key);
+      },
+      delete(id) {
+        const index = state.accessKeys.findIndex((candidate) => candidate.id === id);
+        if (index === -1) throw new CrpError("ACCESS_KEY_NOT_FOUND", "API key missing.", "Refresh.", { status: 404 });
+        const [key] = state.accessKeys.splice(index, 1);
+        calls.push({ operation: "deleteAccessKey", id });
+        return structuredClone(key);
       }
     },
     metricsService: {
@@ -1096,10 +1143,11 @@ function createServices({ upstream }) {
     settingsService: {
       async getSettings() {
         return {
-          proxyHost: "127.0.0.1",
+          proxyHost: state.proxyHost,
           proxyPort: 15100,
           adminHost: "127.0.0.1",
           adminPort: 15101,
+          apiKeyAuthEnabled: state.apiKeyAuthEnabled,
           captureEnabled: state.captureEnabled,
           routingMode: state.routingMode,
           credentialBackend: "native",
@@ -1127,6 +1175,33 @@ function createServices({ upstream }) {
           state.captureEnabled = patch.captureEnabled;
           calls.push({ operation: "updateCapture", enabled: state.captureEnabled });
           addActivity("settings", "capture", null);
+        } else if (Object.hasOwn(patch, "apiKeyAuthEnabled")) {
+          assert.equal(typeof patch.apiKeyAuthEnabled, "boolean");
+          if (state.proxyHost === "0.0.0.0" && !patch.apiKeyAuthEnabled) {
+            throw new CrpError(
+              "API_KEY_AUTH_REQUIRED",
+              "API key authentication is required.",
+              "Use loopback before disabling it.",
+              { status: 409 }
+            );
+          }
+          state.apiKeyAuthEnabled = patch.apiKeyAuthEnabled;
+          calls.push({ operation: "updateApiKeyAuth", enabled: state.apiKeyAuthEnabled });
+          addActivity("settings", "api-key-auth", null);
+        } else if (Object.hasOwn(patch, "proxyHost")) {
+          assert.ok(patch.proxyHost === "127.0.0.1" || patch.proxyHost === "0.0.0.0");
+          if (state.worker.phase === "running") {
+            throw new CrpError(
+              "PROXY_HOST_UPDATE_FAILED",
+              "Stop the Worker first.",
+              "Stop the Worker before changing the listen address.",
+              { status: 409 }
+            );
+          }
+          state.proxyHost = patch.proxyHost;
+          if (state.proxyHost === "0.0.0.0") state.apiKeyAuthEnabled = true;
+          calls.push({ operation: "updateProxyHost", host: state.proxyHost });
+          addActivity("settings", "proxy-host", null);
         } else {
           assert.equal(typeof patch.autoStartEnabled, "boolean");
           state.autoStartEnabled = patch.autoStartEnabled;
@@ -1621,7 +1696,9 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
 }
 
 function redactCollectedValue(value, key = "") {
-  if (/^(authorization|apiKey|credential|replacementCredential|csrfToken)$/i.test(key)) return "[redacted]";
+  if (/^(authorization|apiKey|credential|replacementCredential|csrfToken|secret)$/i.test(key)) {
+    return "[redacted]";
+  }
   if (Array.isArray(value)) return value.map((item) => redactCollectedValue(item));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(

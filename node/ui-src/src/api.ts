@@ -1,4 +1,7 @@
 import type {
+  AccessKey,
+  AccessKeyInput,
+  AccessKeyPatch,
   ActivityPageData,
   AccountStatus,
   BootstrapResult,
@@ -276,6 +279,36 @@ export class CrpApi {
     return payload.settings;
   }
 
+  async listAccessKeys(signal?: AbortSignal): Promise<AccessKey[]> {
+    const payload = await this.get<{ accessKeys: AccessKey[] }>("/api/v1/access-keys", signal);
+    return payload.accessKeys;
+  }
+
+  async createAccessKey(input: AccessKeyInput): Promise<AccessKey> {
+    const payload = await this.mutate<{ accessKey: AccessKey }>("/api/v1/access-keys", {
+      method: "POST",
+      body: { accessKey: input },
+      expectedStatus: 201
+    });
+    return payload.accessKey;
+  }
+
+  async updateAccessKey(id: string, patch: AccessKeyPatch): Promise<AccessKey> {
+    const payload = await this.mutate<{ accessKey: AccessKey }>(this.accessKeyPath(id), {
+      method: "PATCH",
+      body: { accessKey: patch }
+    });
+    return payload.accessKey;
+  }
+
+  async deleteAccessKey(id: string): Promise<AccessKey> {
+    const payload = await this.mutate<{ accessKey: AccessKey }>(this.accessKeyPath(id), {
+      method: "DELETE",
+      emptyBody: true
+    });
+    return payload.accessKey;
+  }
+
   async refreshAccount(): Promise<AccountStatus> {
     const payload = await this.mutate<{ account: AccountStatus }>("/api/v1/account/refresh", {
       method: "POST",
@@ -304,6 +337,22 @@ export class CrpApi {
     const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
       method: "PATCH",
       body: { autoStartEnabled }
+    });
+    return payload.settings;
+  }
+
+  async updateApiKeyAuthEnabled(apiKeyAuthEnabled: boolean): Promise<Settings> {
+    const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
+      method: "PATCH",
+      body: { apiKeyAuthEnabled }
+    });
+    return payload.settings;
+  }
+
+  async updateProxyHost(proxyHost: "127.0.0.1" | "0.0.0.0"): Promise<Settings> {
+    const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
+      method: "PATCH",
+      body: { proxyHost }
     });
     return payload.settings;
   }
@@ -479,6 +528,10 @@ export class CrpApi {
 
   private routingRuleGroupPath(id: string): string {
     return `/api/v1/routing-rule-groups/${encodeURIComponent(id)}`;
+  }
+
+  private accessKeyPath(id: string): string {
+    return `/api/v1/access-keys/${encodeURIComponent(id)}`;
   }
 
   private async get<T>(path: string, signal?: AbortSignal): Promise<T> {

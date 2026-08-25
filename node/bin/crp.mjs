@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
   existsSync,
+  fchmodSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import net from "node:net";
 import readline from "node:readline/promises";
 import { setTimeout as delay } from "node:timers/promises";
@@ -65,7 +70,7 @@ const HELP_FLAGS = new Set(["-h", "--help"]);
 const PROVIDER_ACTIONS = new Set(["presets", "list", "add", "models", "test", "activate", "delete"]);
 const SAFE_CLI_COMMANDS = new Set([
   "ui", "start", "status", "stop", "restart", "shutdown",
-  "provider", "check", "capture", "guide", "install-cli", "version", "update"
+  "provider", "check", "capture", "guide", "install-cli", "language", "version", "update"
 ]);
 const REMOVED_CLI_COMMANDS = new Map([
   ["init", "crp ui"],
@@ -135,6 +140,7 @@ export const CLI_MESSAGES = Object.freeze({
     "help.update": "  crp update [--check] [--json]",
     "help.provider": "  crp provider <command> [options]",
     "help.guide": "  crp guide [--json]",
+    "help.language": "  crp language [en|zh-CN] [--json]",
     "help.installCli": "  crp install-cli [--json]",
     "help.description.check": "Inspect local Codex and legacy CRP configuration.",
     "help.description.ui": "Start the Supervisor if needed and open the local management UI.",
@@ -148,6 +154,7 @@ export const CLI_MESSAGES = Object.freeze({
     "help.description.update": "Check for or install the latest global npm release.",
     "help.description.provider": "Provider commands manage named upstream profiles.",
     "help.description.guide": "Show the recommended provider and lifecycle flow.",
+    "help.description.language": "Show or persist the language used by future CLI commands.",
     "help.description.installCli": "Install the deprecated local command shim.",
     "help.provider.list": "  crp provider list [--json]",
     "help.provider.presets": "  crp provider presets [--json]",
@@ -183,6 +190,11 @@ export const CLI_MESSAGES = Object.freeze({
     "validation.localeDuplicate": "The --locale option may only be provided once.",
     "validation.localeRequired": "The --locale option requires en or zh-CN.",
     "validation.localeUnsupported": "The --locale option supports only en or zh-CN.",
+    "validation.languageOption": "The language command accepts only en, zh-CN, and --json.",
+    "language.current": "CLI language: {language}.",
+    "language.changed": "CLI language changed to {language}.",
+    "language.name.en": "English",
+    "language.name.zh-CN": "Simplified Chinese",
     "validation.captureAction": "Unknown capture action.",
     "validation.captureOption": "The capture command contains an unsupported option.",
     "validation.versionOption": "The version command contains an unsupported option.",
@@ -352,6 +364,7 @@ export const CLI_MESSAGES = Object.freeze({
     "help.update": "  crp update [--check] [--json]",
     "help.provider": "  crp provider <command> [options]",
     "help.guide": "  crp guide [--json]",
+    "help.language": "  crp language [en|zh-CN] [--json]",
     "help.installCli": "  crp install-cli [--json]",
     "help.description.check": "检查本地 Codex 和旧版 CRP 配置。",
     "help.description.ui": "按需启动监督进程并打开本地管理页面。",
@@ -365,6 +378,7 @@ export const CLI_MESSAGES = Object.freeze({
     "help.description.update": "检查或安装最新的全局 npm 版本。",
     "help.description.provider": "提供商命令用于管理具名上游配置。",
     "help.description.guide": "显示推荐的提供商和生命周期流程。",
+    "help.description.language": "查看或保存后续 CLI 命令使用的语言。",
     "help.description.installCli": "安装已弃用的本地命令入口。",
     "help.provider.list": "  crp provider list [--json]",
     "help.provider.presets": "  crp provider presets [--json]",
@@ -400,6 +414,11 @@ export const CLI_MESSAGES = Object.freeze({
     "validation.localeDuplicate": "--locale 选项只能提供一次。",
     "validation.localeRequired": "--locale 选项需要 en 或 zh-CN。",
     "validation.localeUnsupported": "--locale 选项仅支持 en 或 zh-CN。",
+    "validation.languageOption": "language 命令仅接受 en、zh-CN 和 --json。",
+    "language.current": "CLI 语言：{language}。",
+    "language.changed": "CLI 语言已切换为{language}。",
+    "language.name.en": "英文",
+    "language.name.zh-CN": "简体中文",
     "validation.captureAction": "未知的 capture 操作。",
     "validation.captureOption": "capture 命令包含不支持的选项。",
     "validation.versionOption": "version 命令包含不支持的选项。",
@@ -538,6 +557,65 @@ function normalizeLocale(value) {
   return null;
 }
 
+function readCliPreference(path) {
+  try {
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > 1_024) return null;
+    const document = JSON.parse(readFileSync(path, "utf8"));
+    if (document === null || typeof document !== "object" || Array.isArray(document)
+      || Object.keys(document).length !== 2
+      || document.schemaVersion !== 1
+      || !Object.hasOwn(document, "locale")) {
+      return null;
+    }
+    return document.locale === "en" || document.locale === "zh-CN"
+      ? document.locale
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCliPreference(path, locale, {
+  createId = randomUUID,
+  fileOperations = {
+    chmodSync,
+    closeSync,
+    fchmodSync,
+    fsyncSync,
+    mkdirSync,
+    openSync,
+    renameSync,
+    rmSync,
+    writeFileSync
+  }
+} = {}) {
+  if (locale !== "en" && locale !== "zh-CN") {
+    throw cliInputError("validation.languageOption");
+  }
+  const parent = dirname(path);
+  fileOperations.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  try { fileOperations.chmodSync(parent, 0o700); } catch {}
+  const bytes = `${JSON.stringify({ schemaVersion: 1, locale }, null, 2)}\n`;
+  const tempPath = resolve(parent, `.cli-preferences.${createId()}.tmp`);
+  let descriptor;
+  try {
+    descriptor = fileOperations.openSync(tempPath, "wx", 0o600);
+    fileOperations.writeFileSync(descriptor, bytes, "utf8");
+    fileOperations.fsyncSync(descriptor);
+    fileOperations.fchmodSync(descriptor, 0o600);
+    fileOperations.closeSync(descriptor);
+    descriptor = undefined;
+    fileOperations.renameSync(tempPath, path);
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { fileOperations.closeSync(descriptor); } catch {}
+    }
+    try { fileOperations.rmSync(tempPath, { force: true }); } catch {}
+    throw error;
+  }
+}
+
 function cliInputError(messageKey, values = {}) {
   const contract = CLI_ERROR_CONTRACTS.CLI_INPUT_INVALID;
   const error = new CrpError(
@@ -551,7 +629,7 @@ function cliInputError(messageKey, values = {}) {
   return error;
 }
 
-function resolveCliLocale(argv, environment = process.env) {
+function resolveCliLocale(argv, environment = process.env, savedLocale = null) {
   const stripped = [];
   let explicit = null;
   for (let index = 0; index < argv.length; index += 1) {
@@ -572,13 +650,12 @@ function resolveCliLocale(argv, environment = process.env) {
     if (locale === null) throw cliInputError("validation.localeUnsupported");
     return { argv: stripped, locale, explicit: true };
   }
-  const detected = [
-    environment?.CRP_LOCALE,
-    environment?.LC_ALL,
-    environment?.LC_MESSAGES,
-    environment?.LANG
-  ].map(normalizeLocale).find(Boolean);
-  return { argv: stripped, locale: detected ?? "en", explicit: false };
+  const environmentLocale = normalizeLocale(environment?.CRP_LOCALE);
+  return {
+    argv: stripped,
+    locale: environmentLocale ?? savedLocale ?? "en",
+    explicit: false
+  };
 }
 
 function cliMessage(locale, key, values = {}) {
@@ -780,6 +857,7 @@ function printHelp(writeLine = (line) => console.log(line), locale = "en") {
     ["help.capture", "help.description.capture"],
     ["help.version", "help.description.version"],
     ["help.update", "help.description.update"],
+    ["help.language", "help.description.language"],
     ["help.check", "help.description.check"],
     ["help.guide", "help.description.guide"]
   ].map(([syntaxKey, descriptionKey]) => [
@@ -1811,6 +1889,47 @@ function writePayload(options, payload, stdout, humanMessage) {
     return;
   }
   stdout(`${humanMessage}\n`);
+}
+
+function languageCommand(argv, { paths, locale, stdout }) {
+  const options = { json: false };
+  const positional = [];
+  for (const token of argv.slice(1)) {
+    if (token === "--json") {
+      if (options.json) throw cliInputError("validation.languageOption");
+      options.json = true;
+    } else if (token.startsWith("--")) {
+      throw cliInputError("validation.languageOption");
+    } else {
+      positional.push(token);
+    }
+  }
+  if (positional.length > 1) throw cliInputError("validation.languageOption");
+  if (positional.length === 0) {
+    writePayload(options, {
+      ok: true,
+      command: "language",
+      locale,
+      persisted: readCliPreference(paths.cliPreferencesPath) === locale
+    }, stdout, cliMessage(locale, "language.current", {
+      language: cliMessage(locale, `language.name.${locale}`)
+    }));
+    return;
+  }
+  const requested = positional[0];
+  const nextLocale = requested === "zh" || requested === "zh-CN"
+    ? "zh-CN"
+    : requested === "en" ? "en" : null;
+  if (nextLocale === null) throw cliInputError("validation.languageOption");
+  writeCliPreference(paths.cliPreferencesPath, nextLocale);
+  writePayload(options, {
+    ok: true,
+    command: "language",
+    locale: nextLocale,
+    persisted: true
+  }, stdout, cliMessage(nextLocale, "language.changed", {
+    language: cliMessage(nextLocale, `language.name.${nextLocale}`)
+  }));
 }
 
 function writeHumanProviderAdd(result, locale, stdout) {
@@ -3306,7 +3425,11 @@ export async function runCli(argv, {
   const jsonIntent = argv.includes("--json");
   let commandName = safeCommandName(argv);
   try {
-    const resolved = resolveCliLocale(argv, environment);
+    const resolved = resolveCliLocale(
+      argv,
+      environment,
+      readCliPreference(paths.cliPreferencesPath)
+    );
     argv = resolved.argv;
     locale = resolved.locale;
     commandName = safeCommandName(argv);
@@ -3321,6 +3444,10 @@ export async function runCli(argv, {
     }
     if (REMOVED_CLI_COMMANDS.has(argv[0])) {
       throw removedCommandError(argv[0], REMOVED_CLI_COMMANDS.get(argv[0]));
+    }
+    if (argv[0] === "language") {
+      languageCommand(argv, { paths, locale, stdout });
+      return 0;
     }
     const handled = await dispatchSupervisorCommand(argv, {
       paths,

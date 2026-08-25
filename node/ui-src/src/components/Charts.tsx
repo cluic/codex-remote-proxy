@@ -294,7 +294,13 @@ export const TrendExplorer = memo(function TrendExplorer({
           )}
 
           {grouped.map((point, index) => xLabelIndexes.has(index) ? (
-            <text className="chart-axis-label" x={x(index)} y={height - 12} textAnchor="middle" key={point.start}>
+            <text
+              className="chart-axis-label"
+              x={x(index)}
+              y={height - 12}
+              textAnchor={index === 0 ? "start" : index === grouped.length - 1 ? "end" : "middle"}
+              key={point.start}
+            >
               {bucketLabel(locale, point.start)}
             </text>
           ) : null)}

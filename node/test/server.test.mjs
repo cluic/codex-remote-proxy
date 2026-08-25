@@ -93,6 +93,7 @@ function makeSettings({
   providers = null,
   providerPriorityRules = [],
   routingMode = "custom_only",
+  access = null,
   accountState = {
     authMode: null,
     quotaStatus: "unknown",
@@ -139,6 +140,7 @@ function makeSettings({
       enabled: captureEnabled,
       dbPath: "/tmp/crp-task5-traffic.sqlite3"
     },
+    ...(access === null ? {} : { access }),
     routing: {
       mode: routingMode,
       accountRevision: 1,
@@ -299,6 +301,130 @@ test("buildTargetUrl preserves base query parameters without forwarding fragment
     ).href,
     "https://api.example.test/v1/responses?tenant=one%20two&model=gpt%2F5"
   );
+});
+
+test("public proxy construction requires client API key authentication", () => {
+  const settings = makeSettings({
+    baseUrl: "https://provider.example/v1",
+    captureEnabled: false,
+    access: {
+      enabled: false,
+      dbPath: "/tmp/access-keys.sqlite3",
+      localToken: "L".repeat(43)
+    }
+  });
+  settings.server.host = "0.0.0.0";
+  assert.throws(
+    () => createServer(settings, { captureManager: createInactiveCaptureManager() }),
+    /requires API key authentication/
+  );
+});
+
+test("client API key authentication strips access credentials and preserves local Codex access", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((req, res) => {
+    observed.push({
+      authorization: req.headers.authorization ?? null,
+      accountId: req.headers["chatgpt-account-id"] ?? null,
+      accessKey: req.headers["x-crp-api-key"] ?? null,
+      localToken: req.headers["x-crp-local-token"] ?? null
+    });
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(completedResponse()));
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  const localToken = "L".repeat(43);
+  const validKey = "crp_valid_client_key_0123456789";
+  const authorizationCalls = [];
+  const accessKeyStore = {
+    authorize(secret) {
+      authorizationCalls.push(secret);
+      return secret === validKey
+        ? { ok: true, keyId: "key-1", requestCount: authorizationCalls.length, requestLimit: null }
+        : { ok: false, code: "API_KEY_INVALID", status: 401 };
+    }
+  };
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    captureEnabled: false,
+    access: {
+      enabled: true,
+      dbPath: "/tmp/access-keys.sqlite3",
+      localToken
+    },
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const proxy = createServer(settings, {
+    captureManager: createInactiveCaptureManager(),
+    accessKeyStore,
+    resolveAccountTarget() {
+      assert.fail("a CRP bearer key must not be treated as ChatGPT authorization");
+    },
+    logFn: () => {}
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const url = `http://127.0.0.1:${proxyPort}/responses`;
+
+  const missing = await fetch(url, { method: "POST", body: "{}" });
+  assert.equal(missing.status, 401);
+  assert.equal((await missing.json()).error.code, "API_KEY_REQUIRED");
+
+  const invalid = await fetch(url, {
+    method: "POST",
+    headers: { "x-crp-api-key": "crp_invalid_client_key_012345" },
+    body: "{}"
+  });
+  assert.equal(invalid.status, 401);
+  assert.equal((await invalid.json()).error.code, "API_KEY_INVALID");
+
+  const dedicated = await fetch(url, {
+    method: "POST",
+    headers: { "x-crp-api-key": validKey },
+    body: "{}"
+  });
+  assert.equal(dedicated.status, 200);
+  await dedicated.arrayBuffer();
+
+  const bearer = await fetch(url, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${validKey}`,
+      "chatgpt-account-id": "account-id-that-must-not-route"
+    },
+    body: "{}"
+  });
+  assert.equal(bearer.status, 200);
+  await bearer.arrayBuffer();
+
+  const local = await fetch(url, {
+    method: "POST",
+    headers: { "x-crp-local-token": localToken },
+    body: "{}"
+  });
+  assert.equal(local.status, 200);
+  await local.arrayBuffer();
+
+  const health = await fetch(`http://127.0.0.1:${proxyPort}/_proxy/health`);
+  assert.equal(health.status, 200);
+  await health.arrayBuffer();
+
+  assert.deepEqual(authorizationCalls, ["crp_invalid_client_key_012345", validKey, validKey]);
+  assert.equal(observed.length, 3);
+  for (const headers of observed) {
+    assert.equal(headers.accountId, null);
+    assert.equal(headers.accessKey, null);
+    assert.equal(headers.localToken, null);
+  }
+  assert.equal(observed[1].authorization, "Bearer test-api-key");
 });
 
 test("custom-only routing strips Codex account credentials before nonstandard provider auth", async (t) => {
@@ -1513,6 +1639,12 @@ test("standalone config defaults model passthrough and rejects unsafe overrides"
     (({ modelMode, modelOverride }) => ({ modelMode, modelOverride }))(loadConfig(configPath).proxy),
     { modelMode: "passthrough", modelOverride: null }
   );
+
+  writeFileSync(configPath, JSON.stringify({
+    ...base,
+    server: { host: "0.0.0.0" }
+  }));
+  assert.throws(() => loadConfig(configPath), /standalone server\.host/);
 
   writeFileSync(configPath, JSON.stringify({
     ...base,

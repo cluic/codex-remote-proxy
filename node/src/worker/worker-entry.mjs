@@ -129,6 +129,7 @@ async function closeResources() {
       resourceClosePromise = new Promise((resolvePromise) => app.server.close(resolvePromise));
     } else {
       app.captureManager.close();
+      app.accessKeyStore?.close();
       resourceClosePromise = Promise.resolve();
     }
   }
@@ -225,6 +226,7 @@ function forceCloseResources() {
   app.server.closeIdleConnections?.();
   app.server.closeAllConnections?.();
   app.captureManager.close();
+  app.accessKeyStore?.close();
 }
 
 async function performParentDisconnectCleanup() {

@@ -97,6 +97,24 @@ test("patchCodexConfigText creates the fixed OpenAI provider and preserves custo
   assert.equal(twice, once);
 });
 
+test("patchCodexConfigText manages a separate local CRP header without replacing OpenAI auth", () => {
+  const localToken = "A".repeat(43);
+  const patched = patchCodexConfigText(
+    "model = \"gpt-test\"\n",
+    "http://127.0.0.1:15100",
+    localToken
+  );
+  assert.match(patched, /^requires_openai_auth = true$/m);
+  assert.match(
+    patched,
+    new RegExp(`^http_headers\\.\"x-crp-local-token\" = \"${localToken}\"$`, "m")
+  );
+  assert.equal(
+    patchCodexConfigText(patched, "http://127.0.0.1:15100", localToken),
+    patched
+  );
+});
+
 test("patchCodexConfigText updates every fixed OpenAI provider field", () => {
   const original = [
     'model_provider = "legacy"',
@@ -2099,6 +2117,9 @@ test("getPaths derives every managed path from the injected home", () => {
       ".codex-remote-proxy",
       "provider-model-cache.json"
     ),
+    accessKeyDbPath: resolve(injectedHome, ".codex-remote-proxy", "access-keys.sqlite3"),
+    localAccessTokenPath: resolve(injectedHome, ".codex-remote-proxy", "local-access-token"),
+    cliPreferencesPath: resolve(injectedHome, ".codex-remote-proxy", "cli-preferences.json"),
     secretFallbackPath: resolve(injectedHome, ".codex-remote-proxy", "secrets.json"),
     statePath: resolve(injectedHome, ".codex-remote-proxy", "state.json"),
     controlTokenPath: resolve(injectedHome, ".codex-remote-proxy", "control-token"),

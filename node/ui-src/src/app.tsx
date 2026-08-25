@@ -25,6 +25,8 @@ import { RoutingRulesPage } from "./pages/RoutingRules";
 import { SetupPage } from "./pages/Setup";
 import { SystemPage } from "./pages/System";
 import type {
+  AccessKeyInput,
+  AccessKeyPatch,
   AccessMode,
   ActivityPageData,
   BootstrapResult,
@@ -141,6 +143,7 @@ export function App() {
         providerPresets,
         modelMappingGroups,
         routingRuleGroups,
+        accessKeys,
         settings,
         nextActivity
       ] = await Promise.all([
@@ -149,6 +152,7 @@ export function App() {
         api.listProviderPresets(controller.signal),
         api.listModelMappingGroups(controller.signal),
         api.listRoutingRuleGroups(controller.signal),
+        api.listAccessKeys(controller.signal),
         api.getSettings(controller.signal),
         api.getActivity(0, controller.signal)
       ]);
@@ -159,6 +163,7 @@ export function App() {
         providerPresets,
         modelMappingGroups,
         routingRuleGroups,
+        accessKeys,
         settings
       };
       setWorkspace(nextWorkspace);
@@ -568,6 +573,49 @@ export function App() {
     );
   }, [api, executeMutation]);
 
+  const updateApiKeyAuthEnabled = useCallback((apiKeyAuthEnabled: boolean) => {
+    void executeMutation(
+      "api-key-auth-setting",
+      () => api.updateApiKeyAuthEnabled(apiKeyAuthEnabled),
+      apiKeyAuthEnabled ? "notice.apiKeyAuthEnabled" : "notice.apiKeyAuthDisabled"
+    );
+  }, [api, executeMutation]);
+
+  const updateProxyHost = useCallback((proxyHost: "127.0.0.1" | "0.0.0.0") => {
+    void executeMutation(
+      "proxy-host-setting",
+      () => api.updateProxyHost(proxyHost),
+      "notice.proxyHostUpdated"
+    );
+  }, [api, executeMutation]);
+
+  const createAccessKey = useCallback(async (input: AccessKeyInput): Promise<boolean> => (
+    await executeMutation(
+      "access-key-create",
+      () => api.createAccessKey(input),
+      "notice.accessKeyCreated"
+    ) !== null
+  ), [api, executeMutation]);
+
+  const updateAccessKey = useCallback(async (
+    id: string,
+    patch: AccessKeyPatch
+  ): Promise<boolean> => (
+    await executeMutation(
+      `access-key-update-${id}`,
+      () => api.updateAccessKey(id, patch),
+      "notice.accessKeyUpdated"
+    ) !== null
+  ), [api, executeMutation]);
+
+  const deleteAccessKey = useCallback(async (id: string): Promise<boolean> => (
+    await executeMutation(
+      `access-key-delete-${id}`,
+      () => api.deleteAccessKey(id),
+      "notice.accessKeyDeleted"
+    ) !== null
+  ), [api, executeMutation]);
+
   const loadForwardingRecords = useCallback(async (
     query: ForwardingRecordsQuery,
     signal?: AbortSignal
@@ -846,6 +894,7 @@ export function App() {
           t={t}
           status={workspace.status}
           settings={workspace.settings}
+          accessKeys={workspace.accessKeys}
           activeProvider={workspace.status.activeProvider}
           metrics={metrics}
           readOnly={readOnly}
@@ -855,6 +904,11 @@ export function App() {
           onRefreshAccount={refreshAccount}
           onRoutingModeChange={updateRoutingMode}
           onAutoStartChange={updateAutoStartEnabled}
+          onApiKeyAuthChange={updateApiKeyAuthEnabled}
+          onProxyHostChange={updateProxyHost}
+          onCreateAccessKey={createAccessKey}
+          onUpdateAccessKey={updateAccessKey}
+          onDeleteAccessKey={deleteAccessKey}
         />
       ) : null}
       {route === "setup" ? (

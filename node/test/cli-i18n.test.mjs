@@ -2,11 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 
 import * as crpCli from "../bin/crp.mjs";
 import { CrpError } from "../src/shared/errors.mjs";
+import { getPaths } from "../src/shared/paths.mjs";
 
 const { runCli } = crpCli;
+let invocationSequence = 0;
 
 function adminStatus() {
   return {
@@ -50,6 +53,7 @@ async function invokeCli(args, overrides = {}) {
   const status = await runCli(args, {
     stdout: (text) => stdout.push(text),
     stderr: (text) => stderr.push(text),
+    paths: getPaths(join(tmpdir(), `crp-cli-i18n-${process.pid}-${++invocationSequence}`)),
     ...overrides
   });
   return { status, stdout: stdout.join(""), stderr: stderr.join("") };
@@ -68,11 +72,12 @@ test("explicit locale works anywhere and normalizes common Chinese tags", async 
   }
 });
 
-test("CLI follows supported system locale variables and falls back to English", async () => {
+test("CLI defaults to English and only the explicit CRP locale environment override applies", async () => {
   const cases = [
     [{ CRP_LOCALE: "en_US.UTF-8", LC_ALL: "zh_CN", LC_MESSAGES: "zh_CN", LANG: "zh_CN" }, "CRP supervisor is not running.\n"],
-    [{ CRP_LOCALE: "fr-FR", LC_ALL: "zh_CN.UTF-8", LC_MESSAGES: "en_US", LANG: "en_US" }, "CRP 监督进程未运行。\n"],
-    [{ CRP_LOCALE: "fr", LC_ALL: "de", LC_MESSAGES: "zh-Hans", LANG: "en_US" }, "CRP 监督进程未运行。\n"],
+    [{ CRP_LOCALE: "zh-CN", LC_ALL: "en_US", LANG: "en_US" }, "CRP 监督进程未运行。\n"],
+    [{ CRP_LOCALE: "fr-FR", LC_ALL: "zh_CN.UTF-8", LC_MESSAGES: "zh_CN", LANG: "zh_CN" }, "CRP supervisor is not running.\n"],
+    [{ LC_ALL: "zh_CN.UTF-8", LC_MESSAGES: "zh-Hans", LANG: "zh_CN" }, "CRP supervisor is not running.\n"],
     [{ CRP_LOCALE: "fr", LC_ALL: "de", LC_MESSAGES: "ja", LANG: "en_GB@calendar" }, "CRP supervisor is not running.\n"],
     [{ CRP_LOCALE: "fr", LC_ALL: "de", LC_MESSAGES: "ja", LANG: "ko" }, "CRP supervisor is not running.\n"]
   ];
@@ -86,6 +91,38 @@ test("CLI follows supported system locale variables and falls back to English", 
     assert.equal(result.stdout, expected);
     assert.equal(result.stderr, "");
   }
+});
+
+test("language command persists Chinese and can switch future CLI output back to English", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "crp-cli-language-"));
+  const paths = getPaths(home);
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const dependencies = {
+    paths,
+    environment: { LANG: "en_US.UTF-8" },
+    discoverSupervisorImpl: async () => null
+  };
+
+  const chinese = await invokeCli(["language", "zh"], dependencies);
+  assert.equal(chinese.status, 0, chinese.stderr);
+  assert.equal(chinese.stdout, "CLI 语言已切换为简体中文。\n");
+  assert.deepEqual(JSON.parse(readFileSync(paths.cliPreferencesPath, "utf8")), {
+    schemaVersion: 1,
+    locale: "zh-CN"
+  });
+  const afterChinese = await invokeCli(["status"], dependencies);
+  assert.equal(afterChinese.stdout, "CRP 监督进程未运行。\n");
+
+  const english = await invokeCli(["language", "en", "--json"], dependencies);
+  assert.equal(english.status, 0, english.stderr);
+  assert.deepEqual(JSON.parse(english.stdout), {
+    ok: true,
+    command: "language",
+    locale: "en",
+    persisted: true
+  });
+  const afterEnglish = await invokeCli(["status"], dependencies);
+  assert.equal(afterEnglish.stdout, "CRP supervisor is not running.\n");
 });
 
 test("explicit locale selects Chinese and invalid explicit input fails before discovery", async () => {

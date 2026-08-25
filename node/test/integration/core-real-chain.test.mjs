@@ -24,6 +24,7 @@ const PROXY_PORT = 15100;
 const ADMIN_PORT = 15101;
 const SECRET_A = "crp-core-chain-provider-a-complete-secret-sentinel";
 const SECRET_B = "crp-core-chain-provider-b-complete-secret-sentinel";
+const LOCAL_ACCESS_TOKEN = "A".repeat(43);
 const SECRETS = [SECRET_A, SECRET_B];
 const EXPECTED_CONFIG = [
   'model_provider = "OpenAI"',
@@ -33,6 +34,7 @@ const EXPECTED_CONFIG = [
   'base_url = "http://127.0.0.1:15100"',
   'wire_api = "responses"',
   "requires_openai_auth = true",
+  `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
   ""
 ].join("\n");
 
@@ -244,7 +246,8 @@ test("real CLI core chain switches in-flight traffic and restarts on the fixed p
   ]);
   supervisor = await createSupervisor({
     home,
-    credentialStoreFactory: () => credentials
+    credentialStoreFactory: () => credentials,
+    privateTokenLoader: () => LOCAL_ACCESS_TOKEN
   });
   const address = await supervisor.listen();
   supervisorAlive = true;

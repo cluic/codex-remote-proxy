@@ -16,6 +16,7 @@ import { CrpError } from "../../src/shared/errors.mjs";
 
 const SECRET = "admin-api-complete-secret-sentinel";
 const CREDENTIAL_REF = "credential-ref-must-not-pass";
+const LOCAL_ACCESS_TOKEN = "A".repeat(43);
 const NO_HISTORY_REPAIR = Object.freeze({
   required: false,
   completed: false,
@@ -309,6 +310,9 @@ function createServices() {
     }
   };
   const activityStore = {
+    async append(event) {
+      calls.push(["appendActivity", event]);
+    },
     list({ limit }) {
       calls.push(["activity", limit]);
       return Array.from({ length: 8 }, (_, index) => ({
@@ -330,6 +334,7 @@ function createServices() {
         proxyPort: 15100,
         adminHost: "127.0.0.1",
         adminPort: 15101,
+        apiKeyAuthEnabled: false,
         captureEnabled: false,
         routingMode: "custom_only",
         credentialBackend: "native",
@@ -343,6 +348,45 @@ function createServices() {
     async updateSettings(patch) {
       calls.push(["updateSettings", patch]);
       return { ...(await this.getSettings()), ...patch };
+    }
+  };
+  const accessKeys = [];
+  const accessKeyService = {
+    list() {
+      calls.push(["listAccessKeys"]);
+      return structuredClone(accessKeys);
+    },
+    get(id) {
+      calls.push(["getAccessKey", id]);
+      return structuredClone(accessKeys.find((key) => key.id === id));
+    },
+    create(input) {
+      calls.push(["createAccessKey", input]);
+      const key = {
+        id: "access-key-1",
+        name: input.name,
+        keyHint: "crp_…test",
+        enabled: true,
+        expiresAt: input.expiresAt,
+        requestLimit: input.requestLimit,
+        requestCount: 0,
+        createdAt: "2026-07-13T00:00:00.000Z",
+        updatedAt: "2026-07-13T00:00:00.000Z",
+        lastUsedAt: null
+      };
+      accessKeys.push(key);
+      return structuredClone(key);
+    },
+    update(id, patch) {
+      calls.push(["updateAccessKey", id, patch]);
+      const key = accessKeys.find((candidate) => candidate.id === id);
+      Object.assign(key, patch, { updatedAt: "2026-07-13T00:01:00.000Z" });
+      return structuredClone(key);
+    },
+    delete(id) {
+      calls.push(["deleteAccessKey", id]);
+      const index = accessKeys.findIndex((key) => key.id === id);
+      return structuredClone(accessKeys.splice(index, 1)[0]);
     }
   };
   const codexState = {
@@ -539,6 +583,7 @@ function createServices() {
     calls,
     providerService,
     activityStore,
+    accessKeyService,
     settingsService,
     codexService,
     diagnosticsService,
@@ -640,7 +685,9 @@ function bearer(harness, extra = {}) {
 }
 
 function assertNoSensitiveResponse(result) {
-  const serialized = `${result.text}\n${JSON.stringify(result.json)}`;
+  const serialized = `${result.text}\n${JSON.stringify(result.json)}`
+    .replaceAll("apiKeyAuthEnabled", "clientAuthEnabled")
+    .replaceAll("apiKeyAuthRequired", "clientAuthRequired");
   for (const forbidden of [SECRET, CREDENTIAL_REF, "credentialRef", "apiKey", "backupPath"]) {
     assert.equal(serialized.includes(forbidden), false, `response leaked ${forbidden}`);
   }
@@ -1200,6 +1247,8 @@ test("projects start-at-login state and validates its settings mutation", async 
     proxyPort: 15100,
     adminHost: "127.0.0.1",
     adminPort: 15101,
+    apiKeyAuthEnabled: false,
+    apiKeyAuthRequired: false,
     captureEnabled: false,
     routingMode: "custom_only",
     credentialBackend: "native",
@@ -1223,6 +1272,119 @@ test("projects start-at-login state and validates its settings mutation", async 
     assert.equal(result.json.error.code, "API_BODY_INVALID");
     assertNoSensitiveResponse(result);
   }
+});
+
+test("client API key routes are write-only and project bounded lifecycle metadata", async (t) => {
+  const harness = await createHarness(t);
+  const headers = { ...bearer(harness), "content-type": "application/json" };
+  const created = await harness.request("/api/v1/access-keys", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      accessKey: {
+        name: "Automation",
+        secret: SECRET,
+        expiresAt: "2030-01-01T00:00:00.000Z",
+        requestLimit: 1000
+      }
+    })
+  });
+  assert.equal(created.response.status, 201, created.text);
+  assert.deepEqual(created.json.accessKey, {
+    id: "access-key-1",
+    name: "Automation",
+    keyHint: "crp_…test",
+    enabled: true,
+    expiresAt: "2030-01-01T00:00:00.000Z",
+    requestLimit: 1000,
+    requestCount: 0,
+    createdAt: "2026-07-13T00:00:00.000Z",
+    updatedAt: "2026-07-13T00:00:00.000Z",
+    lastUsedAt: null
+  });
+  assert.equal(created.text.includes(SECRET), false);
+  assert.equal(Object.hasOwn(created.json.accessKey, "secret"), false);
+
+  const listed = await harness.request("/api/v1/access-keys", { headers: bearer(harness) });
+  assert.equal(listed.response.status, 200);
+  assert.equal(listed.json.accessKeys.length, 1);
+  assert.equal(listed.text.includes(SECRET), false);
+
+  const updated = await harness.request("/api/v1/access-keys/access-key-1", {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ accessKey: { enabled: false, requestLimit: null } })
+  });
+  assert.equal(updated.response.status, 200);
+  assert.equal(updated.json.accessKey.enabled, false);
+  assert.equal(updated.json.accessKey.requestLimit, null);
+
+  const deleted = await harness.request("/api/v1/access-keys/access-key-1", {
+    method: "DELETE",
+    headers: bearer(harness)
+  });
+  assert.equal(deleted.response.status, 200);
+  assert.equal(deleted.json.accessKey.id, "access-key-1");
+
+  const createCall = harness.calls.find((call) => call[0] === "createAccessKey");
+  assert.equal(createCall[1].secret, SECRET);
+  assert.deepEqual(
+    harness.calls.find((call) => call[0] === "updateAccessKey"),
+    ["updateAccessKey", "access-key-1", { enabled: false, requestLimit: null }]
+  );
+  assert.deepEqual(
+    harness.calls.find((call) => call[0] === "deleteAccessKey"),
+    ["deleteAccessKey", "access-key-1"]
+  );
+});
+
+test("client API key mutations remain successful when Activity throws synchronously", async (t) => {
+  const harness = await createHarness(t, {
+    activityStore: {
+      list() { return []; },
+      append() { throw new Error("injected synchronous Activity failure"); }
+    }
+  });
+  const created = await harness.request("/api/v1/access-keys", {
+    method: "POST",
+    headers: { ...bearer(harness), "content-type": "application/json" },
+    body: JSON.stringify({
+      accessKey: {
+        name: "Audit independent",
+        secret: SECRET,
+        expiresAt: null,
+        requestLimit: null
+      }
+    })
+  });
+  assert.equal(created.response.status, 201, created.text);
+  assert.equal(created.text.includes(SECRET), false);
+  assert.equal(created.json.accessKey.name, "Audit independent");
+});
+
+test("client API key projections bound public request counters", async (t) => {
+  const harness = await createHarness(t, {
+    accessKeyService: {
+      list() {
+        return [{
+          id: "bounded-key",
+          name: "Bounded",
+          keyHint: "crp_…test",
+          enabled: true,
+          expiresAt: null,
+          requestLimit: 1_000_000_000_001,
+          requestCount: -1,
+          createdAt: "2026-07-13T00:00:00.000Z",
+          updatedAt: "2026-07-13T00:00:00.000Z",
+          lastUsedAt: null
+        }];
+      }
+    }
+  });
+  const listed = await harness.request("/api/v1/access-keys", { headers: bearer(harness) });
+  assert.equal(listed.response.status, 200, listed.text);
+  assert.equal(listed.json.accessKeys[0].requestLimit, null);
+  assert.equal(listed.json.accessKeys[0].requestCount, 0);
 });
 
 test("accepts only a single bounded integer provider weight", async (t) => {
@@ -2059,6 +2221,7 @@ function supervisorDependencies(t, {
     proxyPort: 15100,
     adminHost: "127.0.0.1",
     adminPort: 15101,
+    apiKeyAuthEnabled: false,
     captureEnabled: false
   } }) };
   const provider = { getStatus: async () => ({ worker: workerState() }) };
@@ -2111,6 +2274,14 @@ function supervisorDependencies(t, {
     paths,
     pid: 4242,
     now: () => "2026-07-13T03:00:00.000Z",
+    privateTokenLoader: ({ path }) => {
+      assert.equal(path, paths.localAccessTokenPath);
+      return LOCAL_ACCESS_TOKEN;
+    },
+    accessKeyStoreFactory: ({ path }) => {
+      assert.equal(path, paths.accessKeyDbPath);
+      return { list: () => [], close() {} };
+    },
     activityStoreFactory: ({ path }) => {
       order.push("activity");
       assert.equal(path, paths.activityPath);
@@ -2401,6 +2572,7 @@ test("Supervisor Codex status is configured only when matching config has no pen
     'base_url = "http://127.0.0.1:15100"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n"));
   let pending = true;
@@ -2464,6 +2636,7 @@ test("Supervisor Codex status rechecks pending state after reading config", asyn
     'base_url = "http://127.0.0.1:15100"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n"));
   let checks = 0;
@@ -2506,6 +2679,7 @@ test("Supervisor Codex status strictly rejects ambiguous, malformed, and symlink
     'base_url = "http://127.0.0.1:15100"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n");
   const historyRepair = {
@@ -2540,6 +2714,7 @@ test("Supervisor Codex status strictly rejects ambiguous, malformed, and symlink
     'model_providers.OpenAI.base_url = "http://127.0.0.1:15100"',
     'model_providers.OpenAI.wire_api = "responses"',
     "model_providers.OpenAI.requires_openai_auth = true",
+    `model_providers.OpenAI.http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n"), "utf8");
   assert.equal((await codexService.getStatus()).configured, true);
@@ -2595,6 +2770,7 @@ test("Supervisor Codex status uses no-follow descriptors and rejects a read iden
     'base_url = "http://127.0.0.1:15100"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n");
   let configDescriptor;
@@ -2685,6 +2861,7 @@ test("Supervisor serializes bootstrap and Worker readiness through one Codex gat
     'base_url = "http://127.0.0.1:15100"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n");
   const bootstrapStarted = createGate();
@@ -2755,6 +2932,7 @@ test("Supervisor injects strict Codex readiness around unexpected-exit recovery"
     'base_url = "http://127.0.0.1:15100"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n"), "utf8");
   assert.equal(await runRecoveryWhenReady(async () => {
@@ -2777,6 +2955,7 @@ test("Supervisor Codex gate recovers after bootstrap and readiness operation fai
     'base_url = "http://127.0.0.1:15100"',
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    `http_headers."x-crp-local-token" = "${LOCAL_ACCESS_TOKEN}"`,
     ""
   ].join("\n");
   const privateFailure = new Error("private bootstrap failure");

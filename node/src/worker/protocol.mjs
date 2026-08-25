@@ -47,6 +47,7 @@ const SETTINGS_FIELDS = new Set([
   "upstream",
   "proxy",
   "capture",
+  "access",
   "routing"
 ]);
 const SERVER_FIELDS = new Set(["host", "port", "logLevel"]);
@@ -77,6 +78,7 @@ const PROXY_FIELDS = new Set([
 ]);
 const MODEL_MAPPING_RULE_FIELDS = new Set(["sourceModel", "targetModel"]);
 const CAPTURE_FIELDS = new Set(["enabled", "dbPath"]);
+const ACCESS_FIELDS = new Set(["enabled", "dbPath", "localToken"]);
 const ROUTING_FIELDS = new Set([
   "mode",
   "accountRevision",
@@ -353,7 +355,7 @@ function validateRuntimeSettings(settings) {
     || !isNonEmptyString(settings.configPath)
     || !isPlainObject(settings.server)
     || !hasExactFields(settings.server, SERVER_FIELDS)
-    || settings.server.host !== "127.0.0.1"
+    || (settings.server.host !== "127.0.0.1" && settings.server.host !== "0.0.0.0")
     || !Number.isInteger(settings.server.port)
     || settings.server.port < 0
     || settings.server.port > 65535
@@ -388,6 +390,13 @@ function validateRuntimeSettings(settings) {
     || !hasExactFields(settings.capture, CAPTURE_FIELDS)
     || typeof settings.capture.enabled !== "boolean"
     || !isNonEmptyString(settings.capture.dbPath)
+    || !isPlainObject(settings.access)
+    || !hasExactFields(settings.access, ACCESS_FIELDS)
+    || typeof settings.access.enabled !== "boolean"
+    || (settings.server.host === "0.0.0.0" && settings.access.enabled !== true)
+    || !isNonEmptyString(settings.access.dbPath)
+    || typeof settings.access.localToken !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/.test(settings.access.localToken)
     || !isPlainObject(settings.routing)
     || !hasExactFields(settings.routing, ROUTING_FIELDS)
     || !ROUTING_MODES.has(settings.routing.mode)

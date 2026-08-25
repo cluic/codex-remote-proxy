@@ -86,6 +86,8 @@
 - Retryable POST routing may replay only before upstream delivery is possible; uncertain delivery must cool the provider for later requests.
 - Managed startup mutations must prove marker and inode identity, publish without clobber, disable through inert content, and preserve foreign paths and shared-directory modes.
 - Running provider pools must reject eligible configuration mutations unless the resulting snapshot is hot-applied and confirmed; failed probes must not invalidate a live snapshot.
+- Per-request runtime settings must be captured once and reused by authentication and routing.
+- Post-commit audit failures must report committed degradation or remain safely best-effort; they must not misreport the primary mutation as uncommitted.
 - Generic feature copy must describe the complete contract instead of naming incidental example models.
 - Generated UI verification must use the declared `verify:ui-build` package script.
 - UI validation helpers must not introduce non-loopback absolute URL literals.
@@ -93,6 +95,8 @@
 - Large route-specific payload allowances must not widen the global Admin request-body limit.
 - Composite form actions must align with the input control rather than a field wrapper that includes help text.
 - npm authentication and registry-version diagnostics must run as separate commands so one failure cannot suppress the other.
+- SQLite test fixtures must close every database handle before deleting their temporary directory.
+- SVG endpoint labels must anchor inward so platform font metrics cannot overflow the viewport.
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
 
 ## Required Checks
