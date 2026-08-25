@@ -350,7 +350,6 @@ test("worker configures once, proxies traffic, reports public state, and shuts d
 test("worker enforces durable client key limits while its local Codex token bypasses user quotas", async (t) => {
   const dir = makeTempDir("crp-worker-access");
   mkdirSync(dir, { recursive: true });
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const observedAccessHeaders = [];
   const upstream = http.createServer((req, res) => {
     observedAccessHeaders.push({
@@ -386,6 +385,7 @@ test("worker enforces durable client key limits while its local Codex token bypa
   writeFileSync(configPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 
   const worker = spawnWorker(t);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   await worker.waitForMessage((message) => message?.type === "ready", "worker ready");
   await sendMessage(worker.child, {
     version: 1,
