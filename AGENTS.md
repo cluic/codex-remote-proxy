@@ -100,6 +100,7 @@
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
 - Compact responsive route diagrams must preserve internal containment instead of relying on off-canvas horizontal overflow.
 - Conditional routing branches must default to a complete summary and disclose the full rail only after explicit expansion.
+- Collapsed controls must be materially shorter than the content they replace; hiding details without reducing chrome is prohibited.
 - Routing previews must share the live scheduler and label conditional fallbacks and predicted outlets without claiming a guaranteed final provider.
 
 ## Required Checks

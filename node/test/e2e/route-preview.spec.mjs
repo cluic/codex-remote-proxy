@@ -87,8 +87,10 @@ test("traces the live model route and its conditional account fallback", async (
   await expect(fallbackToggle).toContainText("vendor/gpt-5.6-sol");
   const fallbackLane = board.locator(".route-preview-fallback-lane");
   await expect(fallbackLane).not.toBeVisible();
+  const collapsedFallbackHeight = await fallbackToggle.evaluate((element) => element.getBoundingClientRect().height);
+  expect(collapsedFallbackHeight).toBeLessThanOrEqual(34);
   const collapsedDesktopHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
-  expect(collapsedDesktopHeight).toBeLessThanOrEqual(290);
+  expect(collapsedDesktopHeight).toBeLessThanOrEqual(276);
   await expect(board.locator(".route-preview-details")).not.toHaveAttribute("open", "");
 
   const desktopScreenshot = testInfo.outputPath("route-preview-account-fallback-1440x900.png");
@@ -126,7 +128,7 @@ test("traces the live model route and its conditional account fallback", async (
     getComputedStyle(element, "::after").animationName
   ))).toBe("route-flow-segment");
   const mobileBoardHeight = await board.evaluate((element) => element.getBoundingClientRect().height);
-  expect(mobileBoardHeight).toBeLessThanOrEqual(500);
+  expect(mobileBoardHeight).toBeLessThanOrEqual(410);
   await assertLayoutIntegrity(page);
   const mobileScreenshot = testInfo.outputPath("route-preview-account-fallback-390x844.png");
   crp.registerAttachment(mobileScreenshot);

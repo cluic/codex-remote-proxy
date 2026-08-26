@@ -453,12 +453,16 @@ export function RoutePreviewBoard({
                     aria-label={t(fallbackExpanded
                       ? "routePreview.collapseFallback"
                       : "routePreview.expandFallback")}
+                    title={t("routePreview.fallbackCondition")}
                     onClick={() => setFallbackExpanded((expanded) => !expanded)}
                   >
                     <span className="route-preview-fallback-icon" aria-hidden="true"><GitBranch /></span>
-                    <span className="route-preview-fallback-copy" id={`${fallbackId}-description`}>
-                      <strong>{t("routePreview.conditionalFallback")}</strong>
-                      <small>{t("routePreview.fallbackCondition")}</small>
+                    <strong className="route-preview-fallback-label">
+                      <span className="route-preview-fallback-label-full">{t("routePreview.conditionalFallback")}</span>
+                      <span className="route-preview-fallback-label-short">{t("routePreview.conditionalFallbackShort")}</span>
+                    </strong>
+                    <span className="visually-hidden" id={`${fallbackId}-description`}>
+                      {t("routePreview.fallbackCondition")}
                     </span>
                     <span className="route-preview-fallback-summary" id={`${fallbackId}-summary`}>
                       <span>{ruleTitle(preview, t)}</span>
@@ -474,6 +478,7 @@ export function RoutePreviewBoard({
                     aria-hidden={!fallbackExpanded}
                   >
                     <div className="route-preview-fallback-reveal-inner">
+                      <p className="route-preview-fallback-condition">{t("routePreview.fallbackCondition")}</p>
                       <div className="route-preview-fallback-lane">
                         <div className="route-preview-chain is-conditional">
                           <CustomRouteSteps
