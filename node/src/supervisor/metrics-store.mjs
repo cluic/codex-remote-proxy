@@ -16,9 +16,10 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-export const METRICS_SCHEMA_VERSION = 1;
+export const METRICS_SCHEMA_VERSION = 2;
 export const METRICS_BUCKET_MINUTES = 60;
 export const METRICS_RETENTION_BUCKETS = 7 * 24;
+export const METRICS_DAILY_RETENTION_DAYS = 84;
 export const METRICS_MAX_FILE_BYTES = 32 * 1024 * 1024;
 export const METRICS_LATENCY_BOUNDS_MS = Object.freeze([
   50,
@@ -37,6 +38,7 @@ export const METRICS_LATENCY_BOUNDS_MS = Object.freeze([
 
 const LATENCY_BIN_COUNT = METRICS_LATENCY_BOUNDS_MS.length + 1;
 const BUCKET_MS = METRICS_BUCKET_MINUTES * 60 * 1_000;
+const DAY_MS = 24 * 60 * 60 * 1_000;
 const MAX_PROVIDERS_PER_BUCKET = 32;
 const MAX_MODELS_PER_BUCKET = 64;
 const MAX_PROVIDER_ID_LENGTH = 128;
@@ -63,7 +65,14 @@ const OBSERVATION_FIELDS = new Set([
   "durationBin",
   "responseStartBin"
 ]);
-const DOCUMENT_FIELDS = new Set(["schemaVersion", "bucketMinutes", "retentionBuckets", "buckets"]);
+const LEGACY_DOCUMENT_FIELDS = new Set(["schemaVersion", "bucketMinutes", "retentionBuckets", "buckets"]);
+const DOCUMENT_FIELDS = new Set([
+  "schemaVersion",
+  "bucketMinutes",
+  "retentionBuckets",
+  "buckets",
+  "dailyBuckets"
+]);
 const BUCKET_FIELDS = new Set([
   "start",
   "requests",
@@ -91,6 +100,13 @@ const PROVIDER_FIELDS = new Set([
 ]);
 const MODEL_FIELDS = new Set([
   "model",
+  "requests",
+  "usageObservedRequests",
+  "inputTokens",
+  "outputTokens"
+]);
+const DAILY_BUCKET_FIELDS = new Set([
+  "start",
   "requests",
   "usageObservedRequests",
   "inputTokens",
@@ -148,6 +164,13 @@ function canonicalHour(value) {
   return canonical === value ? timestamp : null;
 }
 
+function canonicalDay(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || timestamp % DAY_MS !== 0) return null;
+  const canonical = new Date(timestamp).toISOString();
+  return canonical === value ? timestamp : null;
+}
+
 function emptyResults() {
   return Object.fromEntries(RESULTS.map((result) => [result, 0]));
 }
@@ -172,6 +195,16 @@ function emptyBucket(start) {
     droppedObservations: 0,
     providers: [],
     models: []
+  };
+}
+
+function emptyDailyBucket(start) {
+  return {
+    start,
+    requests: 0,
+    usageObservedRequests: 0,
+    inputTokens: 0,
+    outputTokens: 0
   };
 }
 
@@ -245,22 +278,89 @@ function validateBucket(bucket) {
   return structuredClone(bucket);
 }
 
+function validateDailyBucket(bucket) {
+  if (!hasExactFields(bucket, DAILY_BUCKET_FIELDS)
+    || canonicalDay(bucket.start) === null
+    || !isBoundedInteger(bucket.requests, MAX_COUNTER)
+    || !isBoundedInteger(bucket.usageObservedRequests, MAX_COUNTER)
+    || bucket.usageObservedRequests > bucket.requests
+    || !isBoundedInteger(bucket.inputTokens, MAX_TOKEN_TOTAL)
+    || !isBoundedInteger(bucket.outputTokens, MAX_TOKEN_TOTAL)) {
+    throw new Error("Metrics daily bucket is invalid.");
+  }
+  return structuredClone(bucket);
+}
+
+function validateBuckets(buckets) {
+  const validated = buckets.map(validateBucket);
+  for (let index = 1; index < validated.length; index += 1) {
+    if (validated[index - 1].start >= validated[index].start) {
+      throw new Error("Metrics buckets are not strictly ordered.");
+    }
+  }
+  return validated;
+}
+
+function validateDailyBuckets(buckets) {
+  if (!Array.isArray(buckets) || buckets.length > METRICS_DAILY_RETENTION_DAYS) {
+    throw new Error("Metrics daily buckets are invalid.");
+  }
+  const validated = buckets.map(validateDailyBucket);
+  for (let index = 1; index < validated.length; index += 1) {
+    if (validated[index - 1].start >= validated[index].start) {
+      throw new Error("Metrics daily buckets are not strictly ordered.");
+    }
+  }
+  return validated;
+}
+
 function validateDocument(document) {
   if (!hasExactFields(document, DOCUMENT_FIELDS)
     || document.schemaVersion !== METRICS_SCHEMA_VERSION
     || document.bucketMinutes !== METRICS_BUCKET_MINUTES
     || document.retentionBuckets !== METRICS_RETENTION_BUCKETS
     || !Array.isArray(document.buckets)
-    || document.buckets.length > METRICS_RETENTION_BUCKETS) {
+    || document.buckets.length > METRICS_RETENTION_BUCKETS
+    || !Array.isArray(document.dailyBuckets)) {
     throw new Error("Metrics document is invalid.");
   }
-  const buckets = document.buckets.map(validateBucket);
-  for (let index = 1; index < buckets.length; index += 1) {
-    if (buckets[index - 1].start >= buckets[index].start) {
-      throw new Error("Metrics buckets are not strictly ordered.");
-    }
+  return {
+    buckets: validateBuckets(document.buckets),
+    dailyBuckets: validateDailyBuckets(document.dailyBuckets)
+  };
+}
+
+function validateLegacyDocument(document) {
+  if (!hasExactFields(document, LEGACY_DOCUMENT_FIELDS)
+    || document.schemaVersion !== 1
+    || document.bucketMinutes !== METRICS_BUCKET_MINUTES
+    || document.retentionBuckets !== METRICS_RETENTION_BUCKETS
+    || !Array.isArray(document.buckets)
+    || document.buckets.length > METRICS_RETENTION_BUCKETS) {
+    throw new Error("Legacy metrics document is invalid.");
   }
-  return buckets;
+  return validateBuckets(document.buckets);
+}
+
+function dailyBucketsFromHourly(buckets) {
+  const daily = new Map();
+  for (const bucket of buckets) {
+    const startMs = Math.floor(Date.parse(bucket.start) / DAY_MS) * DAY_MS;
+    const start = new Date(startMs).toISOString();
+    let target = daily.get(start);
+    if (!target) {
+      target = emptyDailyBucket(start);
+      daily.set(start, target);
+    }
+    target.requests = Math.min(MAX_COUNTER, target.requests + bucket.requests);
+    target.usageObservedRequests = Math.min(
+      MAX_COUNTER,
+      target.usageObservedRequests + bucket.usageObservedRequests
+    );
+    target.inputTokens = Math.min(MAX_TOKEN_TOTAL, target.inputTokens + bucket.inputTokens);
+    target.outputTokens = Math.min(MAX_TOKEN_TOTAL, target.outputTokens + bucket.outputTokens);
+  }
+  return [...daily.values()].sort((left, right) => compareText(left.start, right.start));
 }
 
 function validateObservation(observation) {
@@ -394,6 +494,7 @@ export class MetricsStore {
     this.createId = createId;
     this.platform = platform;
     this.buckets = [];
+    this.dailyBuckets = [];
     this.storageState = "ready";
     this.writeBlocked = false;
     this.dirty = false;
@@ -407,6 +508,7 @@ export class MetricsStore {
     const nowMs = this.#nowMs();
     this.#prune(nowMs);
     const start = new Date(Math.floor(nowMs / BUCKET_MS) * BUCKET_MS).toISOString();
+    const hasUsage = observation.inputTokens !== null && observation.outputTokens !== null;
     let bucket = this.buckets.at(-1);
     if (!bucket || bucket.start !== start) {
       bucket = emptyBucket(start);
@@ -426,7 +528,6 @@ export class MetricsStore {
     if (observation.responseStartBin !== null) {
       addBin(bucket.responseStartBins, observation.responseStartBin, bucket);
     }
-    const hasUsage = observation.inputTokens !== null && observation.outputTokens !== null;
     if (hasUsage) {
       addBounded(bucket, "usageObservedRequests", 1, MAX_COUNTER, bucket);
       addBounded(bucket, "inputTokens", observation.inputTokens, MAX_TOKEN_TOTAL, bucket);
@@ -489,6 +590,28 @@ export class MetricsStore {
 
     bucket.providers.sort((left, right) => compareText(left.providerId, right.providerId));
     bucket.models.sort((left, right) => compareText(left.model, right.model));
+
+    const dailyStart = new Date(Math.floor(nowMs / DAY_MS) * DAY_MS).toISOString();
+    let dailyBucket = this.dailyBuckets.at(-1);
+    if (!dailyBucket || dailyBucket.start !== dailyStart) {
+      dailyBucket = emptyDailyBucket(dailyStart);
+      this.dailyBuckets.push(dailyBucket);
+    }
+    dailyBucket.requests = Math.min(MAX_COUNTER, dailyBucket.requests + 1);
+    if (hasUsage) {
+      dailyBucket.usageObservedRequests = Math.min(
+        MAX_COUNTER,
+        dailyBucket.usageObservedRequests + 1
+      );
+      dailyBucket.inputTokens = Math.min(
+        MAX_TOKEN_TOTAL,
+        dailyBucket.inputTokens + observation.inputTokens
+      );
+      dailyBucket.outputTokens = Math.min(
+        MAX_TOKEN_TOTAL,
+        dailyBucket.outputTokens + observation.outputTokens
+      );
+    }
     this.dirty = true;
     this.#scheduleFlush();
     return true;
@@ -648,6 +771,31 @@ export class MetricsStore {
     };
   }
 
+  getTokenHeatmap({ window = "12w" } = {}) {
+    if (window !== "12w") throw new TypeError("Metrics heatmap window is invalid.");
+    const nowMs = this.#nowMs();
+    this.#prune(nowMs);
+    const currentStart = Math.floor(nowMs / DAY_MS) * DAY_MS;
+    const firstStart = currentStart - ((METRICS_DAILY_RETENTION_DAYS - 1) * DAY_MS);
+    const byStart = new Map(this.dailyBuckets.map((bucket) => [bucket.start, bucket]));
+    const days = [];
+    for (let index = 0; index < METRICS_DAILY_RETENTION_DAYS; index += 1) {
+      const start = new Date(firstStart + (index * DAY_MS)).toISOString();
+      const bucket = byStart.get(start) ?? emptyDailyBucket(start);
+      days.push({
+        start,
+        requests: bucket.requests,
+        tokens: tokenProjection(bucket)
+      });
+    }
+    return {
+      window,
+      bucketMinutes: 24 * 60,
+      storageState: this.storageState,
+      days
+    };
+  }
+
   flush() {
     if (this.closed || !this.dirty || this.writeBlocked) return false;
     if (this.flushTimer) {
@@ -698,6 +846,12 @@ export class MetricsStore {
       const start = Date.parse(bucket.start);
       return start >= firstStart && start <= currentStart;
     });
+    const currentDay = Math.floor(nowMs / DAY_MS) * DAY_MS;
+    const firstDay = currentDay - ((METRICS_DAILY_RETENTION_DAYS - 1) * DAY_MS);
+    this.dailyBuckets = this.dailyBuckets.filter((bucket) => {
+      const start = Date.parse(bucket.start);
+      return start >= firstDay && start <= currentDay;
+    });
   }
 
   #scheduleFlush() {
@@ -744,7 +898,15 @@ export class MetricsStore {
           throw new Error("Metrics identity changed.");
         }
         const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-        this.buckets = validateDocument(JSON.parse(text));
+        const document = JSON.parse(text);
+        if (document?.schemaVersion === 1) {
+          this.buckets = validateLegacyDocument(document);
+          this.dailyBuckets = dailyBucketsFromHourly(this.buckets);
+        } else {
+          const validated = validateDocument(document);
+          this.buckets = validated.buckets;
+          this.dailyBuckets = validated.dailyBuckets;
+        }
         this.#prune(this.#nowMs());
       } finally {
         if (descriptor !== undefined) this.fileOperations.closeSync(descriptor);
@@ -768,7 +930,8 @@ export class MetricsStore {
       schemaVersion: METRICS_SCHEMA_VERSION,
       bucketMinutes: METRICS_BUCKET_MINUTES,
       retentionBuckets: METRICS_RETENTION_BUCKETS,
-      buckets: this.buckets
+      buckets: this.buckets,
+      dailyBuckets: this.dailyBuckets
     };
     validateDocument(document);
     const bytes = Buffer.from(`${JSON.stringify(document)}\n`, "utf8");

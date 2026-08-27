@@ -547,6 +547,28 @@ function createServices() {
         },
         apiKey: SECRET
       };
+    },
+    async getTokenHeatmap({ window }) {
+      calls.push(["metricsHeatmap", window]);
+      return {
+        window,
+        bucketMinutes: 1_440,
+        storageState: "ready",
+        days: [
+          {
+            start: "2026-07-13T00:00:00.000Z",
+            requests: 3,
+            tokens: { input: 100, output: 25, observedRequests: 2 },
+            secret: SECRET
+          },
+          {
+            start: "not-a-timestamp",
+            requests: SECRET,
+            tokens: { input: SECRET, output: -1, observedRequests: 99 }
+          }
+        ],
+        secret: SECRET
+      };
     }
   };
   const forwardingRecordsService = {
@@ -1196,6 +1218,7 @@ test("routes every approved Admin API operation through injected services", asyn
   const requests = [
     ["GET", "/api/v1/status", undefined, 200],
     ["GET", "/api/v1/metrics/overview?window=7d", undefined, 200],
+    ["GET", "/api/v1/metrics/token-heatmap?window=12w", undefined, 200],
     ["GET", "/api/v1/routing-preview?model=model-a", undefined, 200],
     ["GET", "/api/v1/providers", undefined, 200],
     ["POST", "/api/v1/providers", {
@@ -1269,6 +1292,7 @@ test("routes every approved Admin API operation through injected services", asyn
   assert.ok(harness.calls.some((call) => call[0] === "bootstrap"));
   assert.ok(harness.calls.some((call) => call[0] === "diagnostics"));
   assert.ok(harness.calls.some((call) => call[0] === "metrics" && call[1] === "7d"));
+  assert.ok(harness.calls.some((call) => call[0] === "metricsHeatmap" && call[1] === "12w"));
   assert.ok(harness.calls.some((call) => (
     call[0] === "updateSettings" && call[1].routingMode === "account_first"
   )));
@@ -1595,6 +1619,49 @@ test("metrics overview is authenticated read-only, bounded, and positively proje
     assert.equal(invalid.json.error.code, "API_BODY_INVALID");
   }
   const wrongMethod = await harness.request("/api/v1/metrics/overview", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "GET");
+});
+
+test("token heatmap is authenticated, bounded, and strictly windowed", async (t) => {
+  const harness = await createHarness(t);
+  const unauthenticated = await harness.request("/api/v1/metrics/token-heatmap?window=12w");
+  assert.equal(unauthenticated.response.status, 401);
+
+  const session = await browserSession(harness);
+  const result = await harness.request("/api/v1/metrics/token-heatmap?window=12w", {
+    headers: { cookie: session.cookie, origin: harness.address.origin }
+  });
+  assert.equal(result.response.status, 200, result.text);
+  assertNoSensitiveResponse(result);
+  assert.deepEqual(result.json, {
+    heatmap: {
+      window: "12w",
+      bucketMinutes: 1_440,
+      storageState: "ready",
+      days: [{
+        start: "2026-07-13T00:00:00.000Z",
+        requests: 3,
+        tokens: { input: 100, output: 25, observedRequests: 2 }
+      }]
+    }
+  });
+
+  for (const path of [
+    "/api/v1/metrics/token-heatmap",
+    "/api/v1/metrics/token-heatmap?window=7d",
+    "/api/v1/metrics/token-heatmap?window=12w&window=12w",
+    "/api/v1/metrics/token-heatmap?unknown=1"
+  ]) {
+    const invalid = await harness.request(path, { headers: bearer(harness) });
+    assert.equal(invalid.response.status, 400, `${path}: ${invalid.text}`);
+    assert.equal(invalid.json.error.code, "API_BODY_INVALID");
+  }
+
+  const wrongMethod = await harness.request("/api/v1/metrics/token-heatmap?window=12w", {
     method: "POST",
     headers: bearer(harness)
   });

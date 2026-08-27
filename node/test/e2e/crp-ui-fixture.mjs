@@ -134,6 +134,68 @@ function metricSeries(window, summary) {
   }));
 }
 
+function emptyTokenHeatmap() {
+  const dayMs = 24 * 60 * 60 * 1_000;
+  const currentDay = Math.floor(Date.parse(STARTED_AT) / dayMs) * dayMs;
+  return {
+    window: "12w",
+    bucketMinutes: 1_440,
+    storageState: "ready",
+    days: Array.from({ length: 84 }, (_, index) => ({
+      start: new Date(currentDay - ((83 - index) * dayMs)).toISOString(),
+      requests: 0,
+      tokens: { input: 0, output: 0, observedRequests: 0 }
+    }))
+  };
+}
+
+function tokenHeatmapFixture() {
+  const heatmap = emptyTokenHeatmap();
+  heatmap.days = heatmap.days.map((day, index) => {
+    if (index % 9 === 0) return day;
+    const requests = index % 5 + 1;
+    const observedRequests = index % 13 === 0
+      ? 0
+      : index % 7 === 0
+        ? Math.max(1, requests - 1)
+        : requests;
+    return {
+      ...day,
+      requests,
+      tokens: {
+        input: observedRequests > 0 ? (index + 1) * 1_100 : 0,
+        output: observedRequests > 0 ? (index + 1) * 275 : 0,
+        observedRequests
+      }
+    };
+  });
+  heatmap.days.at(-1).requests = 4;
+  heatmap.days.at(-1).tokens = { input: 84_000, output: 21_000, observedRequests: 4 };
+  return heatmap;
+}
+
+function assertTokenHeatmapFixture(heatmap) {
+  assert.equal(heatmap.window, "12w");
+  assert.equal(heatmap.bucketMinutes, 1_440);
+  assert.ok(["ready", "degraded", "unavailable"].includes(heatmap.storageState));
+  assert.equal(heatmap.days.length, 84);
+  const dayMs = 24 * 60 * 60 * 1_000;
+  const currentDay = Math.floor(Date.parse(STARTED_AT) / dayMs) * dayMs;
+  heatmap.days.forEach((day, index) => {
+    assert.equal(day.start, new Date(currentDay - ((83 - index) * dayMs)).toISOString());
+    assert.ok(Number.isSafeInteger(day.requests) && day.requests >= 0);
+    assert.ok(Number.isSafeInteger(day.tokens.input) && day.tokens.input >= 0);
+    assert.ok(Number.isSafeInteger(day.tokens.output) && day.tokens.output >= 0);
+    assert.ok(Number.isSafeInteger(day.tokens.observedRequests)
+      && day.tokens.observedRequests >= 0
+      && day.tokens.observedRequests <= day.requests);
+    if (day.tokens.observedRequests === 0) {
+      assert.equal(day.tokens.input, 0);
+      assert.equal(day.tokens.output, 0);
+    }
+  });
+}
+
 function assertUnsaturatedMetricsFixture(metrics, expectedWindow = metrics.window) {
   assert.ok(expectedWindow === "24h" || expectedWindow === "7d", "metrics window must be supported");
   assert.equal(metrics.window, expectedWindow, "metrics payload window must match the requested window");
@@ -579,7 +641,8 @@ function createServices({ upstream }) {
     activities: [],
     diagnostics: null,
     metrics: emptyMetrics(),
-    metricsByWindow: new Map()
+    metricsByWindow: new Map(),
+    tokenHeatmap: tokenHeatmapFixture()
   };
 
   function addActivity(category, action, providerId, result = "success", errorCode = null) {
@@ -1252,6 +1315,12 @@ function createServices({ upstream }) {
         }
         assertUnsaturatedMetricsFixture(response, window);
         return response;
+      },
+      getTokenHeatmap({ window }) {
+        calls.push({ operation: "getTokenHeatmap", window });
+        const response = structuredClone(state.tokenHeatmap);
+        assertTokenHeatmapFixture(response);
+        return response;
       }
     },
     forwardingRecordsService: {
@@ -1753,6 +1822,14 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       metricSeries(window, summary) {
         return structuredClone(metricSeries(window, summary));
       },
+      emptyTokenHeatmap() {
+        return structuredClone(emptyTokenHeatmap());
+      },
+      setTokenHeatmap(heatmap) {
+        const next = structuredClone(heatmap);
+        assertTokenHeatmapFixture(next);
+        services.state.tokenHeatmap = next;
+      },
       setMetrics(metrics, { window = null } = {}) {
         const next = structuredClone(metrics);
         assertUnsaturatedMetricsFixture(next, window ?? next.window);
@@ -2099,6 +2176,7 @@ export async function assertLayoutIntegrity(page) {
       const rect = element.getBoundingClientRect();
       const sidebar = element.closest(".sidebar");
       return !element.closest(".visually-hidden")
+        && !element.closest(".layout-contained-scroll")
         && !element.closest("[hidden]")
         && !element.closest("dialog:not([open])")
         && !(innerWidth <= 840 && sidebar && !sidebar.classList.contains("sidebar-open"))
@@ -2148,6 +2226,7 @@ export async function assertLayoutIntegrity(page) {
       const sidebar = element.closest(".sidebar");
       return style.display !== "none" && style.visibility !== "hidden"
         && !element.closest(".visually-hidden")
+        && !element.closest(".layout-contained-scroll")
         && !element.closest("dialog:not([open])")
         && !element.closest(".table-scroll")
         && !(innerWidth <= 840 && sidebar && !sidebar.classList.contains("sidebar-open"))

@@ -10,6 +10,8 @@ import type {
   ForwardingRecordsQuery,
   MetricsOverview,
   MetricsWindow,
+  TokenHeatmapOverview,
+  TokenHeatmapWindow,
   ModelCatalog,
   ModelMappingGroup,
   ModelMappingGroupInput,
@@ -397,6 +399,17 @@ export class CrpApi {
       signal
     );
     return payload.metrics;
+  }
+
+  async getTokenHeatmap(
+    window: TokenHeatmapWindow = "12w",
+    signal?: AbortSignal
+  ): Promise<TokenHeatmapOverview> {
+    const payload = await this.get<{ heatmap: TokenHeatmapOverview }>(
+      `/api/v1/metrics/token-heatmap?window=${window}`,
+      signal
+    );
+    return payload.heatmap;
   }
 
   async createProvider(provider: ProviderInput, credential: string): Promise<Provider> {

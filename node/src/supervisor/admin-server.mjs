@@ -70,6 +70,7 @@ const METRIC_MAX_COUNT = 1_000_000_000_000;
 const ACCESS_KEY_MAX_REQUESTS = 1_000_000_000_000;
 const ACCESS_KEY_MAX_REQUEST_COUNT = 9_000_000_000_000_000;
 const METRIC_MAX_TOKEN_TOTAL = 9_000_000_000_000_000;
+const METRICS_HEATMAP_DAYS = 84;
 const METRIC_MAX_LATENCY_MS = 300_000;
 const MAX_SUPERVISOR_PID = 4_294_967_295;
 const MAX_PROVIDER_MODELS_BODY_BYTES = 3 * 1_024 * 1_024;
@@ -815,6 +816,23 @@ function projectMetricsOverview(metrics, requestedWindow) {
   };
 }
 
+function projectMetricsHeatmap(metrics) {
+  return {
+    window: "12w",
+    bucketMinutes: 24 * 60,
+    storageState: ["ready", "degraded", "unavailable"].includes(metrics?.storageState)
+      ? metrics.storageState
+      : "unavailable",
+    days: Array.isArray(metrics?.days)
+      ? metrics.days.slice(0, METRICS_HEATMAP_DAYS).map((day) => ({
+        start: projectMetricTimestamp(day?.start),
+        requests: projectMetricInteger(day?.requests),
+        tokens: projectMetricTokens(day?.tokens)
+      })).filter((day) => day.start !== null)
+      : []
+  };
+}
+
 function projectForwardingRecord(record) {
   const id = Number.isSafeInteger(record?.id) && record.id > 0 ? record.id : null;
   const outcome = ["success", "rejected", "aborted", "error"].includes(record?.outcome)
@@ -1084,6 +1102,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/status`, ["GET"]],
     [`${API_PREFIX}/account/refresh`, ["POST"]],
     [`${API_PREFIX}/metrics/overview`, ["GET"]],
+    [`${API_PREFIX}/metrics/token-heatmap`, ["GET"]],
     [`${API_PREFIX}/forwarding-records`, ["GET"]],
     [`${API_PREFIX}/model-mappings`, ["GET", "POST"]],
     [`${API_PREFIX}/routing-preview`, ["GET"]],
@@ -1403,6 +1422,18 @@ export function createAdminServer({
       const window = values[0] ?? "24h";
       const metrics = await metricsService?.getOverview?.({ window });
       sendJson(response, 200, { metrics: projectMetricsOverview(metrics, window) });
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/metrics/token-heatmap` && request.method === "GET") {
+      for (const key of url.searchParams.keys()) {
+        if (key !== "window") throw bodyError("API_BODY_INVALID");
+      }
+      const values = url.searchParams.getAll("window");
+      if (values.length !== 1 || values[0] !== "12w") {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const metrics = await metricsService?.getTokenHeatmap?.({ window: "12w" });
+      sendJson(response, 200, { heatmap: projectMetricsHeatmap(metrics) });
       return;
     }
     if (url.pathname === `${API_PREFIX}/forwarding-records` && request.method === "GET") {
