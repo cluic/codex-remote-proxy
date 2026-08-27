@@ -394,7 +394,9 @@ function createServices({ upstream }) {
         outcome: "aborted",
         providerId: "provider-2",
         providerName: "Fallback API",
-        route: "custom"
+        route: "custom",
+        requestedModel: "gpt-5.6-sol",
+        forwardedModel: "vendor/gpt-5.6-sol"
       },
       {
         id: 3,
@@ -420,7 +422,9 @@ function createServices({ upstream }) {
         outcome: "success",
         providerId: "chatgpt-account",
         providerName: "ChatGPT",
-        route: "account"
+        route: "account",
+        requestedModel: "gpt-5.6-sol",
+        forwardedModel: "gpt-5.6-sol"
       },
       {
         id: 2,
@@ -446,7 +450,9 @@ function createServices({ upstream }) {
         outcome: "rejected",
         providerId: "provider-2",
         providerName: "Fallback API",
-        route: "custom"
+        route: "custom",
+        requestedModel: "gpt-5.6-luna",
+        forwardedModel: "gpt-5.6-luna"
       },
       {
         id: 1,
@@ -472,7 +478,9 @@ function createServices({ upstream }) {
         outcome: "error",
         providerId: "provider-2",
         providerName: "Fallback API",
-        route: "custom"
+        route: "custom",
+        requestedModel: null,
+        forwardedModel: null
       }
     ],
     account: {

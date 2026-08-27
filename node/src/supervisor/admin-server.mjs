@@ -875,7 +875,9 @@ function projectForwardingRecord(record) {
     outcome,
     providerId: projectMetricText(record?.providerId, 256),
     providerName: projectMetricText(record?.providerName, 256),
-    route
+    route,
+    requestedModel: projectMetricText(record?.requestedModel, 256),
+    forwardedModel: projectMetricText(record?.forwardedModel, 256)
   };
 }
 

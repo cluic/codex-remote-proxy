@@ -303,6 +303,8 @@ export interface ForwardingRecord {
   providerId: string | null;
   providerName: string | null;
   route: "account" | "custom" | "unknown";
+  requestedModel: string | null;
+  forwardedModel: string | null;
 }
 
 export interface ForwardingRecordsPageData {

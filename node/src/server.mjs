@@ -1552,6 +1552,8 @@ function saveCaptureRecord(captureContext, fields) {
     providerId: captureContext.providerId,
     providerName: captureContext.providerName,
     route: captureContext.route,
+    requestedModel: fields.requestedModel ?? null,
+    forwardedModel: fields.forwardedModel ?? null,
     requestHeaders: captureContext.requestHeaders,
     requestBody: captureContext.requestBody,
     requestBodyBytes: captureContext.requestBodyBytes,
@@ -1728,6 +1730,7 @@ export function createServer(settings, {
     let metricSaved = false;
     let terminal = false;
     let requestEnded = false;
+    let requestedModel = null;
     let requestModel = overrideModel && !initialAccountRoute
       ? safeMetricModel(overrideModel, requestSettings, requestProtectedValues)
       : null;
@@ -1772,9 +1775,14 @@ export function createServer(settings, {
     function finalizeCapture(fields) {
       if (captureSaved || !captureHandle) return;
       captureSaved = true;
+      if (requestEnded) finishRequestInspection();
       const context = ensureCaptureContext();
       Object.assign(context, requestCaptureSnapshot());
-      saveCaptureRecord(context, fields);
+      saveCaptureRecord(context, {
+        ...fields,
+        requestedModel,
+        forwardedModel: requestModel
+      });
     }
 
     function finishRequestInspection() {
@@ -1785,6 +1793,7 @@ export function createServer(settings, {
         requestModel = inspection.complete && !inspection.invalid
           ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
           : null;
+        requestedModel = requestModel;
       } else if (encodedRequestMetric && !encodedRequestMetric.truncated) {
         const decoded = decodeBoundedBody(
           encodedRequestMetric.buffer(),
@@ -1798,6 +1807,7 @@ export function createServer(settings, {
           requestModel = inspection.complete && !inspection.invalid
             ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
             : null;
+          requestedModel = requestModel;
         }
       }
       return requestModel;
@@ -1925,10 +1935,11 @@ export function createServer(settings, {
         });
         return null;
       }
+      const parsed = parseBoundedJson(decodedBody, MODEL_OVERRIDE_MAX_BYTES);
+      const sourceModel = typeof parsed?.model === "string" ? parsed.model : null;
+      requestedModel = safeMetricModel(sourceModel, requestSettings, requestProtectedValues);
       let targetModel = overrideModel;
       if (targetModel === null) {
-        const parsed = parseBoundedJson(decodedBody, MODEL_OVERRIDE_MAX_BYTES);
-        const sourceModel = typeof parsed?.model === "string" ? parsed.model : null;
         targetModel = sourceModel === null
           ? null
           : modelMappings.find((rule) => rule.sourceModel === sourceModel)?.targetModel ?? null;
@@ -2001,8 +2012,10 @@ export function createServer(settings, {
         requestModel = inspection.complete && !inspection.invalid
           ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
           : null;
+        requestedModel = requestModel;
       } else {
         requestModel = null;
+        requestedModel = null;
       }
       requestInspectionFinished = true;
       return encodedBody;

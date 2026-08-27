@@ -576,6 +576,8 @@ function createServices() {
           providerId: "provider-1",
           providerName: "Primary",
           route: "custom",
+          requestedModel: "model-a",
+          forwardedModel: "vendor/model-a",
           requestBody: SECRET,
           requestHeaders: { authorization: SECRET }
         }],
@@ -1715,7 +1717,9 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
       outcome: "success",
       providerId: "provider-1",
       providerName: "Primary",
-      route: "custom"
+      route: "custom",
+      requestedModel: "model-a",
+      forwardedModel: "vendor/model-a"
     }],
     page: { limit: 25, nextBefore: null },
     summary: { total: 1, success: 1, rejected: 0, aborted: 0, error: 0 }

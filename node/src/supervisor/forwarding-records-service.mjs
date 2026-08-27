@@ -7,6 +7,7 @@ const MAX_LIMIT = 100;
 const MAX_SEARCH_CODE_POINTS = 100;
 const MAX_URL_CODE_POINTS = 2_048;
 const MAX_ID_CODE_POINTS = 256;
+const MAX_MODEL_CODE_POINTS = 256;
 const MAX_ERROR_CODE_POINTS = 512;
 const MAX_TOKEN_COUNT = 100_000_000;
 const OUTCOMES = new Set(["all", "success", "rejected", "aborted", "error"]);
@@ -138,7 +139,9 @@ function projectRow(row, providers) {
     outcome,
     providerId: provider.id,
     providerName: provider.name,
-    route: provider.route
+    route: provider.route,
+    requestedModel: boundedText(row.requested_model, MAX_MODEL_CODE_POINTS),
+    forwardedModel: boundedText(row.forwarded_model, MAX_MODEL_CODE_POINTS)
   };
 }
 
@@ -174,7 +177,7 @@ function escapeLike(value) {
   return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
-function buildWhere(options, { providerColumns = false } = {}) {
+function buildWhere(options, { providerColumns = false, modelColumns = false } = {}) {
   const conditions = [];
   const parameters = {};
   if (options.before !== null) {
@@ -186,6 +189,7 @@ function buildWhere(options, { providerColumns = false } = {}) {
   if (options.search) {
     const fields = ["request_id", "incoming_url", "target_url", "error_type", "error_message"];
     if (providerColumns) fields.push("provider_id", "provider_name", "route");
+    if (modelColumns) fields.push("requested_model", "forwarded_model");
     conditions.push(`(${fields.map((field) => (
       `${field} LIKE @search ESCAPE '\\'`
     )).join(" OR ")})`);
@@ -253,7 +257,12 @@ export class ForwardingRecordsService {
       const hasTokenColumns = ["input_tokens", "output_tokens"]
         .every((column) => columns.has(column));
       const hasUsageObservationStatus = columns.has("usage_observation_status");
-      const where = buildWhere(options, { providerColumns: hasProviderColumns });
+      const hasModelColumns = ["requested_model", "forwarded_model"]
+        .every((column) => columns.has(column));
+      const where = buildWhere(options, {
+        providerColumns: hasProviderColumns,
+        modelColumns: hasModelColumns
+      });
       const providerColumns = hasProviderColumns
         ? "provider_id, provider_name, route,"
         : "NULL AS provider_id, NULL AS provider_name, NULL AS route,";
@@ -263,11 +272,14 @@ export class ForwardingRecordsService {
       const usageObservationColumn = hasUsageObservationStatus
         ? "usage_observation_status,"
         : "NULL AS usage_observation_status,";
+      const modelColumns = hasModelColumns
+        ? "requested_model, forwarded_model,"
+        : "NULL AS requested_model, NULL AS forwarded_model,";
       const rows = database.prepare(`
         SELECT
           id, started_at, completed_at, duration_ms,
           request_id, session_id, thread_id, method,
-          incoming_url, target_url, ${providerColumns} request_body_bytes,
+          incoming_url, target_url, ${providerColumns} ${modelColumns} request_body_bytes,
           response_status, response_body_bytes, is_stream,
           upstream_request_id, ${tokenColumns} ${usageObservationColumn} error_type, error_message
         FROM http_transactions

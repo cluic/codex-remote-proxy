@@ -75,6 +75,16 @@ function tokenLabel(locale: Locale, record: ForwardingRecord, t: Translator): st
   return formatNumber(locale, record.inputTokens + record.outputTokens);
 }
 
+function modelValues(record: ForwardingRecord) {
+  const requested = record.requestedModel ?? record.forwardedModel;
+  const forwarded = record.forwardedModel ?? record.requestedModel;
+  return {
+    requested,
+    forwarded,
+    transformed: requested !== null && forwarded !== null && requested !== forwarded
+  };
+}
+
 function RecordDetails({
   record,
   locale,
@@ -92,6 +102,8 @@ function RecordDetails({
     [t("forwarding.duration"), formatDuration(locale, record.durationMs)],
     [t("forwarding.provider"), record.providerName ?? t("common.unknown")],
     [t("forwarding.route"), t(`forwarding.route.${record.route}`)],
+    [t("forwarding.requestedModel"), record.requestedModel ?? t("forwarding.modelNotRecorded")],
+    [t("forwarding.forwardedModel"), record.forwardedModel ?? t("forwarding.modelNotRecorded")],
     [t("forwarding.incomingUrl"), record.incomingUrl ?? "-"],
     [t("forwarding.targetUrl"), record.targetUrl ?? "-"],
     [t("forwarding.requestId"), record.requestId ?? "-"],
@@ -126,6 +138,7 @@ function RecordDetails({
           <div key={label}>
             <dt>{label}</dt>
             <dd>{label.includes("URL") || label.includes("地址") || label.includes("ID")
+              || label.includes("model") || label.includes("模型")
               ? <code>{value}</code>
               : value}</dd>
           </div>
@@ -321,6 +334,7 @@ export function ForwardingRecordsPage({
                   <tr>
                     <th>{t("forwarding.time")}</th>
                     <th>{t("forwarding.request")}</th>
+                    <th>{t("forwarding.model")}</th>
                     <th>{t("forwarding.provider")}</th>
                     <th>{t("forwarding.result")}</th>
                     <th>{t("forwarding.duration")}</th>
@@ -329,7 +343,9 @@ export function ForwardingRecordsPage({
                   </tr>
                 </thead>
                 <tbody>
-                  {records.map((record) => (
+                  {records.map((record) => {
+                    const models = modelValues(record);
+                    return (
                     <tr key={record.id} className={record.id === selectedId ? "selected" : undefined}>
                       <td>
                         <span className="record-time">{formatDate(locale, record.startedAt, true)}</span>
@@ -344,6 +360,24 @@ export function ForwardingRecordsPage({
                           <strong>{record.method ?? "-"}</strong>
                           <code>{displayPath(record)}</code>
                         </button>
+                      </td>
+                      <td>
+                        <span className={cx("record-model", models.transformed && "is-transformed")} title={models.requested === null
+                          ? t("forwarding.modelNotRecorded")
+                          : models.transformed
+                            ? `${models.requested} → ${models.forwarded}`
+                            : models.requested}>
+                          {models.requested === null ? (
+                            <span>{t("forwarding.modelNotRecorded")}</span>
+                          ) : (
+                            <>
+                              <code>{models.requested}</code>
+                              {models.transformed ? (
+                                <><ArrowRight aria-hidden="true" /><code>{models.forwarded}</code></>
+                              ) : null}
+                            </>
+                          )}
+                        </span>
                       </td>
                       <td>
                         <span className="record-provider">
@@ -366,7 +400,8 @@ export function ForwardingRecordsPage({
                         : usageStatusLabel(record, t)}>{tokenLabel(locale, record, t)}</span></td>
                       <td><span className="record-transfer">{byteLabel(locale, record.requestBytes)}<ArrowRight aria-hidden="true" />{byteLabel(locale, record.responseBytes)}</span></td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
               {loading && records.length === 0 ? <div className="table-loading">{t("common.loading")}</div> : null}

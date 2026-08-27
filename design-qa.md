@@ -127,3 +127,13 @@ No actionable P0, P1, or P2 visual findings remain in the final 1440 × 900 evid
 - Full Chromium E2E matrix: 57/57 passed.
 
 final result: passed
+
+## Forwarding Model Attribution QA
+
+- Verified on 2026-08-27.
+- Browser evidence: `output/playwright/task11/forwarding-records-lists-f-74ba4-ata-only-forwarding-records-chromium/forwarding-models-1440x900.png`
+- Verified state: four mixed account/custom rows, one exact model rewrite from `gpt-5.6-sol` to `vendor/gpt-5.6-sol`, one unchanged account model, one unchanged custom model, and one legacy row without model metadata.
+- The records table gives model attribution a dedicated, fixed-width column instead of squeezing it into the request path. Exact rewrites use a compact `requested → forwarded` treatment; unchanged models render once; legacy rows say `Not recorded`. The detail panel exposes separate requested and forwarded rows, and search matches either persisted model column.
+- Capture schema 5 adds nullable requested/forwarded model columns through the existing additive migration. Values reuse the proxy's bounded protected-value screening, so model metadata can remain available even when Capture intentionally omits a large, compressed, truncated, or protected request body.
+- The Admin response remains metadata-only and never projects request/response bodies or authentication headers. The desktop evidence keeps model, Provider, result, and the selected record's full model values readable; the existing horizontal table scroller preserves the lower-priority duration, Token, and transfer columns without document overflow.
+- Final verification: 600/600 unit tests, 62/62 integration tests, and 57/57 Chromium E2E scenarios passed; the live Chinese browser check showed the requested/forwarded model pair in both the table and detail panel with zero console errors.

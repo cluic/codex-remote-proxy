@@ -1342,6 +1342,16 @@ test("weighted cooldown reapplies each provider override or exact mapping to the
       { ...second, model: "openrouter/client-model" }
     ]
   );
+  assert.deepEqual(
+    captureManager.records.map(({ requestedModel, forwardedModel }) => ({
+      requestedModel,
+      forwardedModel
+    })),
+    [
+      { requestedModel: "client-model", forwardedModel: "provider-override-model" },
+      { requestedModel: "client-model", forwardedModel: "openrouter/client-model" }
+    ]
+  );
 });
 
 test("exact model mappings rewrite compressed matches and preserve unmatched bytes", async (t) => {
@@ -1558,6 +1568,8 @@ test("server writes proxied request and response to sqlite", async () => {
   assert.equal(rows[0].provider_id, "standalone");
   assert.equal(rows[0].provider_name, "Standalone");
   assert.equal(rows[0].route, "custom");
+  assert.equal(rows[0].requested_model, null);
+  assert.equal(rows[0].forwarded_model, null);
   assert.match(rows[0].request_headers_json, /REDACTED/);
   assert.doesNotMatch(rows[0].request_headers_json, /upstream-secret/);
   assert.match(rows[0].response_headers_json, /REDACTED/);
@@ -1655,6 +1667,8 @@ test("large Capture bodies preserve totals while omitting prefixes that cannot b
   assert.equal(row.response_body_encoding, "empty-truncated");
   assert.equal(row.response_body_bytes, responseBody.length);
   assert.equal(Buffer.byteLength(row.response_body), 0);
+  assert.equal(row.requested_model, "large-capture-model");
+  assert.equal(row.forwarded_model, "large-capture-model");
   assert.deepEqual(metrics.map(({ result, model, inputTokens, outputTokens }) => ({
     result,
     model,
@@ -2479,6 +2493,22 @@ test("metrics and Capture detect headerless SSE usage while screening credential
   for (const encodedModel of encodedModels) {
     assert.equal(serialized.includes(encodedModel), false);
   }
+  const capturedModels = captureManager.records.map(({ requestedModel, forwardedModel }) => ({
+    requestedModel,
+    forwardedModel
+  }));
+  const serializedCapturedModels = JSON.stringify(capturedModels);
+  assert.equal(serializedCapturedModels.includes(secret), false);
+  for (const encodedModel of encodedModels) {
+    assert.equal(serializedCapturedModels.includes(encodedModel), false);
+  }
+  assert.deepEqual(capturedModels, [
+    { requestedModel: "model-json", forwardedModel: "model-json" },
+    { requestedModel: null, forwardedModel: null },
+    { requestedModel: null, forwardedModel: null },
+    { requestedModel: null, forwardedModel: null },
+    { requestedModel: null, forwardedModel: null }
+  ]);
   assert.equal(serialized.includes("response-private-id"), false);
   assert.equal(serialized.includes("url"), false);
   assert.equal(serialized.includes("headers"), false);

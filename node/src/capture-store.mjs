@@ -11,6 +11,8 @@ const WATCH_INTERVAL_MS = 500;
 const WATCH_DEBOUNCE_MS = 100;
 const REDACTED_VALUE = "[REDACTED]";
 const MAX_CAPTURE_TOKENS = 100_000_000;
+const MAX_CAPTURE_MODEL_CODE_POINTS = 256;
+const MODEL_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 const USAGE_OBSERVATION_STATUSES = new Set([
   "observed",
   "upstream_unreported",
@@ -181,6 +183,17 @@ export function encodeBody(buffer, {
   };
 }
 
+function normalizeCapturedModel(value) {
+  if (typeof value !== "string" || value.length === 0
+    || value.length > MAX_CAPTURE_MODEL_CODE_POINTS * 2
+    || [...value].length > MAX_CAPTURE_MODEL_CODE_POINTS
+    || value.trim() !== value
+    || MODEL_TEXT_CONTROL_PATTERN.test(value)) {
+    return null;
+  }
+  return value;
+}
+
 function createInsertStatement(db) {
   return db.prepare(`
     INSERT INTO http_transactions (
@@ -196,6 +209,8 @@ function createInsertStatement(db) {
       provider_id,
       provider_name,
       route,
+      requested_model,
+      forwarded_model,
       request_headers_json,
       request_body,
       request_body_encoding,
@@ -225,6 +240,8 @@ function createInsertStatement(db) {
       @provider_id,
       @provider_name,
       @route,
+      @requested_model,
+      @forwarded_model,
       @request_headers_json,
       @request_body,
       @request_body_encoding,
@@ -263,6 +280,8 @@ function initializeDatabase(db) {
       provider_id TEXT,
       provider_name TEXT,
       route TEXT,
+      requested_model TEXT,
+      forwarded_model TEXT,
       request_headers_json TEXT NOT NULL,
       request_body TEXT NOT NULL,
       request_body_encoding TEXT NOT NULL,
@@ -288,6 +307,8 @@ function initializeDatabase(db) {
     ["provider_id", "TEXT"],
     ["provider_name", "TEXT"],
     ["route", "TEXT"],
+    ["requested_model", "TEXT"],
+    ["forwarded_model", "TEXT"],
     ["input_tokens", "INTEGER"],
     ["output_tokens", "INTEGER"],
     ["usage_observation_status", "TEXT"]
@@ -303,7 +324,7 @@ function initializeDatabase(db) {
       ON http_transactions (thread_id);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_response_status
       ON http_transactions (response_status);
-    PRAGMA user_version = 4;
+    PRAGMA user_version = 5;
   `);
 }
 
@@ -591,6 +612,8 @@ export class CaptureManager {
         provider_id: record.providerId ?? null,
         provider_name: record.providerName ?? null,
         route: record.route ?? null,
+        requested_model: normalizeCapturedModel(record.requestedModel),
+        forwarded_model: normalizeCapturedModel(record.forwardedModel),
         request_headers_json: JSON.stringify(redactHeaders(record.requestHeaders)),
         request_body: requestBody.body,
         request_body_encoding: requestBody.encoding,
