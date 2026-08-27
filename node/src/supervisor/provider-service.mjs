@@ -1718,12 +1718,36 @@ export class ProviderService {
           reconcile: (document) => document.settings.captureDetailsEnabled === enabled
             ? enabled
             : undefined,
+          rollbackRegistry: () => {
+            if (this.registry.getDocument().settings.captureDetailsEnabled === previous) {
+              return true;
+            }
+            return this.registry.setCaptureDetailsEnabledIfCurrent(enabled, previous);
+          },
+          buildRollbackSnapshot: async (generation) => {
+            const document = this.registry.getDocument();
+            const active = document.providers.find(
+              (provider) => provider.id === document.activeProviderId
+            );
+            if (!active || active.lastTestStatus !== "passed") {
+              throw new Error("Capture details rollback Provider is invalid");
+            }
+            const secret = await this.credentialStore.get(active.credentialRef);
+            return await this.#buildSnapshot(active, secret, generation);
+          },
           failureCode: "CAPTURE_DETAILS_SETTING_UPDATE_FAILED",
           rollbackCode: "CAPTURE_DETAILS_SETTING_ROLLBACK_DEGRADED"
         });
       } catch (error) {
-        await this.#safeRecordSettingsFailure("capture-details", error, { enabled });
-        throw error;
+        const failure = error instanceof CrpError && [
+          "CAPTURE_DETAILS_REQUIRES_CAPTURE",
+          "CAPTURE_DETAILS_SETTING_UPDATE_FAILED",
+          "CAPTURE_DETAILS_SETTING_ROLLBACK_DEGRADED"
+        ].includes(error.code)
+          ? error
+          : serviceError("CAPTURE_DETAILS_SETTING_UPDATE_FAILED", { cause: error });
+        await this.#safeRecordSettingsFailure("capture-details", failure, { enabled });
+        throw failure;
       }
       const details = { enabled, generation: applied.generation };
       if (applied.commitWarning) {
@@ -2204,6 +2228,8 @@ export class ProviderService {
     reconcile,
     failureCode,
     rollbackCode,
+    rollbackRegistry = null,
+    buildRollbackSnapshot = null,
     rollbackSideEffect = null
   }) {
     const before = this.workerManager.getPublicState();
@@ -2292,13 +2318,18 @@ export class ProviderService {
       if (!mutationCommitted) throw error;
       let rollbackFailure = null;
       try {
-        const currentDocument = this.registry.getDocument();
-        if (!isDeepStrictEqual(currentDocument, previousDocument)) {
-          const restored = this.registry.replaceDocumentIfCurrent(
-            currentDocument,
-            previousDocument
-          );
+        if (rollbackRegistry) {
+          const restored = await rollbackRegistry();
           if (!restored) throw new Error("registry rollback lost compare-and-set");
+        } else {
+          const currentDocument = this.registry.getDocument();
+          if (!isDeepStrictEqual(currentDocument, previousDocument)) {
+            const restored = this.registry.replaceDocumentIfCurrent(
+              currentDocument,
+              previousDocument
+            );
+            if (!restored) throw new Error("registry rollback lost compare-and-set");
+          }
         }
       } catch (caught) {
         rollbackFailure = caught;
@@ -2321,7 +2352,9 @@ export class ProviderService {
           if (!Number.isSafeInteger(rollbackGeneration) || previousSnapshot === null) {
             throw new Error("Worker rollback generation is invalid");
           }
-          const rollbackSnapshot = structuredClone(previousSnapshot);
+          const rollbackSnapshot = buildRollbackSnapshot
+            ? await buildRollbackSnapshot(rollbackGeneration)
+            : structuredClone(previousSnapshot);
           rollbackSnapshot.generation = rollbackGeneration;
           const restored = await this.workerManager.applySnapshot(rollbackSnapshot);
           if (!isConfirmedWorkerState(restored, rollbackGeneration)
@@ -2501,6 +2534,7 @@ export class ProviderService {
   async #safeRecordSettingsFailure(action, error, details = {}) {
     const directFallbackCodes = {
       capture: "CAPTURE_SETTING_UPDATE_FAILED",
+      "capture-details": "CAPTURE_DETAILS_SETTING_UPDATE_FAILED",
       "api-key-auth": "API_KEY_AUTH_UPDATE_FAILED",
       "proxy-host": "PROXY_HOST_UPDATE_FAILED"
     };
