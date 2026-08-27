@@ -46,6 +46,7 @@ import type {
   RoutingRuleGroup,
   RoutingRuleGroupInput,
   SupervisorIdentity,
+  TokenHeatmapOverview,
   WorkspaceData
 } from "./types";
 
@@ -80,6 +81,8 @@ export function App() {
   const [activity, setActivity] = useState<ActivityPageData>(emptyActivity);
   const [metrics, setMetrics] = useState<MetricsOverview | null>(null);
   const [metricsError, setMetricsError] = useState<ApiError | null>(null);
+  const [heatmap, setHeatmap] = useState<TokenHeatmapOverview | null>(null);
+  const [heatmapError, setHeatmapError] = useState<ApiError | null>(null);
   const [metricsWindow, setMetricsWindow] = useState<MetricsWindow>("24h");
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [actionError, setActionError] = useState<ApiError | null>(null);
@@ -93,6 +96,7 @@ export function App() {
   const loadControllerRef = useRef<AbortController | null>(null);
   const loadSequenceRef = useRef(0);
   const metricsSequenceRef = useRef(0);
+  const heatmapSequenceRef = useRef(0);
   const activitySequenceRef = useRef(0);
   const pendingRef = useRef(false);
   const activityLoadingRef = useRef(false);
@@ -131,12 +135,27 @@ export function App() {
     document.title = `${t(titleKey)} | CRP`;
   }, [accessMode, locale, route, t]);
 
+  const loadHeatmap = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    const sequence = ++heatmapSequenceRef.current;
+    setHeatmapError(null);
+    try {
+      const nextHeatmap = await api.getTokenHeatmap("12w", signal);
+      if (sequence === heatmapSequenceRef.current && !signal?.aborted) setHeatmap(nextHeatmap);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")
+        && sequence === heatmapSequenceRef.current) {
+        setHeatmapError(asApiError(error));
+      }
+    }
+  }, [api]);
+
   const loadWorkspace = useCallback(async (window: MetricsWindow): Promise<WorkspaceData | null> => {
     const sequence = ++loadSequenceRef.current;
     const metricsSequence = ++metricsSequenceRef.current;
     loadControllerRef.current?.abort();
     const controller = new AbortController();
     loadControllerRef.current = controller;
+    void loadHeatmap(controller.signal);
     try {
       const [
         status,
@@ -195,7 +214,7 @@ export function App() {
     } finally {
       if (sequence === loadSequenceRef.current) loadControllerRef.current = null;
     }
-  }, [api]);
+  }, [api, loadHeatmap]);
 
   useEffect(() => {
     if (initializedRef.current) return undefined;
@@ -522,6 +541,9 @@ export function App() {
       setActivity(emptyActivity);
       setMetrics(null);
       setMetricsError(null);
+      heatmapSequenceRef.current += 1;
+      setHeatmap(null);
+      setHeatmapError(null);
       setTerminalError(null);
       setAccessMode("stopped");
       return true;
@@ -661,6 +683,7 @@ export function App() {
           // Keep the last valid chart during a transient background refresh failure.
         }
       });
+      void loadHeatmap(controller.signal);
     };
     const interval = window.setInterval(refresh, 30_000);
     document.addEventListener("visibilitychange", refresh);
@@ -669,7 +692,7 @@ export function App() {
       document.removeEventListener("visibilitychange", refresh);
       controller?.abort();
     };
-  }, [accessMode, api, route]);
+  }, [accessMode, api, loadHeatmap, route]);
 
   const loadActivityPage = useCallback((offset: number) => {
     if (activityLoadingRef.current) return;
@@ -818,6 +841,8 @@ export function App() {
           routingRuleGroups={workspace.routingRuleGroups}
           metrics={metrics}
           metricsError={metricsError}
+          heatmap={heatmap}
+          heatmapError={heatmapError}
           metricsWindow={metricsWindow}
           readOnly={readOnly}
           pending={pending}

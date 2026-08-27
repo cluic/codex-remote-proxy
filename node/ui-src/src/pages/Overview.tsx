@@ -10,7 +10,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { ApiError } from "../api";
-import { TrendExplorer } from "../components/Charts";
+import { DailyTokenHeatmap } from "../components/TokenHeatmap";
 import { RoutePreviewBoard } from "../components/RoutePreviewBoard";
 import {
   Button,
@@ -42,7 +42,8 @@ import type {
   RoutePreview,
   RoutingRuleGroup,
   Settings,
-  StatusResponse
+  StatusResponse,
+  TokenHeatmapOverview
 } from "../types";
 
 type OverviewProps = {
@@ -55,6 +56,8 @@ type OverviewProps = {
   routingRuleGroups: RoutingRuleGroup[];
   metrics: MetricsOverview | null;
   metricsError: ApiError | null;
+  heatmap: TokenHeatmapOverview | null;
+  heatmapError: ApiError | null;
   metricsWindow: MetricsWindow;
   readOnly: boolean;
   pending: string | null;
@@ -91,6 +94,38 @@ function MetricCard({
   );
 }
 
+function TokenHeatmapPanel({
+  heatmap,
+  error,
+  locale,
+  t
+}: {
+  heatmap: TokenHeatmapOverview | null;
+  error: ApiError | null;
+  locale: Locale;
+  t: Translator;
+}) {
+  return (
+    <Panel className="overview-trend-panel">
+      <header className="overview-panel-header">
+        <div>
+          <h2>{t("overview.tokenHeatmap")}</h2>
+          <p>{t("overview.tokenHeatmapHelp")}</p>
+        </div>
+      </header>
+      <div className="panel-content overview-trend-content">
+        {heatmap?.storageState === "degraded" && error === null ? (
+          <div className="token-heatmap-degraded" role="status">
+            <strong>{t("overview.heatmapDegraded")}</strong>
+            <span>{t("overview.heatmapDegradedHelp")}</span>
+          </div>
+        ) : null}
+        <DailyTokenHeatmap heatmap={heatmap} error={error} locale={locale} t={t} />
+      </div>
+    </Panel>
+  );
+}
+
 function formatLatency(locale: Locale, latency: LatencySummary): string {
   if (latency.p95UpperBoundMs !== null) return formatDuration(locale, latency.p95UpperBoundMs);
   if (latency.overflowRequests > 0) return `> ${formatDuration(locale, 300_000)}`;
@@ -113,6 +148,8 @@ export function OverviewPage({
   routingRuleGroups,
   metrics,
   metricsError,
+  heatmap,
+  heatmapError,
   metricsWindow,
   readOnly,
   pending,
@@ -193,6 +230,10 @@ export function OverviewPage({
   const metricsUnavailable = metricsError !== null
     || metrics === null
     || metrics.storageState === "unavailable";
+  const heatmapHasTraffic = heatmap?.days.some((day) => day.requests > 0) ?? false;
+  const heatmapHasIssue = heatmapError !== null
+    || heatmap?.storageState === "unavailable"
+    || heatmap?.storageState === "degraded";
   const modelRows = metrics ? [
     ...metrics.models.map((model) => ({
       id: model.model,
@@ -355,10 +396,15 @@ export function OverviewPage({
         </header>
 
         {metricsUnavailable ? (
-          <Notice title={t("overview.metricsUnavailable")} tone="warning">
-            <p>{t("overview.metricsUnavailableHelp")}</p>
-            {metricsError ? <p><code>{metricsError.code}</code></p> : null}
-          </Notice>
+          <>
+            <Notice title={t("overview.metricsUnavailable")} tone="warning">
+              <p>{t("overview.metricsUnavailableHelp")}</p>
+              {metricsError ? <p><code>{metricsError.code}</code></p> : null}
+            </Notice>
+            {heatmap !== null || heatmapError !== null ? (
+              <TokenHeatmapPanel heatmap={heatmap} error={heatmapError} locale={locale} t={t} />
+            ) : null}
+          </>
         ) : (
           <>
             {metrics.storageState === "degraded" ? (
@@ -398,7 +444,7 @@ export function OverviewPage({
               />
             </div>
 
-            {metrics.summary.requests === 0 ? (
+            {metrics.summary.requests === 0 && !heatmapHasTraffic && !heatmapHasIssue ? (
               <div data-testid="metrics-empty">
                 <EmptyState
                   icon={<CircleOff />}
@@ -408,19 +454,9 @@ export function OverviewPage({
               </div>
             ) : (
               <div className="overview-dashboard" data-testid="metrics-loaded">
-                <Panel className="overview-trend-panel">
-                  <header className="overview-panel-header">
-                    <div>
-                      <h2>{t("overview.trendExplorer")}</h2>
-                      <p>{t("overview.trendExplorerHelp")}</p>
-                    </div>
-                  </header>
-                  <div className="panel-content overview-trend-content">
-                    <TrendExplorer series={metrics.series} locale={locale} t={t} />
-                  </div>
-                </Panel>
+                <TokenHeatmapPanel heatmap={heatmap} error={heatmapError} locale={locale} t={t} />
 
-                <div className="overview-summary-grid">
+                {metrics.summary.requests > 0 ? <div className="overview-summary-grid">
                   <Panel className="overview-summary-panel overview-model-summary">
                     <header className="overview-summary-heading">
                       <div><h2>{t("overview.modelDistribution")}</h2><span>{t("overview.modelDistributionHelp")}</span></div>
@@ -495,7 +531,7 @@ export function OverviewPage({
                       </div>
                     ) : <p className="overview-summary-empty">{t("overview.noProviderData")}</p>}
                   </Panel>
-                </div>
+                </div> : null}
               </div>
             )}
 

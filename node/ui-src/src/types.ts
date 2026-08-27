@@ -376,6 +376,8 @@ export interface DiagnosticResult {
 
 export type MetricsWindow = "24h" | "7d";
 
+export type TokenHeatmapWindow = "12w";
+
 export type MetricsResultKey =
   | "success"
   | "upstreamRejected"
@@ -433,6 +435,19 @@ export interface MetricsOverview {
     providerOverflowRequests: number;
     droppedObservations: number;
   };
+}
+
+export interface TokenHeatmapDay {
+  start: string;
+  requests: number;
+  tokens: TokenTotals;
+}
+
+export interface TokenHeatmapOverview {
+  window: TokenHeatmapWindow;
+  bucketMinutes: 1440;
+  storageState: "ready" | "degraded" | "unavailable";
+  days: TokenHeatmapDay[];
 }
 
 export interface WorkspaceData {

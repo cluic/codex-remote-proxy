@@ -199,12 +199,21 @@ test("renders populated Metrics and changes the aggregate window without stale d
   await expect(requests.locator("strong")).toHaveText("128");
   const responseStart = page.locator(".metric-card").filter({ hasText: "P95 response start" });
   await expect(responseStart.locator("strong")).toHaveText("> 300 s");
-  await expect(page.getByRole("img", { name: "Stacked request results over time" })).toBeVisible();
-  await page.getByRole("button", { name: "Tokens", exact: true }).click();
-  await expect(page.getByRole("img", { name: "Observed token usage over time with gaps for unobserved buckets" })).toBeVisible();
+  const heatmap = page.getByTestId("token-heatmap");
+  await expect(heatmap).toBeVisible();
+  await expect(heatmap.getByRole("button")).toHaveCount(84);
+  await expect(heatmap.locator(".token-heatmap-cell.is-unobserved").first()).toBeVisible();
+  await expect(heatmap.locator(".token-heatmap-cell.is-partial").first()).toBeVisible();
+  await expect(heatmap.locator(".token-heatmap-cell-level-4").first()).toBeVisible();
+  const heatmapSelection = heatmap.locator(".token-heatmap-selection");
+  await expect(heatmapSelection).toContainText("Jul 13, 2026");
+  await expect(heatmapSelection).toContainText("105,000");
+  await heatmap.locator(".token-heatmap-cell.is-unobserved").first().focus();
+  await expect(heatmapSelection).toContainText("Token usage was not reported");
+  await heatmap.getByRole("button").last().focus();
+  await expect(heatmapSelection).toContainText("105,000");
   await expect(page.locator(".overview-model-summary")).toContainText("gpt-5.1-codex-mini");
   await expect(page.locator(".overview-provider-summary")).toContainText("Provider Alpha");
-  await page.getByRole("button", { name: "Requests", exact: true }).click();
   const screenshotPath = testInfo.outputPath("overview-hardening-1440x900.png");
   await page.screenshot({ path: screenshotPath });
   await testInfo.attach("overview-hardening-1440x900", {
@@ -216,6 +225,7 @@ test("renders populated Metrics and changes the aggregate window without stale d
   await expect(page.getByRole("button", { name: "7 days" })).toHaveAttribute("aria-pressed", "true");
   await expect(requests.locator("strong")).toHaveText("777");
   await expect.poll(() => crp.calls.filter((call) => call.operation === "getMetrics" && call.window === "7d").length).toBe(1);
+  expect(crp.calls.filter((call) => call.operation === "getTokenHeatmap" && call.window === "12w")).toHaveLength(1);
 
   await page.getByRole("button", { name: "24 hours" }).click();
   await expect(requests.locator("strong")).toHaveText("128");
@@ -265,12 +275,19 @@ test("discloses incomplete Metrics rates and conserves the visible model remaind
   await expect(page.getByText("This view contains 24 UTC hourly buckets, including the current partial hour."))
     .toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.locator(".token-heatmap-scroll").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return element.scrollWidth > element.clientWidth
+      && rect.left >= -0.5
+      && rect.right <= innerWidth + 0.5;
+  })).toBe(true);
   await assertLayoutIntegrity(page);
   await assertNoSecrets(page, crp);
 });
 
 test("shows empty and degraded Metrics without affecting proxy readiness", async ({ page, crp }) => {
   crp.setMetrics(crp.emptyMetrics());
+  crp.setTokenHeatmap(crp.emptyTokenHeatmap());
   await openCrp(page, crp);
   await expect(page.getByTestId("metrics-empty")).toBeVisible();
   await expect(page.getByRole("heading", { name: "No proxy traffic in this window" })).toBeVisible();
@@ -285,9 +302,23 @@ test("shows empty and degraded Metrics without affecting proxy readiness", async
   const degraded = crp.emptyMetrics();
   degraded.storageState = "degraded";
   crp.setMetrics(degraded);
+  const degradedHeatmap = crp.emptyTokenHeatmap();
+  degradedHeatmap.storageState = "degraded";
+  crp.setTokenHeatmap(degradedHeatmap);
   await page.getByRole("button", { name: "Refresh status" }).click();
   await expect(page.getByText("Metrics storage is degraded. Proxy traffic is not affected.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "No proxy traffic in this window" })).toBeVisible();
+  await expect(page.getByText("Daily history is not being saved reliably")).toBeVisible();
+  await expect(page.getByTestId("token-heatmap")).toBeVisible();
+});
+
+test("keeps the 12-week Token heatmap visible when the current window is empty", async ({ page, crp }) => {
+  crp.setMetrics(crp.emptyMetrics());
+  await openCrp(page, crp);
+  await expect(page.getByTestId("token-heatmap")).toBeVisible();
+  await expect(page.getByTestId("metrics-empty")).toHaveCount(0);
+  await expect(page.locator(".overview-model-summary")).toHaveCount(0);
+  await expect(page.locator(".overview-provider-summary")).toHaveCount(0);
+  await assertNoSecrets(page, crp);
 });
 
 test("isolates a Metrics API failure from the rest of the workspace", async ({ page, crp }) => {
@@ -303,8 +334,26 @@ test("isolates a Metrics API failure from the rest of the workspace", async ({ p
   await expect(page.locator(".overview-command-bar")).toBeVisible();
   await expect(page.getByText("Metrics are currently unavailable").first()).toBeVisible();
   await expect(page.getByTestId("metrics-empty")).toHaveCount(0);
+  await expect(page.getByTestId("token-heatmap")).toBeVisible();
+  await expect(page.locator(".token-heatmap-selection")).toContainText("105,000");
   await expect(page.locator(".overview-routing-segment")).toContainText("Provider Alpha");
   expect(crp.calls.filter((call) => call.operation === "getStatus").length).toBeGreaterThan(0);
+});
+
+test("isolates a Token heatmap API failure from current-window Metrics", async ({ page, crp }) => {
+  await page.route("**/api/v1/metrics/token-heatmap?window=12w", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "METRICS_UNAVAILABLE", details: {} } })
+    });
+  });
+  await openCrp(page, crp);
+  await expect(page.locator(".metric-card").filter({ hasText: "Requests" }).locator("strong")).toHaveText("128");
+  await expect(page.getByText("Daily token heatmap is unavailable")).toBeVisible();
+  await expect(page.locator(".overview-model-summary")).toContainText("gpt-5.1-codex-mini");
+  await expect(page.locator(".overview-provider-summary")).toContainText("Provider Alpha");
+  await assertNoSecrets(page, crp);
 });
 
 test("OpenRouter built-in preset fills the maintained v1 endpoint", async ({ page, crp }) => {

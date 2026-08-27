@@ -13,11 +13,13 @@ import os from "node:os";
 import { join } from "node:path";
 
 import {
+  METRICS_DAILY_RETENTION_DAYS,
   METRICS_MAX_FILE_BYTES,
   MetricsStore
 } from "../src/supervisor/metrics-store.mjs";
 
 const HOUR_MS = 60 * 60 * 1_000;
+const DAY_MS = 24 * HOUR_MS;
 const MAX_COUNTER = 1_000_000_000_000;
 
 function observation(overrides = {}) {
@@ -93,6 +95,46 @@ function saturatedBucket(start, suffix) {
   };
 }
 
+function emptyLegacyBucket(start) {
+  return {
+    start,
+    requests: 0,
+    results: {
+      success: 0,
+      upstreamRejected: 0,
+      upstreamError: 0,
+      timeout: 0,
+      networkError: 0,
+      clientAbort: 0
+    },
+    usageObservedRequests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    durationBins: Array(13).fill(0),
+    responseStartBins: Array(13).fill(0),
+    unknownModelRequests: 0,
+    modelOverflowRequests: 0,
+    providerOverflowRequests: 0,
+    droppedObservations: 0,
+    providers: [{
+      providerId: "provider-a",
+      requests: 0,
+      successfulRequests: 0,
+      usageObservedRequests: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      durationBins: Array(13).fill(0)
+    }],
+    models: [{
+      model: "gpt-5-codex",
+      requests: 0,
+      usageObservedRequests: 0,
+      inputTokens: 0,
+      outputTokens: 0
+    }]
+  };
+}
+
 test("empty metrics return stable zero-filled 24h and 7d chart series", (t) => {
   const state = harness(t);
   for (const [window, expectedBuckets] of [["24h", 24], ["7d", 168]]) {
@@ -111,6 +153,113 @@ test("empty metrics return stable zero-filled 24h and 7d chart series", (t) => {
     assert.deepEqual(overview.providers, []);
     assert.deepEqual(overview.models, []);
   }
+});
+
+test("token heatmap returns 84 zero-filled UTC days", (t) => {
+  const state = harness(t);
+  const heatmap = state.store.getTokenHeatmap({ window: "12w" });
+  assert.equal(heatmap.window, "12w");
+  assert.equal(heatmap.bucketMinutes, 1_440);
+  assert.equal(heatmap.storageState, "ready");
+  assert.equal(heatmap.days.length, METRICS_DAILY_RETENTION_DAYS);
+  assert.equal(heatmap.days.every((day) => (
+    day.requests === 0
+      && day.tokens.input === 0
+      && day.tokens.output === 0
+      && day.tokens.observedRequests === 0
+  )), true);
+  assert.equal(heatmap.days.at(-1).start, "2026-07-16T00:00:00.000Z");
+  assert.equal(heatmap.days[0].start, "2026-04-24T00:00:00.000Z");
+});
+
+test("token heatmap aggregates usage across the UTC day boundary", (t) => {
+  const state = harness(t, { timestamp: Date.parse("2026-07-16T23:59:59.000Z") });
+  assert.equal(state.store.record(observation({ inputTokens: 100, outputTokens: 20 })), true);
+  state.advance(1_000);
+  assert.equal(state.store.record(observation({ inputTokens: 7, outputTokens: 3 })), true);
+
+  const days = state.store.getTokenHeatmap({ window: "12w" }).days;
+  assert.deepEqual(days.at(-2), {
+    start: "2026-07-16T00:00:00.000Z",
+    requests: 1,
+    tokens: { input: 100, output: 20, observedRequests: 1 }
+  });
+  assert.deepEqual(days.at(-1), {
+    start: "2026-07-17T00:00:00.000Z",
+    requests: 1,
+    tokens: { input: 7, output: 3, observedRequests: 1 }
+  });
+});
+
+test("legacy schema 1 metrics load with reconstructed daily buckets and upgrade on write", (t) => {
+  const dir = mkdtempSync(join(os.tmpdir(), "crp-metrics-legacy-"));
+  const path = join(dir, "metrics.json");
+  const start = "2026-07-16T12:00:00.000Z";
+  const bucket = emptyLegacyBucket(start);
+  bucket.requests = 2;
+  bucket.results.success = 2;
+  bucket.usageObservedRequests = 2;
+  bucket.inputTokens = 100;
+  bucket.outputTokens = 25;
+  bucket.durationBins[4] = 2;
+  bucket.providers[0].requests = 2;
+  bucket.providers[0].successfulRequests = 2;
+  bucket.providers[0].usageObservedRequests = 2;
+  bucket.providers[0].inputTokens = 100;
+  bucket.providers[0].outputTokens = 25;
+  bucket.providers[0].durationBins[4] = 2;
+  bucket.models[0].requests = 2;
+  bucket.models[0].usageObservedRequests = 2;
+  bucket.models[0].inputTokens = 100;
+  bucket.models[0].outputTokens = 25;
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 1,
+    bucketMinutes: 60,
+    retentionBuckets: 168,
+    buckets: [bucket]
+  }) + "\n", { mode: 0o600 });
+  const store = new MetricsStore({
+    path,
+    now: () => Date.parse("2026-07-16T12:30:00.000Z"),
+    flushDelayMs: 60_000
+  });
+  t.after(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const migrated = store.getTokenHeatmap({ window: "12w" });
+  assert.deepEqual(migrated.days.at(-1), {
+    start: "2026-07-16T00:00:00.000Z",
+    requests: 2,
+    tokens: { input: 100, output: 25, observedRequests: 2 }
+  });
+  assert.equal(store.record(observation({ inputTokens: 5, outputTokens: 2 })), true);
+  assert.equal(store.flush(), true);
+  const persisted = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(persisted.schemaVersion, 2);
+  assert.equal(Array.isArray(persisted.dailyBuckets), true);
+  assert.equal(persisted.dailyBuckets.length, 1);
+  assert.deepEqual(persisted.dailyBuckets[0], {
+    start: "2026-07-16T00:00:00.000Z",
+    requests: 3,
+    usageObservedRequests: 3,
+    inputTokens: 105,
+    outputTokens: 27
+  });
+});
+
+test("token heatmap prunes daily buckets after 84 UTC days", (t) => {
+  const state = harness(t, { timestamp: Date.parse("2026-04-24T00:05:00.000Z") });
+  for (let index = 0; index < METRICS_DAILY_RETENTION_DAYS + 1; index += 1) {
+    assert.equal(state.store.record(observation({ inputTokens: 1, outputTokens: 1 })), true);
+    if (index < METRICS_DAILY_RETENTION_DAYS) state.advance(DAY_MS);
+  }
+  const heatmap = state.store.getTokenHeatmap({ window: "12w" });
+  assert.equal(heatmap.days.length, METRICS_DAILY_RETENTION_DAYS);
+  assert.equal(heatmap.days[0].tokens.input, 1);
+  assert.equal(heatmap.days.at(-1).tokens.input, 1);
+  assert.equal(state.store.dailyBuckets.length, METRICS_DAILY_RETENTION_DAYS);
 });
 
 test("metrics store aggregates hourly observations and restores the strict private document", (t) => {
@@ -169,11 +318,13 @@ test("metrics store aggregates hourly observations and restores the strict priva
   assert.deepEqual(Object.keys(document).sort(), [
     "bucketMinutes",
     "buckets",
+    "dailyBuckets",
     "retentionBuckets",
     "schemaVersion"
   ]);
-  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.schemaVersion, 2);
   assert.equal(document.buckets.length, 1);
+  assert.equal(document.dailyBuckets.length, 1);
 
   const restored = new MetricsStore({
     path: state.path,
@@ -298,10 +449,14 @@ test("hourly windows include the current UTC bucket and exclude the exact outer 
 });
 
 test("maximum valid seven-day dimensions fit the metrics storage limit", (t) => {
-  const state = harness(t, { timestamp: Date.parse("2026-07-09T00:05:00.000Z") });
+  const state = harness(t, { timestamp: Date.parse("2026-04-24T00:05:00.000Z") });
   const providerSuffix = "供".repeat(114);
   const modelSuffix = "模".repeat(245);
 
+  for (let day = 0; day < 77; day += 1) {
+    assert.equal(state.store.record(observation({ inputTokens: null, outputTokens: null })), true);
+    state.advance(DAY_MS);
+  }
   for (let hour = 0; hour < 168; hour += 1) {
     for (let index = 0; index < 64; index += 1) {
       assert.equal(state.store.record(observation({
@@ -320,12 +475,13 @@ test("maximum valid seven-day dimensions fit the metrics storage limit", (t) => 
   assert.ok(persistedSize <= METRICS_MAX_FILE_BYTES);
   const document = JSON.parse(readFileSync(state.path, "utf8"));
   assert.equal(document.buckets.length, 168);
+  assert.equal(document.dailyBuckets.length, METRICS_DAILY_RETENTION_DAYS);
   assert.equal(document.buckets.every((bucket) => bucket.providers.length === 32), true);
   assert.equal(document.buckets.every((bucket) => bucket.models.length === 64), true);
 
   const restored = new MetricsStore({
     path: state.path,
-    now: () => Date.parse("2026-07-15T23:05:00.000Z"),
+    now: () => Date.parse("2026-07-16T23:05:00.000Z"),
     flushDelayMs: 60_000
   });
   t.after(() => restored.close());
