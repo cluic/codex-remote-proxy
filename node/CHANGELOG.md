@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.10
+
+### Patch Changes
+
+- a505c3b: Show compact path/query text in Forwarding Records and hide `/models` catalog traffic by default behind a pagination-safe, summary-aware visibility toggle while preserving inclusive API behavior for callers that omit the new option.
+
 ## 0.4.9
 
 ### Patch Changes
