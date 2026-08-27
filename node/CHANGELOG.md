@@ -1,5 +1,12 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.9
+
+### Patch Changes
+
+- 449ff19: Record bounded requested and effective forwarded model names in Capture, expose them through searchable Forwarding Records metadata, and show model rewrites in both the records table and detail panel while keeping legacy rows nullable.
+- 4d2beb1: Add a compact live Overview route preview that traces account preference, matched routing rules, Provider order, model rewrites, and predicted outlets for an exact model, with conditional fallback rails and advanced retry details available on demand plus a configuration-only fallback while the Worker is stopped.
+
 ## 0.4.8
 
 ### Patch Changes
