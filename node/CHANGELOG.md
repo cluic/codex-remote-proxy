@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.11
+
+### Patch Changes
+
+- 9b5b944: Replace the Overview traffic trend chart with an accessible 12-week daily Token heatmap backed by compact UTC daily Metrics rollups.
+
 ## 0.4.10
 
 ### Patch Changes
