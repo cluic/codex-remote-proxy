@@ -382,6 +382,9 @@ export class CrpApi {
     }
     if (query.outcome && query.outcome !== "all") parameters.set("outcome", query.outcome);
     if (query.search) parameters.set("search", query.search);
+    if (query.includeModels !== undefined) {
+      parameters.set("includeModels", String(query.includeModels));
+    }
     return await this.get<ForwardingRecordsPageData>(
       `/api/v1/forwarding-records?${parameters.toString()}`,
       signal

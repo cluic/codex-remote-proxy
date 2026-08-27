@@ -1638,12 +1638,17 @@ code {
 
 .forwarding-workspace { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) 310px; gap: 16px; align-items: start; }
 .records-panel { min-width: 0; overflow: hidden; }
-.records-toolbar { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.records-toolbar { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; }
 .records-toolbar .segmented-control button { min-height: 30px; padding: 4px 9px; font-size: 12px; }
 .records-search { display: flex; width: min(360px, 45%); min-width: 220px; align-items: center; gap: 7px; padding-left: 10px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 7px; }
 .records-search > svg { width: 16px; height: 16px; flex: 0 0 16px; color: var(--muted); }
 .records-search input { width: 100%; min-width: 0; height: 36px; padding: 0; background: transparent; border: 0; outline: 0; }
 .records-search .button { min-height: 36px; border-width: 0 0 0 1px; border-radius: 0 6px 6px 0; box-shadow: none; }
+.records-visibility-bar { display: flex; min-height: 34px; align-items: center; justify-content: flex-end; padding: 5px 12px; background: var(--surface-soft); border-bottom: 1px solid var(--line); }
+.records-model-filter { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 650; }
+.records-model-filter:hover { color: var(--ink); }
+.records-model-filter input { width: 15px; height: 15px; margin: 0; accent-color: var(--primary); }
+.records-model-filter input:focus-visible { outline: 3px solid #6ca2dc; outline-offset: 2px; }
 .button-small { min-height: 34px; padding: 5px 10px; font-size: 12px; }
 .records-state { padding: 24px; }
 .records-state .empty-state { min-height: 300px; }

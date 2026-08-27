@@ -236,6 +236,42 @@ test("projects token counts and separates client aborts from forwarding errors",
   assert.deepEqual(service.list({ outcome: "error" }).records, []);
 });
 
+test("hides model catalog requests without corrupting paging or summary counts", (t) => {
+  const directory = makeTempDir(t);
+  const path = join(directory, "traffic.sqlite3");
+  createDatabase(path);
+  const database = new DatabaseSync(path);
+  database.exec(`
+    UPDATE http_transactions
+      SET incoming_url = 'http://127.0.0.1:15100/v1/models?refresh=1',
+          target_url = 'https://fallback.example.net/v1/models?refresh=1'
+      WHERE id = 3;
+  `);
+  database.close();
+  const service = new ForwardingRecordsService({ path });
+
+  const visible = service.list({ limit: 1, includeModels: false });
+  assert.deepEqual(visible.records.map(({ id }) => id), [2]);
+  assert.equal(visible.page.nextBefore, 2);
+  assert.deepEqual(visible.summary, {
+    total: 2,
+    success: 1,
+    rejected: 1,
+    aborted: 0,
+    error: 0
+  });
+  assert.deepEqual(
+    service.list({ limit: 1, before: visible.page.nextBefore, includeModels: false })
+      .records.map(({ id }) => id),
+    [1]
+  );
+  assert.deepEqual(service.list({ search: "models", includeModels: false }).records, []);
+
+  const included = service.list({ limit: 10, includeModels: true });
+  assert.deepEqual(included.records.map(({ id }) => id), [3, 2, 1]);
+  assert.equal(included.summary.total, 3);
+});
+
 test("prefers persisted final provider attribution over the current provider catalog", (t) => {
   const directory = makeTempDir(t);
   const path = join(directory, "traffic.sqlite3");
@@ -287,6 +323,7 @@ test("rejects invalid query shapes before opening the database", (t) => {
     { limit: 101 },
     { before: 0 },
     { outcome: "pending" },
+    { includeModels: "false" },
     { search: "x".repeat(101) }
   ]) {
     assert.throws(() => service.list(options), /query is invalid/);

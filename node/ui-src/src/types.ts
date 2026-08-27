@@ -319,6 +319,7 @@ export interface ForwardingRecordsQuery {
   before?: number | null;
   outcome?: ForwardingOutcome;
   search?: string;
+  includeModels?: boolean;
 }
 
 export interface ModelCatalog {

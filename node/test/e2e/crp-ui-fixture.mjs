@@ -371,6 +371,62 @@ function createServices({ upstream }) {
     autoStartEnabled: false,
     forwardingRecords: [
       {
+        id: 6,
+        startedAt: "2026-07-13T08:45:00.000Z",
+        completedAt: "2026-07-13T08:45:00.120Z",
+        durationMs: 120,
+        requestId: "req-fixture-models-6",
+        sessionId: null,
+        threadId: null,
+        method: "GET",
+        incomingUrl: "http://127.0.0.1:15100/models",
+        targetUrl: "https://fallback.example/v1/models",
+        requestBytes: 0,
+        responseStatus: 200,
+        responseBytes: 2_400,
+        stream: false,
+        upstreamRequestId: "fallback-models-6",
+        inputTokens: null,
+        outputTokens: null,
+        usageObservationStatus: "not_applicable",
+        errorType: null,
+        errorMessage: null,
+        outcome: "success",
+        providerId: "provider-2",
+        providerName: "Fallback API",
+        route: "custom",
+        requestedModel: null,
+        forwardedModel: null
+      },
+      {
+        id: 5,
+        startedAt: "2026-07-13T08:44:00.000Z",
+        completedAt: "2026-07-13T08:44:00.140Z",
+        durationMs: 140,
+        requestId: "req-fixture-models-5",
+        sessionId: null,
+        threadId: null,
+        method: "GET",
+        incomingUrl: "http://127.0.0.1:15100/v1/models?refresh=1",
+        targetUrl: "https://fallback.example/v1/models?refresh=1",
+        requestBytes: 0,
+        responseStatus: 200,
+        responseBytes: 2_100,
+        stream: false,
+        upstreamRequestId: "fallback-models-5",
+        inputTokens: null,
+        outputTokens: null,
+        usageObservationStatus: "not_applicable",
+        errorType: null,
+        errorMessage: null,
+        outcome: "success",
+        providerId: "provider-2",
+        providerName: "Fallback API",
+        route: "custom",
+        requestedModel: null,
+        forwardedModel: null
+      },
+      {
         id: 4,
         startedAt: "2026-07-13T08:43:00.000Z",
         completedAt: "2026-07-13T08:43:00.360Z",
@@ -379,7 +435,7 @@ function createServices({ upstream }) {
         sessionId: null,
         threadId: "thread-fixture",
         method: "POST",
-        incomingUrl: "/responses",
+        incomingUrl: "http://127.0.0.1:15100/responses",
         targetUrl: "https://fallback.example/v1/responses",
         requestBytes: 820,
         responseStatus: 200,
@@ -407,7 +463,7 @@ function createServices({ upstream }) {
         sessionId: "session-fixture",
         threadId: "thread-fixture",
         method: "POST",
-        incomingUrl: "/v1/responses",
+        incomingUrl: "http://127.0.0.1:15100/v1/responses",
         targetUrl: "https://chatgpt.com/backend-api/codex/responses",
         requestBytes: 1_280,
         responseStatus: 200,
@@ -435,7 +491,7 @@ function createServices({ upstream }) {
         sessionId: null,
         threadId: "thread-fixture",
         method: "POST",
-        incomingUrl: "/responses",
+        incomingUrl: "http://127.0.0.1:15100/responses",
         targetUrl: "https://fallback.example/v1/responses",
         requestBytes: 940,
         responseStatus: 429,
@@ -463,7 +519,7 @@ function createServices({ upstream }) {
         sessionId: null,
         threadId: null,
         method: "POST",
-        incomingUrl: "/v1/responses",
+        incomingUrl: "http://127.0.0.1:15100/v1/responses",
         targetUrl: "https://fallback.example/v1/responses",
         requestBytes: 760,
         responseStatus: 502,
@@ -1199,9 +1255,16 @@ function createServices({ upstream }) {
       }
     },
     forwardingRecordsService: {
-      list({ limit, before, outcome, search }) {
-        calls.push({ operation: "getForwardingRecords", limit, before, outcome, search });
+      list({ limit, before, outcome, search, includeModels }) {
+        calls.push({ operation: "getForwardingRecords", limit, before, outcome, search, includeModels });
         let records = state.forwardingRecords;
+        if (!includeModels) {
+          records = records.filter((record) => {
+            const pathname = new URL(record.incomingUrl, "http://127.0.0.1").pathname;
+            return !pathname.endsWith("/models");
+          });
+        }
+        const summaryRecords = records;
         if (before !== null) records = records.filter((record) => record.id < before);
         if (outcome !== "all") records = records.filter((record) => record.outcome === outcome);
         if (search) {
@@ -1214,11 +1277,11 @@ function createServices({ upstream }) {
           records: structuredClone(page),
           page: { limit, nextBefore: records.length > limit ? page.at(-1)?.id ?? null : null },
           summary: {
-            total: state.forwardingRecords.length,
-            success: state.forwardingRecords.filter((record) => record.outcome === "success").length,
-            rejected: state.forwardingRecords.filter((record) => record.outcome === "rejected").length,
-            aborted: state.forwardingRecords.filter((record) => record.outcome === "aborted").length,
-            error: state.forwardingRecords.filter((record) => record.outcome === "error").length
+            total: summaryRecords.length,
+            success: summaryRecords.filter((record) => record.outcome === "success").length,
+            rejected: summaryRecords.filter((record) => record.outcome === "rejected").length,
+            aborted: summaryRecords.filter((record) => record.outcome === "aborted").length,
+            error: summaryRecords.filter((record) => record.outcome === "error").length
           }
         };
       }
