@@ -42,27 +42,46 @@ function retryAfterMs(headers, nowMs) {
     : null;
 }
 
-function targetModelForProvider(provider, requestedModel) {
+export function describeProviderModel(provider, requestedModel) {
   if (typeof requestedModel !== "string" || requestedModel.length === 0) return null;
   if (provider?.proxy?.modelMode === "override"
     && typeof provider.proxy.modelOverride === "string") {
-    return provider.proxy.modelOverride;
+    return {
+      targetModel: provider.proxy.modelOverride,
+      transformation: "override",
+      support: supportsTargetModel(provider, provider.proxy.modelOverride)
+    };
   }
   const mapping = Array.isArray(provider?.proxy?.modelMappings)
     ? provider.proxy.modelMappings.find((rule) => rule?.sourceModel === requestedModel)
     : null;
-  return typeof mapping?.targetModel === "string" ? mapping.targetModel : requestedModel;
+  const targetModel = typeof mapping?.targetModel === "string"
+    ? mapping.targetModel
+    : requestedModel;
+  return {
+    targetModel,
+    transformation: typeof mapping?.targetModel === "string" ? "mapping" : "passthrough",
+    support: supportsTargetModel(provider, targetModel)
+  };
 }
 
-function supportsRequestedModel(provider, requestedModel) {
-  if (requestedModel === null) return true;
-  const targetModel = targetModelForProvider(provider, requestedModel);
-  if (targetModel === null) return false;
+function supportsTargetModel(provider, targetModel) {
   if (Array.isArray(provider?.disabledModels)
-    && provider.disabledModels.includes(targetModel)) return false;
-  if (provider?.supportedModels === null || provider?.supportedModels === undefined) return true;
-  if (!Array.isArray(provider?.supportedModels)) return false;
-  return provider.supportedModels.includes(targetModel);
+    && provider.disabledModels.includes(targetModel)) return "disabled";
+  if (provider?.supportedModels === null || provider?.supportedModels === undefined) {
+    return "supported";
+  }
+  if (!Array.isArray(provider?.supportedModels)
+    || !provider.supportedModels.includes(targetModel)) return "not_listed";
+  return "supported";
+}
+
+function describeRequestedModel(provider, requestedModel) {
+  if (requestedModel === null) {
+    return { targetModel: null, transformation: "passthrough", support: "supported" };
+  }
+  return describeProviderModel(provider, requestedModel)
+    ?? { targetModel: null, transformation: "passthrough", support: "not_listed" };
 }
 
 function priorityRanks(priorityRules, requestedModel) {
@@ -89,27 +108,72 @@ export class ProviderScheduler {
   }
 
   ordered(providers, { model = null, priorityRules = [] } = {}) {
-    if (!Array.isArray(providers) || providers.length === 0) return [];
+    return this.#plan(providers, { model, priorityRules }).orderedProviders;
+  }
+
+  explain(providers, { model, priorityRules = [] } = {}) {
+    const plan = this.#plan(providers, { model, priorityRules });
+    return {
+      matchedPriorityRule: plan.matchedPriorityRule,
+      candidates: plan.candidates
+    };
+  }
+
+  #plan(providers, { model = null, priorityRules = [] } = {}) {
+    if (!Array.isArray(providers) || providers.length === 0) {
+      return { orderedProviders: [], matchedPriorityRule: false, candidates: [] };
+    }
     const nowMs = safeNow(this.#now);
     const ranks = priorityRanks(priorityRules, model);
-    const indexed = providers.filter((provider) => supportsRequestedModel(provider, model)).map((provider, index) => ({
-      provider,
-      index,
-      priority: ranks.get(provider.id) ?? Number.POSITIVE_INFINITY,
-      blockedUntilMs: this.#states.get(provider.id)?.blockedUntilMs ?? 0
-    }));
-    if (indexed.length === 0) return [];
-    const healthy = indexed.filter((candidate) => candidate.blockedUntilMs <= nowMs);
+    const indexed = providers.map((provider, index) => {
+      const modelState = describeRequestedModel(provider, model);
+      const blockedUntilMs = this.#states.get(provider.id)?.blockedUntilMs ?? 0;
+      return {
+        provider,
+        index,
+        ...modelState,
+        priority: ranks.get(provider.id) ?? Number.POSITIVE_INFINITY,
+        blockedUntilMs,
+        cooling: blockedUntilMs > nowMs
+      };
+    });
+    const eligible = indexed.filter((candidate) => candidate.support === "supported");
+    const healthy = eligible.filter((candidate) => !candidate.cooling);
     const candidates = healthy.length > 0
       ? healthy
-      : indexed.sort((left, right) => left.blockedUntilMs - right.blockedUntilMs).slice(0, 1);
-    return candidates.sort((left, right) => {
+      : [...eligible].sort((left, right) => (
+          left.blockedUntilMs - right.blockedUntilMs || left.index - right.index
+        )).slice(0, 1);
+    const ordered = candidates.sort((left, right) => {
       if (left.priority !== right.priority) return left.priority - right.priority;
       if (left.provider.weight !== right.provider.weight) {
         return right.provider.weight - left.provider.weight;
       }
       return left.index - right.index;
-    }).map(({ provider }) => provider);
+    });
+    const positions = new Map(ordered.map((candidate, index) => [candidate.provider.id, index + 1]));
+    const summaries = indexed.map((candidate) => ({
+      providerId: candidate.provider.id,
+      providerName: candidate.provider.name,
+      weight: candidate.provider.weight,
+      targetModel: candidate.transformation === "passthrough" ? null : candidate.targetModel,
+      transformation: candidate.transformation,
+      support: candidate.support,
+      cooling: candidate.cooling,
+      blockedUntilMs: candidate.cooling ? candidate.blockedUntilMs : null,
+      order: positions.get(candidate.provider.id) ?? null,
+      index: candidate.index
+    })).sort((left, right) => (
+      (left.order ?? Number.POSITIVE_INFINITY) - (right.order ?? Number.POSITIVE_INFINITY)
+      || left.index - right.index
+    )).map(({ index: _index, ...candidate }) => candidate);
+    return {
+      orderedProviders: ordered.map(({ provider }) => provider),
+      matchedPriorityRule: typeof model === "string"
+        && Array.isArray(priorityRules)
+        && priorityRules.some((rule) => rule?.model === model),
+      candidates: summaries
+    };
   }
 
   markResponse(providerId, statusCode, headers = {}) {

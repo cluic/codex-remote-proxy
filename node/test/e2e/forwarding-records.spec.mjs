@@ -16,7 +16,7 @@ test.beforeEach(async ({ crp }) => {
   });
 });
 
-test("lists, filters, inspects, and toggles metadata-only forwarding records", async ({ page, crp }) => {
+test("lists, filters, inspects, and toggles metadata-only forwarding records", async ({ page, crp }, testInfo) => {
   await openCrp(page, crp);
   await page.getByRole("link", { name: "Forwarding Records", exact: true }).click();
   await expect(page).toHaveURL(/\/forwarding$/);
@@ -25,12 +25,32 @@ test("lists, filters, inspects, and toggles metadata-only forwarding records", a
   await expect(page.locator(".records-table tbody tr")).toHaveCount(4);
   await expect(page.locator(".records-table")).toContainText("ChatGPT");
   await expect(page.locator(".records-table")).toContainText("Fallback API");
+  await expect(page.locator(".records-table")).toContainText("gpt-5.6-sol");
+  await expect(page.locator(".records-table")).toContainText("vendor/gpt-5.6-sol");
+  await expect(page.locator(".records-table thead th")).toHaveCount(6);
 
-  await page.getByRole("button", { name: "Open forwarding record 3" }).click();
+  await page.getByRole("button", { name: "Open forwarding record 4" }).click();
   const detail = page.getByRole("complementary", { name: "Request metadata" });
-  await expect(detail).toContainText("chatgpt-upstream-3");
+  await expect(detail).toContainText("fallback-upstream-4");
+  await expect(detail).toContainText("gpt-5.6-sol");
+  await expect(detail).toContainText("vendor/gpt-5.6-sol");
   await expect(detail).toContainText("Only bounded metadata is shown");
   await expect(detail).not.toContainText("authorization");
+  expect(await page.locator(".records-table-wrap").evaluate((element) => (
+    element.scrollWidth <= element.clientWidth + 1
+  ))).toBe(true);
+  const screenshot = testInfo.outputPath("forwarding-models-1440x900.png");
+  crp.registerAttachment(screenshot);
+  await page.screenshot({ path: screenshot, animations: "disabled" });
+  await testInfo.attach("forwarding-models-1440x900", {
+    path: screenshot,
+    contentType: "image/png"
+  });
+  await page.setViewportSize({ width: 1280, height: 800 });
+  expect(await page.locator(".records-table-wrap").evaluate((element) => (
+    element.scrollWidth <= element.clientWidth + 1
+  ))).toBe(true);
+  await assertLayoutIntegrity(page);
 
   await page.getByRole("button", { name: "Aborted", exact: true }).click();
   await expect(page.locator(".records-table tbody tr")).toHaveCount(1);
@@ -41,6 +61,11 @@ test("lists, filters, inspects, and toggles metadata-only forwarding records", a
   await expect(page.locator(".records-table")).toContainText("429");
 
   await page.getByRole("button", { name: "All", exact: true }).click();
+  await page.getByLabel("Search forwarding records").fill("vendor/gpt-5.6-sol");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(page.locator(".records-table tbody tr")).toHaveCount(1);
+  await expect(page.locator(".records-table")).toContainText("Fallback API");
+
   await page.getByLabel("Search forwarding records").fill("req-fixture-1");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.locator(".records-table tbody tr")).toHaveCount(1);

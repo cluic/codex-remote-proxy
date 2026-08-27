@@ -98,6 +98,12 @@
 - SQLite test fixtures must close every database handle before deleting their temporary directory.
 - SVG endpoint labels must anchor inward so platform font metrics cannot overflow the viewport.
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
+- Compact responsive route diagrams must preserve internal containment instead of relying on off-canvas horizontal overflow.
+- Conditional routing branches must default to a complete summary and disclose the full rail only after explicit expansion.
+- Collapsed controls must be materially shorter than the content they replace; hiding details without reducing chrome is prohibited.
+- Forwarding history must preserve requested and effective forwarded models as separate bounded metadata fields.
+- Desktop tables beside persistent detail panes must fit core scan columns without horizontal overflow; secondary fields belong in details.
+- Routing previews must share the live scheduler and label conditional fallbacks and predicted outlets without claiming a guaranteed final provider.
 
 ## Required Checks
 

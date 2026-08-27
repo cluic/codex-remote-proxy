@@ -82,7 +82,35 @@ function makeState(overrides = {}) {
   };
 }
 
-test("parent protocol accepts exact configure, account state, drain, shutdown, and status messages", () => {
+function makeRoutePreview() {
+  return {
+    source: "live",
+    generation: 1,
+    evaluatedAt: "2030-01-01T00:00:00.000Z",
+    route: "custom",
+    reason: "custom_only",
+    account: {
+      enabled: false,
+      selected: false,
+      reason: "custom_only",
+      fallbackAvailable: true
+    },
+    matchedPriorityRule: false,
+    customPrimaryProviderId: "provider-1",
+    candidates: [{
+      providerId: "provider-1",
+      providerName: "Primary",
+      weight: 100,
+      targetModel: null,
+      transformation: "passthrough",
+      availability: "ready",
+      coolingUntil: null,
+      order: 1
+    }]
+  };
+}
+
+test("parent protocol accepts exact configure, account state, route preview, drain, shutdown, and status messages", () => {
   assert.equal(PROTOCOL_VERSION, 1);
   const messages = [
     {
@@ -104,6 +132,7 @@ test("parent protocol accepts exact configure, account state, drain, shutdown, a
         updatedAt: "2026-08-20T00:00:00.000Z"
       }
     },
+    { version: 1, type: "route-preview", requestId: "route-preview-1", model: "model-a" },
     { version: 1, type: "drain", requestId: "drain-1" },
     { version: 1, type: "shutdown", requestId: "shutdown-1" },
     { version: 1, type: "status", requestId: "status-1" }
@@ -124,6 +153,8 @@ test("parent protocol rejects unknown, malformed, and secret-bearing non-configu
     { version: 1, type: "status", requestId: "contains spaces" },
     { version: 1, type: "status", requestId: "status-1", extra: true },
     { version: 1, type: "drain", requestId: "drain-1", apiKey: "must-not-pass" },
+    { version: 1, type: "route-preview", requestId: "route-preview-1", model: " bad-model" },
+    { version: 1, type: "route-preview", requestId: "route-preview-1", model: "model-a", extra: true },
     { version: 1, type: "configure", requestId: "configure-1", generation: 0, settings: makeSettings() },
     { version: 1, type: "configure", requestId: "configure-1", generation: 1 },
     { version: 1, type: "configure", requestId: "configure-1", generation: 1, settings: [] }
@@ -345,7 +376,7 @@ test("configure rejects API keys that cannot form an HTTP authentication header"
   }
 });
 
-test("child protocol accepts exact lifecycle acknowledgements, status, and fatal messages", () => {
+test("child protocol accepts exact lifecycle acknowledgements, route previews, status, and fatal messages", () => {
   const messages = [
     { version: 1, type: "ready", requestId: "worker-ready", state: makeState({
       phase: "ready",
@@ -368,6 +399,12 @@ test("child protocol accepts exact lifecycle acknowledgements, status, and fatal
       type: "account-state-applied",
       requestId: "account-state-1",
       revision: 2
+    },
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-1",
+      preview: makeRoutePreview()
     },
     {
       version: 1,
@@ -467,6 +504,12 @@ test("child protocol rejects invalid state, extra fields, and secret-bearing err
     { version: 1, type: "configured", requestId: "configure-1", state: makeState({ generation: -1 }) },
     { version: 1, type: "status", requestId: "status-1", state: makeState({ inFlight: 1.5 }) },
     { version: 1, type: "drained", requestId: "drain-1", state: { ...makeState(), apiKey: "must-not-pass" } },
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-1",
+      preview: { ...makeRoutePreview(), generation: 0 }
+    },
     { version: 1, type: "fatal", requestId: "fatal-1", error: { code: "bad-code", message: "bad" } },
     {
       version: 1,
@@ -521,6 +564,34 @@ test("sanitizeProtocolMessage removes configure settings and projects only safe 
   ]) {
     assert.equal(serialized.includes(forbidden), false, `sanitized message leaked ${forbidden}`);
   }
+});
+
+test("sanitizeProtocolMessage never projects route preview models or candidate details", () => {
+  const parent = sanitizeProtocolMessage({
+    version: 1,
+    type: "route-preview",
+    requestId: "route-preview-1",
+    model: "model-secret-sentinel"
+  });
+  const child = sanitizeProtocolMessage({
+    version: 1,
+    type: "route-preview",
+    requestId: "route-preview-1",
+    preview: {
+      ...makeRoutePreview(),
+      candidates: [{
+        ...makeRoutePreview().candidates[0],
+        providerName: "provider-secret-sentinel"
+      }]
+    }
+  });
+  assert.equal(JSON.stringify([parent, child]).includes("secret-sentinel"), false);
+  assert.deepEqual(parent, {
+    version: 1,
+    type: "route-preview",
+    requestId: "route-preview-1"
+  });
+  assert.deepEqual(child, parent);
 });
 
 test("sanitizeProtocolMessage allowlists child state and replaces arbitrary fatal details", () => {

@@ -64,15 +64,36 @@ function displayPath(record: ForwardingRecord): string {
   return record.incomingUrl ?? record.targetUrl ?? "-";
 }
 
+function recordTimeParts(locale: Locale, value: string | null) {
+  if (value === null) return { date: "-", time: "" };
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return { date: "-", time: "" };
+  return {
+    date: new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    }).format(date),
+    time: new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    }).format(date)
+  };
+}
+
 function usageStatusLabel(record: ForwardingRecord, t: Translator): string {
   return t(`forwarding.usage.${record.usageObservationStatus}`);
 }
 
-function tokenLabel(locale: Locale, record: ForwardingRecord, t: Translator): string {
-  if (record.inputTokens === null || record.outputTokens === null) {
-    return usageStatusLabel(record, t);
-  }
-  return formatNumber(locale, record.inputTokens + record.outputTokens);
+function modelValues(record: ForwardingRecord) {
+  const requested = record.requestedModel ?? record.forwardedModel;
+  const forwarded = record.forwardedModel ?? record.requestedModel;
+  return {
+    requested,
+    forwarded,
+    transformed: requested !== null && forwarded !== null && requested !== forwarded
+  };
 }
 
 function RecordDetails({
@@ -92,6 +113,8 @@ function RecordDetails({
     [t("forwarding.duration"), formatDuration(locale, record.durationMs)],
     [t("forwarding.provider"), record.providerName ?? t("common.unknown")],
     [t("forwarding.route"), t(`forwarding.route.${record.route}`)],
+    [t("forwarding.requestedModel"), record.requestedModel ?? t("forwarding.modelNotRecorded")],
+    [t("forwarding.forwardedModel"), record.forwardedModel ?? t("forwarding.modelNotRecorded")],
     [t("forwarding.incomingUrl"), record.incomingUrl ?? "-"],
     [t("forwarding.targetUrl"), record.targetUrl ?? "-"],
     [t("forwarding.requestId"), record.requestId ?? "-"],
@@ -126,6 +149,7 @@ function RecordDetails({
           <div key={label}>
             <dt>{label}</dt>
             <dd>{label.includes("URL") || label.includes("地址") || label.includes("ID")
+              || label.includes("model") || label.includes("模型")
               ? <code>{value}</code>
               : value}</dd>
           </div>
@@ -321,18 +345,23 @@ export function ForwardingRecordsPage({
                   <tr>
                     <th>{t("forwarding.time")}</th>
                     <th>{t("forwarding.request")}</th>
+                    <th>{t("forwarding.model")}</th>
                     <th>{t("forwarding.provider")}</th>
                     <th>{t("forwarding.result")}</th>
                     <th>{t("forwarding.duration")}</th>
-                    <th>{t("forwarding.tokens")}</th>
-                    <th>{t("forwarding.transfer")}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {records.map((record) => (
+                  {records.map((record) => {
+                    const models = modelValues(record);
+                    const startedAt = recordTimeParts(locale, record.startedAt);
+                    return (
                     <tr key={record.id} className={record.id === selectedId ? "selected" : undefined}>
                       <td>
-                        <span className="record-time">{formatDate(locale, record.startedAt, true)}</span>
+                        <time className="record-time" dateTime={record.startedAt ?? undefined}>
+                          <span>{startedAt.date}</span>
+                          <strong>{startedAt.time}</strong>
+                        </time>
                       </td>
                       <td>
                         <button
@@ -344,6 +373,24 @@ export function ForwardingRecordsPage({
                           <strong>{record.method ?? "-"}</strong>
                           <code>{displayPath(record)}</code>
                         </button>
+                      </td>
+                      <td>
+                        <span className={cx("record-model", models.transformed && "is-transformed")} title={models.requested === null
+                          ? t("forwarding.modelNotRecorded")
+                          : models.transformed
+                            ? `${models.requested} → ${models.forwarded}`
+                            : models.requested}>
+                          {models.requested === null ? (
+                            <span>{t("forwarding.modelNotRecorded")}</span>
+                          ) : (
+                            <>
+                              <code>{models.requested}</code>
+                              {models.transformed ? (
+                                <><ArrowRight aria-hidden="true" /><code>{models.forwarded}</code></>
+                              ) : null}
+                            </>
+                          )}
+                        </span>
                       </td>
                       <td>
                         <span className="record-provider">
@@ -358,15 +405,9 @@ export function ForwardingRecordsPage({
                         </span>
                       </td>
                       <td><span className="record-duration"><Clock3 aria-hidden="true" />{formatDuration(locale, record.durationMs)}</span></td>
-                      <td><span className="record-tokens" title={record.usageObservationStatus === "observed"
-                        ? t("forwarding.tokensBreakdown", {
-                            input: record.inputTokens ?? "-",
-                            output: record.outputTokens ?? "-"
-                          })
-                        : usageStatusLabel(record, t)}>{tokenLabel(locale, record, t)}</span></td>
-                      <td><span className="record-transfer">{byteLabel(locale, record.requestBytes)}<ArrowRight aria-hidden="true" />{byteLabel(locale, record.responseBytes)}</span></td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
               {loading && records.length === 0 ? <div className="table-loading">{t("common.loading")}</div> : null}

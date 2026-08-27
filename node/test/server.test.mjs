@@ -955,6 +955,71 @@ test("weighted custom routing cools an HTTP failure and routes the next request 
   )));
 });
 
+test("live route preview shares the request scheduler's Provider cooldown state", async (t) => {
+  const primary = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = 503;
+      res.end();
+    });
+  });
+  const primaryPort = await listen(primary);
+  t.after(() => closeServer(primary));
+  const fallback = http.createServer((_req, res) => res.end());
+  const fallbackPort = await listen(fallback);
+  t.after(() => closeServer(fallback));
+  const providers = [
+    providerCandidate({
+      id: "preview-primary",
+      name: "Preview primary",
+      weight: 500,
+      baseUrl: `http://127.0.0.1:${primaryPort}`,
+      apiKey: "preview-primary-secret"
+    }),
+    providerCandidate({
+      id: "preview-fallback",
+      name: "Preview fallback",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${fallbackPort}`,
+      apiKey: "preview-fallback-secret"
+    })
+  ];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    captureEnabled: false
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 21, settings });
+  const app = createApp(settings, { settingsSource: source });
+  const proxyPort = await listen(app.server);
+  t.after(() => closeServer(app.server));
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "preview-model", input: "cool primary" })
+  });
+  assert.equal(response.status, 503);
+  await response.arrayBuffer();
+
+  const preview = app.previewRoute("preview-model");
+  const serialized = JSON.stringify(preview);
+  assert.equal(serialized.includes("preview-primary-secret"), false);
+  assert.equal(serialized.includes("preview-fallback-secret"), false);
+  assert.equal(preview.source, "live");
+  assert.equal(preview.generation, 21);
+  assert.equal(preview.customPrimaryProviderId, "preview-fallback");
+  assert.deepEqual(preview.candidates.map(({ providerId, availability, order }) => ({
+    providerId,
+    availability,
+    order
+  })), [
+    { providerId: "preview-fallback", availability: "ready", order: 1 },
+    { providerId: "preview-primary", availability: "cooling", order: null }
+  ]);
+});
+
 test("model-aware routing applies per-model provider priority and custom availability", async (t) => {
   const observed = [];
   const createUpstream = (providerId) => http.createServer((req, res) => {
@@ -1277,6 +1342,16 @@ test("weighted cooldown reapplies each provider override or exact mapping to the
       { ...second, model: "openrouter/client-model" }
     ]
   );
+  assert.deepEqual(
+    captureManager.records.map(({ requestedModel, forwardedModel }) => ({
+      requestedModel,
+      forwardedModel
+    })),
+    [
+      { requestedModel: "client-model", forwardedModel: "provider-override-model" },
+      { requestedModel: "client-model", forwardedModel: "openrouter/client-model" }
+    ]
+  );
 });
 
 test("exact model mappings rewrite compressed matches and preserve unmatched bytes", async (t) => {
@@ -1493,6 +1568,8 @@ test("server writes proxied request and response to sqlite", async () => {
   assert.equal(rows[0].provider_id, "standalone");
   assert.equal(rows[0].provider_name, "Standalone");
   assert.equal(rows[0].route, "custom");
+  assert.equal(rows[0].requested_model, null);
+  assert.equal(rows[0].forwarded_model, null);
   assert.match(rows[0].request_headers_json, /REDACTED/);
   assert.doesNotMatch(rows[0].request_headers_json, /upstream-secret/);
   assert.match(rows[0].response_headers_json, /REDACTED/);
@@ -1590,6 +1667,8 @@ test("large Capture bodies preserve totals while omitting prefixes that cannot b
   assert.equal(row.response_body_encoding, "empty-truncated");
   assert.equal(row.response_body_bytes, responseBody.length);
   assert.equal(Buffer.byteLength(row.response_body), 0);
+  assert.equal(row.requested_model, "large-capture-model");
+  assert.equal(row.forwarded_model, "large-capture-model");
   assert.deepEqual(metrics.map(({ result, model, inputTokens, outputTokens }) => ({
     result,
     model,
@@ -2414,6 +2493,22 @@ test("metrics and Capture detect headerless SSE usage while screening credential
   for (const encodedModel of encodedModels) {
     assert.equal(serialized.includes(encodedModel), false);
   }
+  const capturedModels = captureManager.records.map(({ requestedModel, forwardedModel }) => ({
+    requestedModel,
+    forwardedModel
+  }));
+  const serializedCapturedModels = JSON.stringify(capturedModels);
+  assert.equal(serializedCapturedModels.includes(secret), false);
+  for (const encodedModel of encodedModels) {
+    assert.equal(serializedCapturedModels.includes(encodedModel), false);
+  }
+  assert.deepEqual(capturedModels, [
+    { requestedModel: "model-json", forwardedModel: "model-json" },
+    { requestedModel: null, forwardedModel: null },
+    { requestedModel: null, forwardedModel: null },
+    { requestedModel: null, forwardedModel: null },
+    { requestedModel: null, forwardedModel: null }
+  ]);
   assert.equal(serialized.includes("response-private-id"), false);
   assert.equal(serialized.includes("url"), false);
   assert.equal(serialized.includes("headers"), false);

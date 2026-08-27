@@ -7,6 +7,9 @@ import os from "node:os";
 import { join, resolve } from "node:path";
 
 import { createAdminServer } from "../../src/supervisor/admin-server.mjs";
+import { projectAccountRoutingState } from "../../src/routing/account-routing.mjs";
+import { ProviderScheduler } from "../../src/routing/provider-scheduler.mjs";
+import { buildRoutePreview } from "../../src/routing/route-preview.mjs";
 import { SessionAuth } from "../../src/supervisor/session-auth.mjs";
 import { CrpError } from "../../src/shared/errors.mjs";
 
@@ -391,7 +394,9 @@ function createServices({ upstream }) {
         outcome: "aborted",
         providerId: "provider-2",
         providerName: "Fallback API",
-        route: "custom"
+        route: "custom",
+        requestedModel: "gpt-5.6-sol",
+        forwardedModel: "vendor/gpt-5.6-sol"
       },
       {
         id: 3,
@@ -417,7 +422,9 @@ function createServices({ upstream }) {
         outcome: "success",
         providerId: "chatgpt-account",
         providerName: "ChatGPT",
-        route: "account"
+        route: "account",
+        requestedModel: "gpt-5.6-sol",
+        forwardedModel: "gpt-5.6-sol"
       },
       {
         id: 2,
@@ -443,7 +450,9 @@ function createServices({ upstream }) {
         outcome: "rejected",
         providerId: "provider-2",
         providerName: "Fallback API",
-        route: "custom"
+        route: "custom",
+        requestedModel: "gpt-5.6-luna",
+        forwardedModel: "gpt-5.6-luna"
       },
       {
         id: 1,
@@ -469,7 +478,9 @@ function createServices({ upstream }) {
         outcome: "error",
         providerId: "provider-2",
         providerName: "Fallback API",
-        route: "custom"
+        route: "custom",
+        requestedModel: null,
+        forwardedModel: null
       }
     ],
     account: {
@@ -551,6 +562,82 @@ function createServices({ upstream }) {
     return state.providers.find((provider) => provider.id === state.activeProviderId) ?? null;
   }
 
+  function buildFixtureRoutePreview(model) {
+    const eligible = state.providers
+      .filter((provider) => provider.lastTestStatus === "passed" && credentials.has(provider.id))
+      .sort((left, right) => {
+        if (left.weight !== right.weight) return right.weight - left.weight;
+        if (left.id === state.activeProviderId && right.id !== state.activeProviderId) return -1;
+        if (right.id === state.activeProviderId && left.id !== state.activeProviderId) return 1;
+        const created = left.createdAt.localeCompare(right.createdAt);
+        return created === 0 ? left.id.localeCompare(right.id) : created;
+      });
+    const mappingGroups = new Map(state.modelMappingGroups.map((group) => [group.id, group]));
+    const providers = eligible.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      weight: provider.weight,
+      supportedModels: provider.supportedModelsMode === "auto"
+        ? null
+        : structuredClone(provider.supportedModels),
+      disabledModels: provider.supportedModelsMode === "auto"
+        ? structuredClone(provider.supportedModels)
+        : [],
+      proxy: {
+        modelMode: provider.modelMode,
+        modelOverride: provider.modelOverride,
+        modelMappings: provider.modelMappingGroupId === null
+          ? []
+          : structuredClone(mappingGroups.get(provider.modelMappingGroupId)?.rules ?? [])
+      }
+    }));
+    const providerIds = new Set(providers.map((provider) => provider.id));
+    const activeGroup = state.routingRuleGroups.find((group) => group.active) ?? null;
+    const priorityRules = (activeGroup?.rules ?? []).flatMap((rule) => {
+      const availableProviderIds = rule.providerIds.filter((providerId) => providerIds.has(providerId));
+      return availableProviderIds.length === 0
+        ? []
+        : rule.models.map((ruleModel) => ({
+            model: ruleModel,
+            providerIds: structuredClone(availableProviderIds)
+          }));
+    });
+    const running = state.worker.phase === "running" && state.worker.state?.listening === true;
+    const preview = buildRoutePreview({
+      source: running ? "live" : "configured",
+      generation: running ? Math.max(1, state.worker.generation) : 0,
+      settings: {
+        providers,
+        routing: { mode: state.routingMode, providerPriorityRules: priorityRules }
+      },
+      accountState: projectAccountRoutingState(state.account),
+      providerScheduler: new ProviderScheduler({ now: () => Date.parse(STARTED_AT) }),
+      nowMs: Date.parse(STARTED_AT),
+      model
+    });
+    const matchedRule = activeGroup?.rules.find((rule) => rule.models.includes(model)) ?? null;
+    const profiles = new Map(state.providers.map((provider) => [provider.id, provider]));
+    return {
+      ...preview,
+      routingRule: preview.matchedPriorityRule && activeGroup && matchedRule ? {
+        groupId: activeGroup.id,
+        groupName: activeGroup.name,
+        providerIds: structuredClone(matchedRule.providerIds)
+      } : null,
+      candidates: preview.candidates.map((candidate) => {
+        const profile = profiles.get(candidate.providerId);
+        const mappingGroup = candidate.transformation === "mapping"
+          && profile?.modelMappingGroupId
+          ? mappingGroups.get(profile.modelMappingGroupId) ?? null
+          : null;
+        return {
+          ...candidate,
+          mappingGroup: mappingGroup ? { id: mappingGroup.id, name: mappingGroup.name } : null
+        };
+      })
+    };
+  }
+
   const providerService = {
     async listProviders() {
       calls.push({ operation: "listProviders" });
@@ -616,6 +703,10 @@ function createServices({ upstream }) {
     listRoutingRuleGroups() {
       calls.push({ operation: "listRoutingRuleGroups" });
       return structuredClone(state.routingRuleGroups);
+    },
+    async previewRoute(model) {
+      calls.push({ operation: "previewRoute", model });
+      return buildFixtureRoutePreview(model);
     },
     async createRoutingRuleGroup(input) {
       rejectNextMutation("createRoutingRuleGroup");

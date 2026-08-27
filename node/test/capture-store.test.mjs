@@ -164,6 +164,8 @@ test("capture manager writes a complete request/response record", async () => {
     providerId: "provider-original",
     providerName: "Original provider",
     route: "custom",
+    requestedModel: "model-a",
+    forwardedModel: "vendor/model-a",
     requestHeaders: {
       Authorization: "Bearer super-secret",
       Accept: "application/json"
@@ -194,6 +196,8 @@ test("capture manager writes a complete request/response record", async () => {
   assert.equal(rows[0].provider_id, "provider-original");
   assert.equal(rows[0].provider_name, "Original provider");
   assert.equal(rows[0].route, "custom");
+  assert.equal(rows[0].requested_model, "model-a");
+  assert.equal(rows[0].forwarded_model, "vendor/model-a");
   assert.equal(rows[0].input_tokens, 23);
   assert.equal(rows[0].output_tokens, 7);
   assert.equal(rows[0].usage_observation_status, "observed");
@@ -203,7 +207,7 @@ test("capture manager writes a complete request/response record", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("capture manager upgrades schema 1 and persists provider attribution plus usage columns", (t) => {
+test("capture manager upgrades schema 1 and persists model, provider, and usage metadata", (t) => {
   const dir = makeTempDir("crp-capture-schema-1");
   mkdirSync(dir, { recursive: true });
   const runtimeConfigPath = join(dir, "proxy-config.json");
@@ -261,6 +265,8 @@ test("capture manager upgrades schema 1 and persists provider attribution plus u
     providerId: "provider-stable",
     providerName: "Stable provider",
     route: "custom",
+    requestedModel: "model-a",
+    forwardedModel: "vendor/model-a",
     requestHeaders: {},
     requestBody: Buffer.from("{}"),
     responseStatus: 200,
@@ -274,16 +280,23 @@ test("capture manager upgrades schema 1 and persists provider attribution plus u
   const columns = upgraded.prepare("PRAGMA table_info(http_transactions)").all()
     .map(({ name }) => name);
   const version = upgraded.prepare("PRAGMA user_version").get().user_version;
-  const row = upgraded.prepare("SELECT provider_id, provider_name, route FROM http_transactions").get();
+  const row = upgraded.prepare(`
+    SELECT provider_id, provider_name, route, requested_model, forwarded_model
+    FROM http_transactions
+  `).get();
   upgraded.close();
-  assert.equal(version, 4);
+  assert.equal(version, 5);
   assert.ok(columns.includes("provider_id"));
   assert.ok(columns.includes("input_tokens"));
   assert.ok(columns.includes("output_tokens"));
   assert.ok(columns.includes("usage_observation_status"));
+  assert.ok(columns.includes("requested_model"));
+  assert.ok(columns.includes("forwarded_model"));
   assert.equal(row.provider_id, "provider-stable");
   assert.equal(row.provider_name, "Stable provider");
   assert.equal(row.route, "custom");
+  assert.equal(row.requested_model, "model-a");
+  assert.equal(row.forwarded_model, "vendor/model-a");
 });
 
 test("capture manager hot-disables when runtime config changes", async (t) => {

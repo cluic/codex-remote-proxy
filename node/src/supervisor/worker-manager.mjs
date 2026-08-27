@@ -248,6 +248,39 @@ export class WorkerManager {
     return this.#trackOperation(this.#performApplyAccountState(message));
   }
 
+  previewRoute(model) {
+    if (this.#closed) {
+      return Promise.reject(managerError("WORKER_MANAGER_CLOSED"));
+    }
+    let message;
+    try {
+      message = {
+        version: PROTOCOL_VERSION,
+        type: "route-preview",
+        requestId: this.#nextRequestId("route-preview"),
+        model
+      };
+      validateParentMessage(message);
+    } catch {
+      return Promise.reject(managerError("WORKER_PROTOCOL_INVALID"));
+    }
+    if (this.#operation) {
+      return this.#operation.then(() => this.previewRoute(model));
+    }
+    const child = this.#child;
+    const epoch = this.#epoch;
+    if (this.#phase !== "running" || !child) {
+      return Promise.reject(managerError("WORKER_NOT_RUNNING"));
+    }
+    return this.#sendAndWait(child, message, {
+      epoch,
+      requestId: message.requestId,
+      type: "route-preview",
+      timeoutMs: this.#ackTimeoutMs,
+      timeoutCode: "WORKER_ACK_TIMEOUT"
+    }).then((response) => response.preview);
+  }
+
   stop({ drainTimeoutMs = 5_000 } = {}) {
     if (this.#closed) {
       return Promise.reject(managerError("WORKER_MANAGER_CLOSED"));

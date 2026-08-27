@@ -91,6 +91,26 @@ const CHATGPT_AUTH_MODES = new Set([
 ]);
 const ACCOUNT_QUOTA_STATUSES = new Set(["available", "exhausted", "unknown"]);
 const ROUTING_MODES = new Set(["custom_only", "account_first"]);
+const ROUTE_PREVIEW_SOURCES = new Set(["live", "configured"]);
+const ROUTE_PREVIEW_ROUTES = new Set(["account", "custom", "unavailable"]);
+const ROUTE_PREVIEW_REASONS = new Set([
+  "account_eligible",
+  "account_cooldown",
+  "account_quota_exhausted",
+  "custom_only",
+  "not_chatgpt_auth",
+  "provider_pool_unavailable",
+  "custom_model_unavailable"
+]);
+const ROUTE_PREVIEW_ACCOUNT_REASONS = new Set([
+  "account_eligible",
+  "account_cooldown",
+  "account_quota_exhausted",
+  "custom_only",
+  "not_chatgpt_auth"
+]);
+const ROUTE_PREVIEW_TRANSFORMATIONS = new Set(["passthrough", "mapping", "override"]);
+const ROUTE_PREVIEW_AVAILABILITIES = new Set(["ready", "cooling", "disabled", "not_listed"]);
 const PUBLIC_TEXT_PATTERN = /^[^\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]{1,128}$/u;
 
 function apiError(code, message, action, status) {
@@ -300,6 +320,97 @@ function projectRoutingRuleGroup(group) {
     active: group?.active === true,
     createdAt: projectMetricTimestamp(group?.createdAt),
     updatedAt: projectMetricTimestamp(group?.updatedAt)
+  };
+}
+
+function projectRoutePreviewModel(value) {
+  const projected = projectMetricText(value, 256);
+  return projected !== null && Buffer.byteLength(projected, "utf8") <= 512
+    ? projected
+    : null;
+}
+
+function projectRoutePreview(preview) {
+  const candidates = Array.isArray(preview?.candidates)
+    ? preview.candidates.slice(0, 100).map((candidate) => {
+        const providerId = projectMetricText(candidate?.providerId, 128);
+        const providerName = projectMetricText(candidate?.providerName, 256);
+        const transformation = ROUTE_PREVIEW_TRANSFORMATIONS.has(candidate?.transformation)
+          ? candidate.transformation
+          : null;
+        const targetModel = candidate?.targetModel === null
+          ? null
+          : projectRoutePreviewModel(candidate?.targetModel);
+        if (providerId === null
+          || providerName === null
+          || transformation === null
+          || (transformation === "passthrough" && targetModel !== null)
+          || (transformation !== "passthrough" && targetModel === null)) {
+          return null;
+        }
+        const mappingGroupId = projectMetricText(candidate?.mappingGroup?.id, 128);
+        const mappingGroupName = projectMetricText(candidate?.mappingGroup?.name, 100);
+        return {
+          providerId,
+          providerName,
+          weight: Number.isInteger(candidate?.weight)
+            && candidate.weight >= 1 && candidate.weight <= 1_000
+            ? candidate.weight
+            : 100,
+          targetModel,
+          transformation,
+          availability: ROUTE_PREVIEW_AVAILABILITIES.has(candidate?.availability)
+            ? candidate.availability
+            : "not_listed",
+          coolingUntil: projectMetricTimestamp(candidate?.coolingUntil),
+          order: candidate?.order === null
+            ? null
+            : (Number.isInteger(candidate?.order)
+                && candidate.order >= 1 && candidate.order <= 100
+              ? candidate.order
+              : null),
+          mappingGroup: mappingGroupId !== null && mappingGroupName !== null ? {
+            id: mappingGroupId,
+            name: mappingGroupName
+          } : null
+        };
+      }).filter(Boolean)
+    : [];
+  const routingGroupId = projectMetricText(preview?.routingRule?.groupId, 128);
+  const routingGroupName = projectMetricText(preview?.routingRule?.groupName, 100);
+  const routingProviderIds = Array.isArray(preview?.routingRule?.providerIds)
+    ? preview.routingRule.providerIds.slice(0, 100)
+        .map((providerId) => projectMetricText(providerId, 128))
+        .filter(Boolean)
+    : [];
+  const customPrimaryProviderId = projectMetricText(preview?.customPrimaryProviderId, 128);
+  return {
+    source: ROUTE_PREVIEW_SOURCES.has(preview?.source) ? preview.source : "configured",
+    generation: Number.isSafeInteger(preview?.generation)
+      && preview.generation >= 0 && preview.generation <= Number.MAX_SAFE_INTEGER
+      ? preview.generation
+      : 0,
+    evaluatedAt: projectMetricTimestamp(preview?.evaluatedAt),
+    route: ROUTE_PREVIEW_ROUTES.has(preview?.route) ? preview.route : "unavailable",
+    reason: ROUTE_PREVIEW_REASONS.has(preview?.reason)
+      ? preview.reason
+      : "custom_model_unavailable",
+    account: {
+      enabled: preview?.account?.enabled === true,
+      selected: preview?.account?.selected === true,
+      reason: ROUTE_PREVIEW_ACCOUNT_REASONS.has(preview?.account?.reason)
+        ? preview.account.reason
+        : "custom_only",
+      fallbackAvailable: preview?.account?.fallbackAvailable === true
+    },
+    matchedPriorityRule: preview?.matchedPriorityRule === true,
+    customPrimaryProviderId,
+    routingRule: routingGroupId !== null && routingGroupName !== null ? {
+      groupId: routingGroupId,
+      groupName: routingGroupName,
+      providerIds: routingProviderIds
+    } : null,
+    candidates
   };
 }
 
@@ -764,7 +875,9 @@ function projectForwardingRecord(record) {
     outcome,
     providerId: projectMetricText(record?.providerId, 256),
     providerName: projectMetricText(record?.providerName, 256),
-    route
+    route,
+    requestedModel: projectMetricText(record?.requestedModel, 256),
+    forwardedModel: projectMetricText(record?.forwardedModel, 256)
   };
 }
 
@@ -973,6 +1086,7 @@ function allowedMethods(pathname) {
     [`${API_PREFIX}/metrics/overview`, ["GET"]],
     [`${API_PREFIX}/forwarding-records`, ["GET"]],
     [`${API_PREFIX}/model-mappings`, ["GET", "POST"]],
+    [`${API_PREFIX}/routing-preview`, ["GET"]],
     [`${API_PREFIX}/provider-presets`, ["GET"]],
     [`${API_PREFIX}/routing-rule-groups`, ["GET", "POST"]],
     [`${API_PREFIX}/routing-rule-groups/active`, ["PATCH"]],
@@ -1328,6 +1442,19 @@ export function createAdminServer({
         search: searchValues[0] ?? ""
       });
       sendJson(response, 200, projectForwardingRecordsPage(result, limit));
+      return;
+    }
+    if (url.pathname === `${API_PREFIX}/routing-preview` && request.method === "GET") {
+      for (const key of url.searchParams.keys()) {
+        if (key !== "model") throw bodyError("API_BODY_INVALID");
+      }
+      const values = url.searchParams.getAll("model");
+      const model = values.length === 1 ? values[0] : null;
+      if (projectRoutePreviewModel(model) === null) {
+        throw bodyError("API_BODY_INVALID");
+      }
+      const routePreview = await providerService.previewRoute(model);
+      sendJson(response, 200, { routePreview: projectRoutePreview(routePreview) });
       return;
     }
     if (url.pathname === `${API_PREFIX}/model-mappings` && request.method === "GET") {

@@ -110,4 +110,31 @@ No actionable P0, P1, or P2 visual findings remain in the final 1440 × 900 evid
 - Switching to all-interface listening forces authentication on and disables the switch. Listen-address changes remain unavailable while the Worker is running. The shared responsive matrix also opens System in English and Chinese at 1440, 1024, and 390 widths without page-level horizontal overflow.
 - Full Chromium E2E matrix: 56/56 passed. Visual review found no actionable P0, P1, or P2 issue.
 
+## Overview Route Preview QA
+
+- Verified on 2026-08-25.
+- Custom-provider evidence: `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-custom-1440x900.png`
+- Collapsed account-first fallback evidence: `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-account-fallback-1440x900.png`
+- Expanded account-first fallback evidence: `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-account-fallback-expanded-1440x900.png`
+- Mobile evidence: `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-account-fallback-390x844.png`
+- Verified state: a running generation-8 Worker, `gpt-5.6-sol`, an exact routing group preferring Provider Beta, a Provider Beta mapping to `vendor/gpt-5.6-sol`, and Provider Alpha as the second candidate.
+- The density revision replaces stacked explanatory cards with one always-visible primary rail and one default-collapsed conditional fallback. The collapsed fallback still names the matched rule, first Provider, and rewritten model; explicit expansion reveals the full amber fallback rail. Provider retry order remains compressed into a single strip beneath it.
+- Runtime source, generation, and route type now share the title area. Retry assumptions and delivery semantics remain available in a collapsed Decision details disclosure instead of consuming the default viewport.
+- The custom-only board renders at 1128 × 234 px. The account-first fallback summary is a single 32 px row; the collapsed board renders at 1128 × 275 px and expands to 1128 × 357 px only on demand. The 390 px collapsed board renders at 358 × 396 px, keeps each active rail horizontal, removes redundant request/account nodes from the long custom-only rail, and passes clipping, overlap, and document-overflow checks.
+- Nodes now use lightweight capsule surfaces instead of nested rectangular cards. Connector highlights travel through consecutive segments with staggered timing; the expanded conditional path retains an amber dashed treatment. Reduced-motion preferences collapse both the entrance and flow animations through the existing global rule.
+- The source badge distinguishes live Worker state from a stopped configuration snapshot. Copy consistently says “predicted outlet,” and detailed retry semantics remain accessible without competing with the effective route.
+- The focused Chromium route-preview scenario passed in English at 1440 × 900 and 390 × 844. Visual review found no actionable P0, P1, or P2 issue.
+- Full Chromium E2E matrix: 57/57 passed.
+
 final result: passed
+
+## Forwarding Model Attribution QA
+
+- Verified on 2026-08-27.
+- Browser evidence: `output/playwright/task11/forwarding-records-lists-f-74ba4-ata-only-forwarding-records-chromium/forwarding-models-1440x900.png`
+- Verified state: four mixed account/custom rows, one exact model rewrite from `gpt-5.6-sol` to `vendor/gpt-5.6-sol`, one unchanged account model, one unchanged custom model, and one legacy row without model metadata.
+- The records table gives model attribution a dedicated, fixed-width column instead of squeezing it into the request path. Exact rewrites use a compact `requested → forwarded` treatment; unchanged models render once; legacy rows say `Not recorded`. The detail panel exposes separate requested and forwarded rows, and search matches either persisted model column.
+- Capture schema 5 adds nullable requested/forwarded model columns through the existing additive migration. Values reuse the proxy's bounded protected-value screening, so model metadata can remain available even when Capture intentionally omits a large, compressed, truncated, or protected request body.
+- The Admin response remains metadata-only and never projects request/response bodies or authentication headers. The desktop table intentionally keeps only six scan fields—time, request, model, Provider, result, and duration—and has no horizontal overflow while the detail panel is open. Token usage and transfer volume remain fully available in the selected record details; narrow mobile viewports retain a contained table scroller.
+- The table uses a two-line date/time cell and a two-line rewrite cell so values never spill into adjacent columns. Both the automated 1280 px assertion and the live Chinese 1280 px check measured a 625 px table viewport with an equal 625 px scroll width; all six columns remained ordered and non-overlapping.
+- Final verification: 600/600 unit tests, 62/62 integration tests, and 57/57 Chromium E2E scenarios passed; the live Chinese browser check showed the requested/forwarded model pair in both the table and detail panel with zero console errors.

@@ -209,6 +209,20 @@ async function applyAccountState(message) {
   });
 }
 
+async function previewRoute(message) {
+  if (stopping || phase !== "running" || !app || typeof app.previewRoute !== "function") {
+    const error = new Error("Worker route preview is unavailable.");
+    error.code = "WORKER_CONFIGURE_FAILED";
+    throw error;
+  }
+  await sendChildMessage({
+    version: PROTOCOL_VERSION,
+    type: "route-preview",
+    requestId: message.requestId,
+    preview: app.previewRoute(message.model)
+  });
+}
+
 async function shutdown() {
   if (stopping) {
     return;
@@ -313,6 +327,10 @@ async function handleParentMessage(rawMessage) {
     }
     if (message.type === "account-state") {
       await applyAccountState(message);
+      return;
+    }
+    if (message.type === "route-preview") {
+      await previewRoute(message);
       return;
     }
     if (message.type === "status") {

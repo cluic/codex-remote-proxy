@@ -130,6 +130,47 @@ function createServices() {
       calls.push(["listRoutingRuleGroups"]);
       return structuredClone(routingRuleGroups);
     },
+    async previewRoute(model) {
+      calls.push(["previewRoute", model]);
+      return {
+        source: "live",
+        generation: 4,
+        evaluatedAt: "2026-07-13T00:00:00.000Z",
+        route: "custom",
+        reason: "custom_only",
+        account: {
+          enabled: false,
+          selected: false,
+          reason: "custom_only",
+          fallbackAvailable: true
+        },
+        matchedPriorityRule: true,
+        customPrimaryProviderId: "provider-1",
+        routingRule: {
+          groupId: "routing-1",
+          groupName: "Interactive traffic",
+          providerIds: ["provider-1"],
+          credentialRef: CREDENTIAL_REF
+        },
+        candidates: [{
+          providerId: "provider-1",
+          providerName: "Primary",
+          weight: 100,
+          targetModel: "vendor/model-a",
+          transformation: "mapping",
+          availability: "ready",
+          coolingUntil: null,
+          order: 1,
+          mappingGroup: {
+            id: "mapping-1",
+            name: "Provider aliases",
+            credentialRef: CREDENTIAL_REF
+          },
+          apiKey: SECRET
+        }],
+        apiKey: SECRET
+      };
+    },
     async createRoutingRuleGroup(input) {
       calls.push(["createRoutingRuleGroup", input]);
       const group = {
@@ -535,6 +576,8 @@ function createServices() {
           providerId: "provider-1",
           providerName: "Primary",
           route: "custom",
+          requestedModel: "model-a",
+          forwardedModel: "vendor/model-a",
           requestBody: SECRET,
           requestHeaders: { authorization: SECRET }
         }],
@@ -1153,6 +1196,7 @@ test("routes every approved Admin API operation through injected services", asyn
   const requests = [
     ["GET", "/api/v1/status", undefined, 200],
     ["GET", "/api/v1/metrics/overview?window=7d", undefined, 200],
+    ["GET", "/api/v1/routing-preview?model=model-a", undefined, 200],
     ["GET", "/api/v1/providers", undefined, 200],
     ["POST", "/api/v1/providers", {
       provider: { name: "Backup", baseUrl: "https://backup.example/v1" },
@@ -1558,6 +1602,81 @@ test("metrics overview is authenticated read-only, bounded, and positively proje
   assert.equal(wrongMethod.response.headers.get("allow"), "GET");
 });
 
+test("routing preview is authenticated, query-bounded, and metadata-only", async (t) => {
+  const harness = await createHarness(t);
+  const unauthenticated = await harness.request("/api/v1/routing-preview?model=model-a");
+  assert.equal(unauthenticated.response.status, 401);
+
+  const session = await browserSession(harness);
+  const result = await harness.request("/api/v1/routing-preview?model=model-a", {
+    headers: { cookie: session.cookie, origin: harness.address.origin }
+  });
+  assert.equal(result.response.status, 200, result.text);
+  assertNoSensitiveResponse(result);
+  assert.deepEqual(result.json, {
+    routePreview: {
+      source: "live",
+      generation: 4,
+      evaluatedAt: "2026-07-13T00:00:00.000Z",
+      route: "custom",
+      reason: "custom_only",
+      account: {
+        enabled: false,
+        selected: false,
+        reason: "custom_only",
+        fallbackAvailable: true
+      },
+      matchedPriorityRule: true,
+      customPrimaryProviderId: "provider-1",
+      routingRule: {
+        groupId: "routing-1",
+        groupName: "Interactive traffic",
+        providerIds: ["provider-1"]
+      },
+      candidates: [{
+        providerId: "provider-1",
+        providerName: "Primary",
+        weight: 100,
+        targetModel: "vendor/model-a",
+        transformation: "mapping",
+        availability: "ready",
+        coolingUntil: null,
+        order: 1,
+        mappingGroup: {
+          id: "mapping-1",
+          name: "Provider aliases"
+        }
+      }]
+    }
+  });
+  assert.deepEqual(harness.calls.find((call) => call[0] === "previewRoute"), [
+    "previewRoute",
+    "model-a"
+  ]);
+
+  for (const path of [
+    "/api/v1/routing-preview",
+    "/api/v1/routing-preview?model=",
+    "/api/v1/routing-preview?model=%20model-a",
+    "/api/v1/routing-preview?model=model-a&model=model-b",
+    "/api/v1/routing-preview?model=model-a&unknown=1",
+    `/api/v1/routing-preview?model=${"m".repeat(257)}`,
+    `/api/v1/routing-preview?model=${encodeURIComponent("模".repeat(171))}`
+  ]) {
+    const invalid = await harness.request(path, { headers: bearer(harness) });
+    assert.equal(invalid.response.status, 400, path);
+    assert.equal(invalid.json.error.code, "API_BODY_INVALID");
+    assertNoSensitiveResponse(invalid);
+  }
+  const wrongMethod = await harness.request("/api/v1/routing-preview?model=model-a", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "GET");
+  assertNoSensitiveResponse(wrongMethod);
+});
+
 test("forwarding records are authenticated, query-bounded, and metadata-only", async (t) => {
   const harness = await createHarness(t);
   const unauthenticated = await harness.request("/api/v1/forwarding-records");
@@ -1598,7 +1717,9 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
       outcome: "success",
       providerId: "provider-1",
       providerName: "Primary",
-      route: "custom"
+      route: "custom",
+      requestedModel: "model-a",
+      forwardedModel: "vendor/model-a"
     }],
     page: { limit: 25, nextBefore: null },
     summary: { total: 1, success: 1, rejected: 0, aborted: 0, error: 0 }

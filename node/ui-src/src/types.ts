@@ -90,6 +90,49 @@ export interface RoutingRuleGroupInput {
   rules: RoutingRule[];
 }
 
+export type RoutePreviewReason =
+  | "account_eligible"
+  | "account_cooldown"
+  | "account_quota_exhausted"
+  | "custom_only"
+  | "not_chatgpt_auth"
+  | "provider_pool_unavailable"
+  | "custom_model_unavailable";
+
+export interface RoutePreviewCandidate {
+  providerId: string;
+  providerName: string;
+  weight: number;
+  targetModel: string | null;
+  transformation: "passthrough" | "mapping" | "override";
+  availability: "ready" | "cooling" | "disabled" | "not_listed";
+  coolingUntil: string | null;
+  order: number | null;
+  mappingGroup: { id: string; name: string } | null;
+}
+
+export interface RoutePreview {
+  source: "live" | "configured";
+  generation: number;
+  evaluatedAt: string | null;
+  route: "account" | "custom" | "unavailable";
+  reason: RoutePreviewReason;
+  account: {
+    enabled: boolean;
+    selected: boolean;
+    reason: Exclude<RoutePreviewReason, "provider_pool_unavailable" | "custom_model_unavailable">;
+    fallbackAvailable: boolean;
+  };
+  matchedPriorityRule: boolean;
+  customPrimaryProviderId: string | null;
+  routingRule: {
+    groupId: string;
+    groupName: string;
+    providerIds: string[];
+  } | null;
+  candidates: RoutePreviewCandidate[];
+}
+
 export interface WorkerChildState {
   phase: string;
   configured: boolean;
@@ -260,6 +303,8 @@ export interface ForwardingRecord {
   providerId: string | null;
   providerName: string | null;
   route: "account" | "custom" | "unknown";
+  requestedModel: string | null;
+  forwardedModel: string | null;
 }
 
 export interface ForwardingRecordsPageData {

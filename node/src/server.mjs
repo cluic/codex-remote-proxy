@@ -29,6 +29,7 @@ import {
 import {
   ProviderScheduler
 } from "./routing/provider-scheduler.mjs";
+import { buildRoutePreview } from "./routing/route-preview.mjs";
 
 const CONFIG_ENV_VAR = "CODEX_PROXY_CONFIG";
 const DEFAULT_CONFIG_PATH = resolve(import.meta.dirname, "..", "proxy-config.json");
@@ -1551,6 +1552,8 @@ function saveCaptureRecord(captureContext, fields) {
     providerId: captureContext.providerId,
     providerName: captureContext.providerName,
     route: captureContext.route,
+    requestedModel: fields.requestedModel ?? null,
+    forwardedModel: fields.forwardedModel ?? null,
     requestHeaders: captureContext.requestHeaders,
     requestBody: captureContext.requestBody,
     requestBodyBytes: captureContext.requestBodyBytes,
@@ -1588,12 +1591,12 @@ export function createServer(settings, {
   routingNow = Date.now,
   resolveAccountTarget = (target) => target,
   providerScheduler = new ProviderScheduler({ now: routingNow }),
+  routingState = { accountBlockedUntilMs: null },
   accessKeyStore = null
 } = {}) {
   if (settings?.server?.host === "0.0.0.0" && settings?.access?.enabled !== true) {
     throw new TypeError("public proxy listening requires API key authentication");
   }
-  let accountBlockedUntilMs = null;
   return http.createServer((req, res) => {
     if (!req.url) {
       writeJson(res, 400, { error: { message: "Missing request URL", type: "proxy_bad_request" } });
@@ -1678,7 +1681,7 @@ export function createServer(settings, {
         ? withoutAuthorizationRawHeaders(req.rawHeaders)
         : req.rawHeaders,
       accountState,
-      localBlockedUntilMs: accountBlockedUntilMs,
+      localBlockedUntilMs: routingState.accountBlockedUntilMs,
       nowMs: routingNow()
     });
     let metricRoute = routeDecision.route;
@@ -1727,6 +1730,7 @@ export function createServer(settings, {
     let metricSaved = false;
     let terminal = false;
     let requestEnded = false;
+    let requestedModel = null;
     let requestModel = overrideModel && !initialAccountRoute
       ? safeMetricModel(overrideModel, requestSettings, requestProtectedValues)
       : null;
@@ -1771,9 +1775,14 @@ export function createServer(settings, {
     function finalizeCapture(fields) {
       if (captureSaved || !captureHandle) return;
       captureSaved = true;
+      if (requestEnded) finishRequestInspection();
       const context = ensureCaptureContext();
       Object.assign(context, requestCaptureSnapshot());
-      saveCaptureRecord(context, fields);
+      saveCaptureRecord(context, {
+        ...fields,
+        requestedModel,
+        forwardedModel: requestModel
+      });
     }
 
     function finishRequestInspection() {
@@ -1784,6 +1793,7 @@ export function createServer(settings, {
         requestModel = inspection.complete && !inspection.invalid
           ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
           : null;
+        requestedModel = requestModel;
       } else if (encodedRequestMetric && !encodedRequestMetric.truncated) {
         const decoded = decodeBoundedBody(
           encodedRequestMetric.buffer(),
@@ -1797,6 +1807,7 @@ export function createServer(settings, {
           requestModel = inspection.complete && !inspection.invalid
             ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
             : null;
+          requestedModel = requestModel;
         }
       }
       return requestModel;
@@ -1924,10 +1935,11 @@ export function createServer(settings, {
         });
         return null;
       }
+      const parsed = parseBoundedJson(decodedBody, MODEL_OVERRIDE_MAX_BYTES);
+      const sourceModel = typeof parsed?.model === "string" ? parsed.model : null;
+      requestedModel = safeMetricModel(sourceModel, requestSettings, requestProtectedValues);
       let targetModel = overrideModel;
       if (targetModel === null) {
-        const parsed = parseBoundedJson(decodedBody, MODEL_OVERRIDE_MAX_BYTES);
-        const sourceModel = typeof parsed?.model === "string" ? parsed.model : null;
         targetModel = sourceModel === null
           ? null
           : modelMappings.find((rule) => rule.sourceModel === sourceModel)?.targetModel ?? null;
@@ -2000,8 +2012,10 @@ export function createServer(settings, {
         requestModel = inspection.complete && !inspection.invalid
           ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
           : null;
+        requestedModel = requestModel;
       } else {
         requestModel = null;
+        requestedModel = null;
       }
       requestInspectionFinished = true;
       return encodedBody;
@@ -2256,14 +2270,14 @@ export function createServer(settings, {
         const observedQuota = parseCodexQuotaHeaders(incoming.headers, routingNow());
         if (observedQuota?.blockedUntilMs !== null
           && observedQuota?.blockedUntilMs !== undefined) {
-          accountBlockedUntilMs = observedQuota.blockedUntilMs;
+          routingState.accountBlockedUntilMs = observedQuota.blockedUntilMs;
         } else if (incoming.statusCode >= 200
           && incoming.statusCode <= 299
           && observedQuota?.status === "available") {
-          accountBlockedUntilMs = null;
+          routingState.accountBlockedUntilMs = null;
         }
         if (incoming.statusCode === 429 && Buffer.isBuffer(replayBody)) {
-          accountBlockedUntilMs = account429Cooldown(incoming.headers, routingNow()).untilMs;
+          routingState.accountBlockedUntilMs = account429Cooldown(incoming.headers, routingNow()).untilMs;
           incoming.destroy();
           startCustomFallback();
           return;
@@ -2596,6 +2610,9 @@ export function createApp(settings = loadConfig(), {
   settingsSource,
   accountStateSource,
   recordMetric,
+  routingNow = Date.now,
+  providerScheduler = new ProviderScheduler({ now: routingNow }),
+  routingState = { accountBlockedUntilMs: null },
   accessKeyStore = settings.access?.dbPath
     ? new AccessKeyStore({ path: settings.access.dbPath })
     : null
@@ -2628,6 +2645,9 @@ export function createApp(settings = loadConfig(), {
     settingsSource,
     accountStateSource,
     recordMetric,
+    routingNow,
+    providerScheduler,
+    routingState,
     accessKeyStore
   });
   server.on("close", () => {
@@ -2635,7 +2655,29 @@ export function createApp(settings = loadConfig(), {
     accessKeyStore?.close();
   });
 
-  return { server, settings, captureManager, accessKeyStore };
+  const previewRoute = (model) => {
+    const active = settingsSource
+      ? settingsSource.current()
+      : { generation: 0, settings };
+    let accountState = active.settings.routing?.account ?? null;
+    try {
+      accountState = accountStateSource?.current().state ?? accountState;
+    } catch {
+      // Previewing uses the same validated snapshot fallback as request routing.
+    }
+    return buildRoutePreview({
+      source: active.generation > 0 ? "live" : "configured",
+      generation: active.generation,
+      settings: active.settings,
+      accountState,
+      providerScheduler,
+      localBlockedUntilMs: routingState.accountBlockedUntilMs,
+      nowMs: routingNow(),
+      model
+    });
+  };
+
+  return { server, settings, captureManager, accessKeyStore, previewRoute };
 }
 
 export function startServer(settings = loadConfig()) {

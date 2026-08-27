@@ -175,7 +175,9 @@ test("lists bounded metadata with keyset paging, filtering, and provider project
     outcome: "error",
     providerId: "fallback",
     providerName: "Fallback API",
-    route: "custom"
+    route: "custom",
+    requestedModel: null,
+    forwardedModel: null
   });
   assert.equal(first.records[1].route, "account");
   assert.equal(first.records[1].providerName, "ChatGPT");
@@ -243,10 +245,14 @@ test("prefers persisted final provider attribution over the current provider cat
     ALTER TABLE http_transactions ADD COLUMN provider_id TEXT;
     ALTER TABLE http_transactions ADD COLUMN provider_name TEXT;
     ALTER TABLE http_transactions ADD COLUMN route TEXT;
+    ALTER TABLE http_transactions ADD COLUMN requested_model TEXT;
+    ALTER TABLE http_transactions ADD COLUMN forwarded_model TEXT;
     UPDATE http_transactions
       SET provider_id = 'deleted-provider',
           provider_name = 'Historical provider',
-          route = 'custom'
+          route = 'custom',
+          requested_model = 'model-a',
+          forwarded_model = 'vendor/model-a'
       WHERE id = 1;
   `);
   database.close();
@@ -261,8 +267,14 @@ test("prefers persisted final provider attribution over the current provider cat
   assert.equal(record.providerId, "deleted-provider");
   assert.equal(record.providerName, "Historical provider");
   assert.equal(record.route, "custom");
+  assert.equal(record.requestedModel, "model-a");
+  assert.equal(record.forwardedModel, "vendor/model-a");
   assert.deepEqual(
     service.list({ search: "Historical provider" }).records.map(({ id }) => id),
+    [1]
+  );
+  assert.deepEqual(
+    service.list({ search: "vendor/model-a" }).records.map(({ id }) => id),
     [1]
   );
 });

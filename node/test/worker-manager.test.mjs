@@ -78,6 +78,34 @@ function childMessage(type, requestId, overrides = {}) {
   return { version: 1, type, requestId, state: state(overrides) };
 }
 
+function routePreview(generation = 1) {
+  return {
+    source: "live",
+    generation,
+    evaluatedAt: "2030-01-01T00:00:00.000Z",
+    route: "custom",
+    reason: "custom_only",
+    account: {
+      enabled: false,
+      selected: false,
+      reason: "custom_only",
+      fallbackAvailable: true
+    },
+    matchedPriorityRule: false,
+    customPrimaryProviderId: "provider-1",
+    candidates: [{
+      providerId: "provider-1",
+      providerName: "Primary",
+      weight: 100,
+      targetModel: null,
+      transformation: "passthrough",
+      availability: "ready",
+      coolingUntil: null,
+      order: 1
+    }]
+  };
+}
+
 function createClock() {
   let current = 1_000;
   let sequence = 0;
@@ -174,6 +202,15 @@ class FakeChild extends EventEmitter {
           type: "account-state-applied",
           requestId: message.requestId,
           revision: message.revision
+        });
+      }
+      if (message.type === "route-preview" && this.script.routePreview !== false) {
+        const generation = this.sent.findLast((candidate) => candidate.type === "configure")?.generation ?? 1;
+        this.emit("message", {
+          version: 1,
+          type: "route-preview",
+          requestId: message.requestId,
+          preview: this.script.preview ?? routePreview(generation)
         });
       }
       if (message.type === "drain" && this.script.drain !== false) {
@@ -513,6 +550,34 @@ test("account routing state updates are acknowledged and stale revisions are ski
   assert.equal(
     harness.children[0].sent.filter((message) => message.type === "account-state").length,
     1
+  );
+});
+
+test("route previews use a bounded read-only IPC request without changing lifecycle state", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.manager.close());
+  await settle(harness.manager.start(makeSnapshot()), harness.clock);
+
+  const preview = await settle(harness.manager.previewRoute("model-a"), harness.clock);
+  assert.deepEqual(preview, routePreview(1));
+  assert.deepEqual(
+    harness.children[0].sent.find((message) => message.type === "route-preview"),
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-2",
+      model: "model-a"
+    }
+  );
+  assert.equal(harness.manager.getPublicState().phase, "running");
+
+  const sentinel = "route-preview-secret-sentinel";
+  await assert.rejects(
+    harness.manager.previewRoute(` ${sentinel}`),
+    (error) => {
+      assert.equal(String(error?.message).includes(sentinel), false);
+      return error?.code === "WORKER_PROTOCOL_INVALID";
+    }
   );
 });
 
