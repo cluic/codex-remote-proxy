@@ -1648,40 +1648,43 @@ code {
 .records-state { padding: 24px; }
 .records-state .empty-state { min-height: 300px; }
 .records-table-wrap { position: relative; min-height: 330px; overflow: auto; }
-.records-table { width: 100%; min-width: 980px; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
-.records-table th { position: sticky; z-index: 1; top: 0; height: 36px; padding: 7px 10px; color: var(--muted); background: var(--surface-soft); border-bottom: 1px solid var(--line); font-size: 10px; text-align: left; text-transform: uppercase; }
-.records-table td { height: 58px; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.records-table { width: 100%; min-width: 620px; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.records-table th { position: sticky; z-index: 1; top: 0; height: 36px; padding: 7px 8px; color: var(--muted); background: var(--surface-soft); border-bottom: 1px solid var(--line); font-size: 10px; text-align: left; text-transform: uppercase; }
+.records-table td { height: 58px; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .records-table tbody tr { transition: background 120ms ease, box-shadow 120ms ease; }
 .records-table tbody tr:hover { background: #f9fbfa; }
 .records-table tbody tr.selected { background: #f0f7f4; box-shadow: inset 3px 0 0 var(--success); }
-.records-table th:nth-child(1) { width: 140px; }
-.records-table th:nth-child(2) { width: 180px; }
-.records-table th:nth-child(3) { width: 196px; }
-.records-table th:nth-child(4) { width: 120px; }
-.records-table th:nth-child(5) { width: 110px; }
-.records-table th:nth-child(6) { width: 86px; }
-.records-table th:nth-child(7) { width: 76px; }
-.records-table th:nth-child(8) { width: 120px; }
-.record-time { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; white-space: nowrap; }
+.records-table th:nth-child(1) { width: 95px; }
+.records-table th:nth-child(2) { width: 95px; }
+.records-table th:nth-child(3) { width: 145px; }
+.records-table th:nth-child(4) { width: 90px; }
+.records-table th:nth-child(5) { width: 115px; }
+.records-table th:nth-child(6) { width: 80px; }
+.record-time { display: grid; min-width: 0; gap: 1px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 9px; line-height: 1.25; }
+.record-time span,
+.record-time strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-time strong { color: var(--ink); font-size: 10px; font-weight: 650; }
 .record-open { display: grid; width: 100%; min-width: 0; gap: 1px; padding: 0; text-align: left; background: transparent; border: 0; cursor: pointer; }
 .record-open strong { color: var(--primary); font-size: 10px; }
 .record-open > code { display: block; min-width: 0; overflow: hidden; color: var(--ink); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .record-model { display: flex; min-width: 0; align-items: center; gap: 3px; color: var(--muted); font-size: 9px; }
 .record-model code { display: block; max-width: 84px; overflow: hidden; color: inherit; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.record-model:not(.is-transformed) code { max-width: 174px; }
+.record-model:not(.is-transformed) code { max-width: 129px; }
+.record-model.is-transformed { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 0 3px; }
+.record-model.is-transformed code { max-width: 129px; }
+.record-model.is-transformed code:first-of-type { grid-column: 1 / -1; }
+.record-model.is-transformed svg { grid-column: 1; grid-row: 2; }
+.record-model.is-transformed code:last-of-type { grid-column: 2; grid-row: 2; }
 .record-model svg { width: 10px; height: 10px; flex: 0 0 10px; }
 .record-model.is-transformed { color: var(--info); }
 .record-provider { display: flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .route-dot { width: 7px; height: 7px; flex: 0 0 7px; background: var(--quiet); border-radius: 50%; }
 .route-dot-account { background: var(--chart-green); box-shadow: 0 0 0 3px var(--success-soft); }
 .route-dot-custom { background: var(--chart-blue); box-shadow: 0 0 0 3px var(--info-soft); }
-.record-result { display: flex; align-items: center; gap: 7px; }
-.record-result code { color: var(--muted); font-size: 11px; }
+.record-result { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.record-result code { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
 .record-duration { display: flex; align-items: center; gap: 5px; color: var(--muted); white-space: nowrap; }
 .record-duration svg { width: 13px; height: 13px; }
-.record-tokens { color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.record-transfer { display: flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
-.record-transfer svg { width: 11px; height: 11px; }
 .table-loading { position: absolute; inset: 37px 0 0; display: grid; place-items: center; color: var(--muted); background: rgb(255 255 255 / 80%); }
 .records-pagination { display: flex; min-height: 54px; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 12px; border-top: 1px solid var(--line); }
 .records-pagination > span { color: var(--muted); font-size: 12px; }
@@ -2164,7 +2167,7 @@ code {
   .forwarding-summary > span { min-height: 54px; align-items: flex-start; justify-content: center; padding: 8px 10px; border-top: 1px solid var(--line); }
   .records-toolbar .segmented-control { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
   .records-toolbar .segmented-control button { min-width: 0; }
-  .records-table { width: 980px; }
+  .records-table { width: 740px; min-width: 740px; }
   .records-table-wrap { min-height: 390px; }
   .records-pagination { align-items: stretch; flex-direction: column; }
   .records-pagination > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2244,7 +2247,6 @@ code {
 .overview-provider-table th:first-child { max-width: 180px; overflow: hidden; text-align: left; text-overflow: ellipsis; }
 .overview-provider-table tbody tr:last-child th,
 .overview-provider-table tbody tr:last-child td { border-bottom: 0; }
-.record-tokens { display: inline-block; max-width: 132px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 
 @media (max-width: 1100px) {
   .overview-summary-grid { grid-template-columns: 1fr; }

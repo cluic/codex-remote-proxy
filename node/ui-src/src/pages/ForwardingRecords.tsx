@@ -64,15 +64,26 @@ function displayPath(record: ForwardingRecord): string {
   return record.incomingUrl ?? record.targetUrl ?? "-";
 }
 
-function usageStatusLabel(record: ForwardingRecord, t: Translator): string {
-  return t(`forwarding.usage.${record.usageObservationStatus}`);
+function recordTimeParts(locale: Locale, value: string | null) {
+  if (value === null) return { date: "-", time: "" };
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return { date: "-", time: "" };
+  return {
+    date: new Intl.DateTimeFormat(locale, {
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    }).format(date),
+    time: new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    }).format(date)
+  };
 }
 
-function tokenLabel(locale: Locale, record: ForwardingRecord, t: Translator): string {
-  if (record.inputTokens === null || record.outputTokens === null) {
-    return usageStatusLabel(record, t);
-  }
-  return formatNumber(locale, record.inputTokens + record.outputTokens);
+function usageStatusLabel(record: ForwardingRecord, t: Translator): string {
+  return t(`forwarding.usage.${record.usageObservationStatus}`);
 }
 
 function modelValues(record: ForwardingRecord) {
@@ -338,17 +349,19 @@ export function ForwardingRecordsPage({
                     <th>{t("forwarding.provider")}</th>
                     <th>{t("forwarding.result")}</th>
                     <th>{t("forwarding.duration")}</th>
-                    <th>{t("forwarding.tokens")}</th>
-                    <th>{t("forwarding.transfer")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {records.map((record) => {
                     const models = modelValues(record);
+                    const startedAt = recordTimeParts(locale, record.startedAt);
                     return (
                     <tr key={record.id} className={record.id === selectedId ? "selected" : undefined}>
                       <td>
-                        <span className="record-time">{formatDate(locale, record.startedAt, true)}</span>
+                        <time className="record-time" dateTime={record.startedAt ?? undefined}>
+                          <span>{startedAt.date}</span>
+                          <strong>{startedAt.time}</strong>
+                        </time>
                       </td>
                       <td>
                         <button
@@ -392,13 +405,6 @@ export function ForwardingRecordsPage({
                         </span>
                       </td>
                       <td><span className="record-duration"><Clock3 aria-hidden="true" />{formatDuration(locale, record.durationMs)}</span></td>
-                      <td><span className="record-tokens" title={record.usageObservationStatus === "observed"
-                        ? t("forwarding.tokensBreakdown", {
-                            input: record.inputTokens ?? "-",
-                            output: record.outputTokens ?? "-"
-                          })
-                        : usageStatusLabel(record, t)}>{tokenLabel(locale, record, t)}</span></td>
-                      <td><span className="record-transfer">{byteLabel(locale, record.requestBytes)}<ArrowRight aria-hidden="true" />{byteLabel(locale, record.responseBytes)}</span></td>
                     </tr>
                     );
                   })}

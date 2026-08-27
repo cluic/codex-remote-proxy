@@ -102,6 +102,7 @@
 - Conditional routing branches must default to a complete summary and disclose the full rail only after explicit expansion.
 - Collapsed controls must be materially shorter than the content they replace; hiding details without reducing chrome is prohibited.
 - Forwarding history must preserve requested and effective forwarded models as separate bounded metadata fields.
+- Desktop tables beside persistent detail panes must fit core scan columns without horizontal overflow; secondary fields belong in details.
 - Routing previews must share the live scheduler and label conditional fallbacks and predicted outlets without claiming a guaranteed final provider.
 
 ## Required Checks
