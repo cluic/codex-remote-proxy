@@ -152,7 +152,11 @@ class FakeWorkerManager {
 
   async applySnapshot(snapshot) {
     this.calls.push(["applySnapshot", structuredClone(snapshot)]);
-    if (this.failure) throw this.failure;
+    if (this.failure) {
+      const failure = this.failure;
+      if (this.failureOnce) this.failure = null;
+      throw failure;
+    }
     this.generation = snapshot.generation;
     return this.getPublicState();
   }
@@ -2135,6 +2139,9 @@ test("Capture setting persists while stopped and hot-applies to a running Worker
   assert.equal(stopped.captureEnabled, true);
   assert.equal(registry.getDocument().settings.captureEnabled, true);
   assert.deepEqual(workerManager.calls, []);
+  const detailStopped = await service.setCaptureDetailsEnabled(true);
+  assert.equal(detailStopped.captureDetailsEnabled, true);
+  assert.equal(registry.getDocument().settings.captureDetailsEnabled, true);
 
   const provider = await service.createProvider(providerInput(), makeSecret("capture"));
   registry.markTest(provider.id, { status: "passed" });
@@ -2148,6 +2155,8 @@ test("Capture setting persists while stopped and hot-applies to a running Worker
   assert.equal(registry.getDocument().settings.captureEnabled, false);
   assert.deepEqual(workerManager.calls.map(([operation]) => operation), ["applySnapshot"]);
   assert.equal(workerManager.calls[0][1].settings.capture.enabled, false);
+  assert.equal(workerManager.calls[0][1].settings.capture.detailsEnabled, false);
+  assert.equal(registry.getDocument().settings.captureDetailsEnabled, false);
   assert.deepEqual(
     activity.events.filter(({ category, action }) => category === "settings" && action === "capture")
       .map(({ result, details }) => ({ result, details })),
@@ -2156,6 +2165,26 @@ test("Capture setting persists while stopped and hot-applies to a running Worker
       { result: "success", details: { enabled: false, generation: 2 } }
     ]
   );
+});
+
+test("Capture disable rollback restores details and Worker snapshot atomically", async (t) => {
+  const { service, registry, workerManager } = makeHarness(t);
+  await service.setCaptureEnabled(true);
+  await service.setCaptureDetailsEnabled(true);
+  const provider = await service.createProvider(providerInput(), makeSecret("capture-rollback"));
+  registry.markTest(provider.id, { status: "passed" });
+  registry.setActive(provider.id);
+  await service.startProxy();
+  workerManager.failure = new Error("injected capture apply failure");
+  workerManager.failureOnce = true;
+  await assert.rejects(() => service.setCaptureEnabled(false), {
+    code: "CAPTURE_SETTING_UPDATE_FAILED"
+  });
+  assert.equal(registry.getDocument().settings.captureEnabled, true);
+  assert.equal(registry.getDocument().settings.captureDetailsEnabled, true);
+  const rollback = workerManager.calls.at(-1)[1];
+  assert.equal(rollback.settings.capture.enabled, true);
+  assert.equal(rollback.settings.capture.detailsEnabled, true);
 });
 
 test("API key authentication hot-applies while listen-address changes require a stopped Worker", async (t) => {

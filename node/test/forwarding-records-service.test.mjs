@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
-import { ForwardingRecordsService } from "../src/supervisor/forwarding-records-service.mjs";
+import {
+  FORWARDING_DETAIL_LIMITS,
+  ForwardingRecordsService
+} from "../src/supervisor/forwarding-records-service.mjs";
 
 function makeTempDir(t) {
   const directory = mkdtempSync(join(os.tmpdir(), "crp-forwarding-records-"));
@@ -168,7 +171,9 @@ test("lists bounded metadata with keyset paging, filtering, and provider project
     stream: false,
     upstreamRequestId: null,
     inputTokens: null,
+    cachedInputTokens: null,
     outputTokens: null,
+    detailsAvailable: false,
     usageObservationStatus: "legacy",
     errorType: "proxy_upstream_error",
     errorMessage: "connection refused",
@@ -201,6 +206,7 @@ test("projects token counts and separates client aborts from forwarding errors",
   const path = join(directory, "traffic.sqlite3");
   createDatabase(path);
   const database = new DatabaseSync(path);
+  database.exec("ALTER TABLE http_transactions ADD COLUMN details_captured INTEGER NOT NULL DEFAULT 0");
   database.exec(`
     ALTER TABLE http_transactions ADD COLUMN input_tokens INTEGER;
     ALTER TABLE http_transactions ADD COLUMN output_tokens INTEGER;
@@ -234,6 +240,102 @@ test("projects token counts and separates client aborts from forwarding errors",
     [{ id: 3, outcome: "aborted" }]
   );
   assert.deepEqual(service.list({ outcome: "error" }).records, []);
+});
+
+test("returns nested captured details while legacy rows remain metadata-only", (t) => {
+  const directory = makeTempDir(t);
+  const path = join(directory, "traffic.sqlite3");
+  createDatabase(path);
+  const legacyService = new ForwardingRecordsService({ path });
+  assert.deepEqual(legacyService.get(1), { id: 1, detailsAvailable: false });
+  assert.equal(legacyService.get(999), null);
+
+  const database = new DatabaseSync(path);
+  database.exec(`
+    ALTER TABLE http_transactions ADD COLUMN input_tokens INTEGER;
+    ALTER TABLE http_transactions ADD COLUMN output_tokens INTEGER;
+    ALTER TABLE http_transactions ADD COLUMN cached_input_tokens INTEGER;
+    ALTER TABLE http_transactions ADD COLUMN details_captured INTEGER NOT NULL DEFAULT 0;
+    UPDATE http_transactions
+      SET input_tokens = 31,
+          output_tokens = 12,
+          cached_input_tokens = 7,
+          details_captured = 1,
+          request_headers_json = '{"authorization":"very-secret","content-type":"application/json"}',
+          request_body = '{"model":"model-a"}',
+          request_body_encoding = 'utf8',
+          request_body_bytes = 20,
+          response_headers_json = '{"content-type":"application/json"}',
+          response_body = '{"id":"response-a"}',
+          response_body_encoding = 'utf8-truncated',
+          response_body_bytes = 40
+      WHERE id = 1;
+  `);
+  database.close();
+
+  const service = new ForwardingRecordsService({ path });
+  const listed = service.list({ limit: 10 }).records.find(({ id }) => id === 1);
+  assert.equal(listed.cachedInputTokens, 7);
+  assert.equal(listed.detailsAvailable, true);
+  const detail = service.get(1);
+  assert.deepEqual(detail, {
+    id: 1,
+    detailsAvailable: true,
+    request: {
+      headers: {
+        authorization: "[REDACTED]",
+        "content-type": "application/json"
+      },
+      body: {
+        content: '{"model":"model-a"}',
+        encoding: "utf8",
+        bytes: 20,
+        truncated: false
+      }
+    },
+    response: {
+      headers: { "content-type": "application/json" },
+      body: {
+        content: '{"id":"response-a"}',
+        encoding: "utf8-truncated",
+        bytes: 40,
+        truncated: true
+      }
+    }
+  });
+  assert.equal(JSON.stringify(detail).includes("very-secret"), false);
+  assert.deepEqual(service.get(2), { id: 2, detailsAvailable: false });
+});
+
+test("projects oversized detail bodies and headers in SQLite before JS materialization", (t) => {
+  const directory = makeTempDir(t);
+  const path = join(directory, "traffic.sqlite3");
+  createDatabase(path);
+  const database = new DatabaseSync(path);
+  database.exec("ALTER TABLE http_transactions ADD COLUMN details_captured INTEGER NOT NULL DEFAULT 0");
+  const oversizedBody = "你".repeat(FORWARDING_DETAIL_LIMITS.bodyCodeUnits + 100);
+  const oversizedHeaders = JSON.stringify(Object.fromEntries(
+    Array.from({ length: 256 }, (_, index) => [`x-${index}`, "h".repeat(1_024)])
+  ));
+  database.prepare(`
+    UPDATE http_transactions SET details_captured = 1,
+      request_headers_json = @headers,
+      request_body = @body,
+      request_body_bytes = 1_000_000_000_001,
+      request_body_encoding = 'utf8',
+      response_body = @body,
+      response_body_bytes = 1_000_000_000_001,
+      response_body_encoding = 'utf8'
+    WHERE id = 1
+  `).run({ headers: oversizedHeaders, body: oversizedBody });
+  database.close();
+  const detail = new ForwardingRecordsService({ path }).get(1);
+  assert.equal(detail.detailsAvailable, true);
+  assert.equal(detail.request.body.content.length, FORWARDING_DETAIL_LIMITS.bodyCodeUnits);
+  assert.equal(detail.request.body.truncated, true);
+  assert.equal(detail.response.body.truncated, true);
+  assert.equal(detail.request.body.bytes, 0);
+  assert.equal(JSON.stringify(detail.request.headers).length <= FORWARDING_DETAIL_LIMITS.headersJsonBytes, true);
 });
 
 test("hides model catalog requests without corrupting paging or summary counts", (t) => {

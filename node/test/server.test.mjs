@@ -90,6 +90,7 @@ function makeSettings({
   modelMappings = [],
   logLevel = "info",
   captureEnabled = true,
+  captureDetailsEnabled = true,
   providers = null,
   providerPriorityRules = [],
   routingMode = "custom_only",
@@ -138,6 +139,7 @@ function makeSettings({
     proxy: providerPool[0].proxy,
     capture: {
       enabled: captureEnabled,
+      detailsEnabled: captureDetailsEnabled,
       dbPath: "/tmp/crp-task5-traffic.sqlite3"
     },
     ...(access === null ? {} : { access }),
@@ -193,6 +195,7 @@ function createMemoryCaptureManager(publicState = {}) {
     beginRecord() {
       let saved = false;
       return {
+        detailsEnabled: true,
         save(record) {
           if (!saved) {
             saved = true;
@@ -1513,6 +1516,7 @@ test("server writes proxied request and response to sqlite", async () => {
     },
     capture: {
       enabled: true,
+      detailsEnabled: true,
       dbPath
     }
   }, null, 2)}\n`, "utf8");
@@ -1539,6 +1543,7 @@ test("server writes proxied request and response to sqlite", async () => {
     },
     capture: {
       enabled: true,
+      detailsEnabled: true,
       dbPath
     }
   });

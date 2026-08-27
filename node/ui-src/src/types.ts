@@ -213,6 +213,7 @@ export interface StatusResponse {
     configured: boolean;
     workerAvailable: boolean;
     active: boolean;
+    detailsEnabled: boolean;
     state: "stopped" | "unavailable" | "unknown" | "disabled" | "enabling" | "enabled" | "disabling" | "error";
     synchronized: boolean | null;
     failedWriteCount: number;
@@ -228,6 +229,7 @@ export interface Settings {
   apiKeyAuthEnabled: boolean;
   apiKeyAuthRequired: boolean;
   captureEnabled: boolean;
+  captureDetailsEnabled: boolean;
   routingMode: "custom_only" | "account_first";
   credentialBackend: string | null;
   autoStartSupported: boolean;
@@ -295,6 +297,7 @@ export interface ForwardingRecord {
   stream: boolean;
   upstreamRequestId: string | null;
   inputTokens: number | null;
+  cachedInputTokens: number | null;
   outputTokens: number | null;
   usageObservationStatus: "observed" | "upstream_unreported" | "protocol_unrecognized" | "not_applicable" | "legacy";
   errorType: string | null;
@@ -305,6 +308,26 @@ export interface ForwardingRecord {
   route: "account" | "custom" | "unknown";
   requestedModel: string | null;
   forwardedModel: string | null;
+  detailsAvailable: boolean;
+}
+
+export interface ForwardingRecordBody {
+  content: string;
+  encoding: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface ForwardingRecordPayload {
+  headers: Record<string, string | string[]>;
+  body: ForwardingRecordBody;
+}
+
+export interface ForwardingRecordDetail {
+  id: number | null;
+  detailsAvailable: boolean;
+  request?: ForwardingRecordPayload | null;
+  response?: ForwardingRecordPayload | null;
 }
 
 export interface ForwardingRecordsPageData {

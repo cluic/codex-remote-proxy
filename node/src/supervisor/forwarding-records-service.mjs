@@ -10,6 +10,14 @@ const MAX_ID_CODE_POINTS = 256;
 const MAX_MODEL_CODE_POINTS = 256;
 const MAX_ERROR_CODE_POINTS = 512;
 const MAX_TOKEN_COUNT = 100_000_000;
+const MAX_DETAIL_BODY_CODE_UNITS = 2 * 1024 * 1024;
+const MAX_DETAIL_HEADERS_JSON_BYTES = 64 * 1024;
+const MAX_DETAIL_HEADER_COUNT = 128;
+const MAX_DETAIL_HEADER_VALUE_CODE_UNITS = 4 * 1024;
+const MAX_DETAIL_HEADER_ARRAY_ITEMS = 16;
+const MAX_DETAIL_BYTES = 1_000_000_000_000;
+const REDACTED_VALUE = "[REDACTED]";
+const SENSITIVE_HEADER_TERMS = ["authorization", "cookie", "token", "secret", "api-key", "apikey"];
 const OUTCOMES = new Set(["all", "success", "rejected", "aborted", "error"]);
 const USAGE_OBSERVATION_STATUSES = new Set([
   "observed",
@@ -24,6 +32,15 @@ const MODEL_REQUEST_HIDDEN_SQL = `(
     AND incoming_url NOT LIKE '%/models/%'
   )
 )`;
+
+export const FORWARDING_DETAIL_LIMITS = Object.freeze({
+  bodyCodeUnits: MAX_DETAIL_BODY_CODE_UNITS,
+  headersJsonBytes: MAX_DETAIL_HEADERS_JSON_BYTES,
+  headerCount: MAX_DETAIL_HEADER_COUNT,
+  headerValueCodeUnits: MAX_DETAIL_HEADER_VALUE_CODE_UNITS,
+  headerArrayItems: MAX_DETAIL_HEADER_ARRAY_ITEMS,
+  bytes: MAX_DETAIL_BYTES
+});
 
 function serviceError(cause) {
   return new CrpError(
@@ -117,6 +134,7 @@ function projectRow(row, providers) {
   const outcome = rowOutcome(row);
   const inputTokens = safeInteger(row.input_tokens, { maximum: MAX_TOKEN_COUNT });
   const outputTokens = safeInteger(row.output_tokens, { maximum: MAX_TOKEN_COUNT });
+  const cachedInputTokens = safeInteger(row.cached_input_tokens, { maximum: MAX_TOKEN_COUNT });
   const usageObservationStatus = inputTokens !== null && outputTokens !== null
     ? "observed"
     : USAGE_OBSERVATION_STATUSES.has(row.usage_observation_status)
@@ -140,6 +158,8 @@ function projectRow(row, providers) {
     upstreamRequestId: boundedText(row.upstream_request_id, MAX_ID_CODE_POINTS),
     inputTokens,
     outputTokens,
+    cachedInputTokens,
+    detailsAvailable: row.details_captured === 1,
     usageObservationStatus,
     errorType: boundedText(row.error_type, MAX_ID_CODE_POINTS),
     errorMessage: boundedText(row.error_message, MAX_ERROR_CODE_POINTS),
@@ -149,6 +169,57 @@ function projectRow(row, providers) {
     route: provider.route,
     requestedModel: boundedText(row.requested_model, MAX_MODEL_CODE_POINTS),
     forwardedModel: boundedText(row.forwarded_model, MAX_MODEL_CODE_POINTS)
+  };
+}
+
+function parseCapturedHeaders(value) {
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const result = {};
+    let budget = MAX_DETAIL_HEADERS_JSON_BYTES;
+    let count = 0;
+    for (const [key, item] of Object.entries(parsed)) {
+      if (count >= MAX_DETAIL_HEADER_COUNT || budget <= 0) break;
+      if (typeof key !== "string" || key.length === 0 || key.length > 256) continue;
+      const sensitive = SENSITIVE_HEADER_TERMS.some((term) => key.toLowerCase().includes(term));
+      if (sensitive) {
+        result[key] = REDACTED_VALUE;
+      } else if (typeof item === "string") {
+        result[key] = item.slice(0, MAX_DETAIL_HEADER_VALUE_CODE_UNITS);
+      } else if (Array.isArray(item)) {
+        result[key] = item.filter((entry) => typeof entry === "string")
+          .slice(0, MAX_DETAIL_HEADER_ARRAY_ITEMS)
+          .map((entry) => entry.slice(0, MAX_DETAIL_HEADER_VALUE_CODE_UNITS));
+      }
+      if (!Object.hasOwn(result, key)) continue;
+      const encodedLength = Buffer.byteLength(JSON.stringify({ [key]: result[key] }));
+      if (encodedLength > budget) {
+        delete result[key];
+        break;
+      }
+      budget -= encodedLength;
+      count += 1;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function projectBody(value, encoding, bytes, sourceTruncated = false) {
+  const body = typeof value === "string" ? value : "";
+  const content = body.length <= MAX_DETAIL_BODY_CODE_UNITS
+    ? body
+    : body.slice(0, MAX_DETAIL_BODY_CODE_UNITS);
+  return {
+    content,
+    encoding: boundedText(encoding, 32) ?? "empty",
+    bytes: safeInteger(bytes, { maximum: MAX_DETAIL_BYTES }) ?? 0,
+    truncated: sourceTruncated
+      || content.length < body.length
+      || (typeof encoding === "string" && encoding.endsWith("-truncated"))
   };
 }
 
@@ -271,6 +342,8 @@ export class ForwardingRecordsService {
         .every((column) => columns.has(column));
       const hasTokenColumns = ["input_tokens", "output_tokens"]
         .every((column) => columns.has(column));
+      const hasCachedInputTokens = columns.has("cached_input_tokens");
+      const hasDetailsColumn = columns.has("details_captured");
       const hasUsageObservationStatus = columns.has("usage_observation_status");
       const hasModelColumns = ["requested_model", "forwarded_model"]
         .every((column) => columns.has(column));
@@ -282,8 +355,9 @@ export class ForwardingRecordsService {
         ? "provider_id, provider_name, route,"
         : "NULL AS provider_id, NULL AS provider_name, NULL AS route,";
       const tokenColumns = hasTokenColumns
-        ? "input_tokens, output_tokens,"
-        : "NULL AS input_tokens, NULL AS output_tokens,";
+        ? `${hasCachedInputTokens ? "input_tokens, output_tokens, cached_input_tokens," : "input_tokens, output_tokens, NULL AS cached_input_tokens,"}`
+        : "NULL AS input_tokens, NULL AS output_tokens, NULL AS cached_input_tokens,";
+      const detailsColumn = hasDetailsColumn ? "details_captured," : "0 AS details_captured,";
       const usageObservationColumn = hasUsageObservationStatus
         ? "usage_observation_status,"
         : "NULL AS usage_observation_status,";
@@ -296,7 +370,7 @@ export class ForwardingRecordsService {
           request_id, session_id, thread_id, method,
           incoming_url, target_url, ${providerColumns} ${modelColumns} request_body_bytes,
           response_status, response_body_bytes, is_stream,
-          upstream_request_id, ${tokenColumns} ${usageObservationColumn} error_type, error_message
+          upstream_request_id, ${tokenColumns} ${detailsColumn} ${usageObservationColumn} error_type, error_message
         FROM http_transactions
         ${where.sql}
         ORDER BY id DESC
@@ -328,6 +402,72 @@ export class ForwardingRecordsService {
           rejected: safeInteger(summary?.rejected) ?? 0,
           aborted: safeInteger(summary?.aborted) ?? 0,
           error: safeInteger(summary?.error) ?? 0
+        }
+      };
+    } catch (error) {
+      throw serviceError(error);
+    } finally {
+      try { database?.close(); } catch {}
+    }
+  }
+
+  get(id) {
+    if (!Number.isSafeInteger(id) || id < 1) {
+      throw new TypeError("Forwarding record id is invalid.");
+    }
+    try {
+      const stats = this.fileOperations.lstatSync(this.path);
+      if (!stats.isFile() || stats.isSymbolicLink()) throw serviceError();
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      if (error instanceof CrpError) throw error;
+      throw serviceError(error);
+    }
+    let database;
+    try {
+      database = this.openDatabase(this.path);
+      const columns = new Set(database.prepare("PRAGMA table_info(http_transactions)").all().map((column) => column.name));
+      const row = database.prepare(columns.has("details_captured")
+        ? `SELECT id, details_captured,
+            CASE WHEN length(CAST(request_headers_json AS BLOB)) <= ${MAX_DETAIL_HEADERS_JSON_BYTES}
+              THEN request_headers_json ELSE '{}' END AS request_headers_json,
+            substr(request_body, 1, ${MAX_DETAIL_BODY_CODE_UNITS}) AS request_body,
+            length(request_body) AS request_body_length,
+            request_body_encoding, request_body_bytes,
+            CASE WHEN length(CAST(response_headers_json AS BLOB)) <= ${MAX_DETAIL_HEADERS_JSON_BYTES}
+              THEN response_headers_json ELSE '{}' END AS response_headers_json,
+            substr(response_body, 1, ${MAX_DETAIL_BODY_CODE_UNITS}) AS response_body,
+            length(response_body) AS response_body_length,
+            response_body_encoding, response_body_bytes
+          FROM http_transactions WHERE id = @id`
+        : `SELECT id,
+            CASE WHEN length(CAST(request_headers_json AS BLOB)) <= ${MAX_DETAIL_HEADERS_JSON_BYTES}
+              THEN request_headers_json ELSE '{}' END AS request_headers_json,
+            substr(request_body, 1, ${MAX_DETAIL_BODY_CODE_UNITS}) AS request_body,
+            length(request_body) AS request_body_length,
+            request_body_encoding, request_body_bytes,
+            CASE WHEN length(CAST(response_headers_json AS BLOB)) <= ${MAX_DETAIL_HEADERS_JSON_BYTES}
+              THEN response_headers_json ELSE '{}' END AS response_headers_json,
+            substr(response_body, 1, ${MAX_DETAIL_BODY_CODE_UNITS}) AS response_body,
+            length(response_body) AS response_body_length,
+            response_body_encoding, response_body_bytes
+          FROM http_transactions WHERE id = @id`).get({ id });
+      if (!row) return null;
+      if (!columns.has("details_captured") || row.details_captured !== 1) {
+        return { id, detailsAvailable: false };
+      }
+      return {
+        id,
+        detailsAvailable: true,
+        request: {
+          headers: parseCapturedHeaders(row.request_headers_json),
+          body: projectBody(row.request_body, row.request_body_encoding, row.request_body_bytes,
+            row.request_body_length > MAX_DETAIL_BODY_CODE_UNITS)
+        },
+        response: {
+          headers: parseCapturedHeaders(row.response_headers_json),
+          body: projectBody(row.response_body, row.response_body_encoding, row.response_body_bytes,
+            row.response_body_length > MAX_DETAIL_BODY_CODE_UNITS)
         }
       };
     } catch (error) {

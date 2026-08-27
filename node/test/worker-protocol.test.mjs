@@ -48,6 +48,7 @@ function makeSettings() {
     proxy,
     capture: {
       enabled: false,
+      detailsEnabled: false,
       dbPath: "/tmp/crp-worker/traffic.sqlite3"
     },
     access: {

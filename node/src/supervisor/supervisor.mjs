@@ -392,6 +392,9 @@ function createSettingsService({
       if (Object.hasOwn(patch, "captureEnabled")) {
         await providerService.setCaptureEnabled(patch.captureEnabled);
       }
+      if (Object.hasOwn(patch, "captureDetailsEnabled")) {
+        await providerService.setCaptureDetailsEnabled(patch.captureDetailsEnabled);
+      }
       if (Object.hasOwn(patch, "apiKeyAuthEnabled")) {
         await providerService.setApiKeyAuthEnabled(patch.apiKeyAuthEnabled);
       }

@@ -88,7 +88,7 @@ const PROXY_FIELDS = new Set([
   "modelMappings"
 ]);
 const MODEL_MAPPING_RULE_FIELDS = new Set(["sourceModel", "targetModel"]);
-const CAPTURE_FIELDS = new Set(["enabled", "dbPath"]);
+const CAPTURE_FIELDS = new Set(["enabled", "detailsEnabled", "dbPath"]);
 const ACCESS_FIELDS = new Set(["enabled", "dbPath", "localToken"]);
 const ROUTING_FIELDS = new Set([
   "mode",
@@ -400,6 +400,8 @@ function validateRuntimeSettings(settings) {
     || !isPlainObject(settings.capture)
     || !hasExactFields(settings.capture, CAPTURE_FIELDS)
     || typeof settings.capture.enabled !== "boolean"
+    || typeof settings.capture.detailsEnabled !== "boolean"
+    || (!settings.capture.enabled && settings.capture.detailsEnabled)
     || !isNonEmptyString(settings.capture.dbPath)
     || !isPlainObject(settings.access)
     || !hasExactFields(settings.access, ACCESS_FIELDS)

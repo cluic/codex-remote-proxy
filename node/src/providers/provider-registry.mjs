@@ -64,6 +64,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   ...FIXED_SETTINGS,
   apiKeyAuthEnabled: false,
   captureEnabled: false,
+  captureDetailsEnabled: false,
   routingMode: "custom_only",
   routingRuleGroupId: null
 });
@@ -123,7 +124,7 @@ function noChange(result) {
 
 function emptyDocument() {
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     activeProviderId: null,
     providers: [],
     modelMappingGroups: [],
@@ -417,7 +418,7 @@ export function validateProviderRegistryDocument(document) {
     if (!validateExactFields(document, DOCUMENT_FIELDS)) {
       throw new Error("invalid document fields");
     }
-    if (document.schemaVersion !== 8) {
+    if (document.schemaVersion !== 9) {
       throw new Error("unsupported schema version");
     }
     if (!Array.isArray(document.providers)) {
@@ -456,6 +457,10 @@ export function validateProviderRegistryDocument(document) {
     }
     if (typeof document.settings.captureEnabled !== "boolean") {
       throw new Error("invalid Capture setting");
+    }
+    if (typeof document.settings.captureDetailsEnabled !== "boolean"
+      || (!document.settings.captureEnabled && document.settings.captureDetailsEnabled)) {
+      throw new Error("invalid Capture details setting");
     }
     if (document.activeProviderId !== null && typeof document.activeProviderId !== "string") {
       throw new Error("invalid active provider id");
@@ -1394,6 +1399,7 @@ export class ProviderRegistry {
     return this.#commit((document) => {
       if (document.settings.captureEnabled === enabled) return noChange(enabled);
       document.settings.captureEnabled = enabled;
+      if (!enabled) document.settings.captureDetailsEnabled = false;
       return enabled;
     });
   }
@@ -1410,6 +1416,70 @@ export class ProviderRegistry {
       if (document.settings.captureEnabled !== expectedEnabled) return noChange(false);
       if (expectedEnabled === enabled) return noChange(true);
       document.settings.captureEnabled = enabled;
+      if (!enabled) document.settings.captureDetailsEnabled = false;
+      return true;
+    });
+  }
+
+  setCaptureSettingsIfCurrent(expectedEnabled, expectedDetailsEnabled, enabled, detailsEnabled) {
+    if (![expectedEnabled, expectedDetailsEnabled, enabled, detailsEnabled].every((value) => typeof value === "boolean")
+      || (!enabled && detailsEnabled)) {
+      throw inputError(
+        "CAPTURE_SETTING_INVALID",
+        "The Capture setting is invalid.",
+        "Choose valid Capture recording settings."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.captureEnabled !== expectedEnabled
+        || document.settings.captureDetailsEnabled !== expectedDetailsEnabled) return noChange(false);
+      document.settings.captureEnabled = enabled;
+      document.settings.captureDetailsEnabled = detailsEnabled;
+      return true;
+    });
+  }
+
+  setCaptureDetailsEnabled(enabled) {
+    if (typeof enabled !== "boolean") {
+      throw inputError(
+        "CAPTURE_DETAILS_SETTING_INVALID",
+        "The detailed Capture setting is invalid.",
+        "Choose whether request and response bodies should be recorded."
+      );
+    }
+    return this.#commit((document) => {
+      if (enabled && !document.settings.captureEnabled) {
+        throw inputError(
+          "CAPTURE_DETAILS_REQUIRES_CAPTURE",
+          "Detailed Capture requires Capture recording.",
+          "Enable Capture recording before enabling detailed Capture."
+        );
+      }
+      if (document.settings.captureDetailsEnabled === enabled) return noChange(enabled);
+      document.settings.captureDetailsEnabled = enabled;
+      return enabled;
+    });
+  }
+
+  setCaptureDetailsEnabledIfCurrent(expectedEnabled, enabled) {
+    if (typeof expectedEnabled !== "boolean" || typeof enabled !== "boolean") {
+      throw inputError(
+        "CAPTURE_DETAILS_SETTING_INVALID",
+        "The detailed Capture setting is invalid.",
+        "Choose whether request and response bodies should be recorded."
+      );
+    }
+    return this.#commit((document) => {
+      if (document.settings.captureDetailsEnabled !== expectedEnabled) return noChange(false);
+      if (enabled && !document.settings.captureEnabled) {
+        throw inputError(
+          "CAPTURE_DETAILS_REQUIRES_CAPTURE",
+          "Detailed Capture requires Capture recording.",
+          "Enable Capture recording before enabling detailed Capture."
+        );
+      }
+      if (expectedEnabled === enabled) return noChange(true);
+      document.settings.captureDetailsEnabled = enabled;
       return true;
     });
   }

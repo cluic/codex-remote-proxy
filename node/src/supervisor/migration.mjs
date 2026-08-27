@@ -151,7 +151,7 @@ function scrubDocument(document) {
 
 function registryBytesForProvider(provider) {
   return Buffer.from(`${JSON.stringify({
-    schemaVersion: 8,
+    schemaVersion: 9,
     activeProviderId: null,
     providers: [provider],
     modelMappingGroups: [],
@@ -163,6 +163,7 @@ function registryBytesForProvider(provider) {
       adminPort: 15101,
       apiKeyAuthEnabled: false,
       captureEnabled: false,
+      captureDetailsEnabled: false,
       routingMode: "custom_only",
       routingRuleGroupId: null
     }
@@ -633,7 +634,7 @@ function validateSchema4Registry(document) {
 function upgradeRegistryDocument(document) {
   return {
     ...document,
-    schemaVersion: 8,
+    schemaVersion: 9,
     providers: document.providers.map((provider) => {
       const supportedModelsMode = provider.supportedModelsMode ?? "auto";
       const supportedModels = provider.supportedModels ?? [];
@@ -663,7 +664,11 @@ function upgradeRegistryDocument(document) {
         ? true
         : (document.settings.apiKeyAuthEnabled ?? false),
       routingMode: document.settings.routingMode ?? "custom_only",
-      routingRuleGroupId: document.settings.routingRuleGroupId ?? null
+      routingRuleGroupId: document.settings.routingRuleGroupId ?? null,
+      captureDetailsEnabled: document.settings.captureEnabled === true
+        && document.settings.captureDetailsEnabled === true
+        ? true
+        : false
     }
   };
 }
@@ -708,7 +713,15 @@ function inspectCurrentRegistry(path, fileOperations) {
     }
     return { kind: "schema-7", source: { ...source, document } };
   }
-  if (document.schemaVersion !== 8) throw migrationError("MIGRATION_INPUT_INVALID");
+  if (document.schemaVersion === 8) {
+    try {
+      validateProviderRegistryDocument(upgradeRegistryDocument(document));
+    } catch (error) {
+      throw migrationError("MIGRATION_INPUT_INVALID", error);
+    }
+    return { kind: "schema-8", source: { ...source, document } };
+  }
+  if (document.schemaVersion !== 9) throw migrationError("MIGRATION_INPUT_INVALID");
   new ProviderRegistry({ path, fileOperations });
   const after = lstatRegular(path, fileOperations);
   if (!sameIdentity(after.identity, source.identity)) {
@@ -791,7 +804,8 @@ export async function migrateLegacyConfiguration({
       "schema-4",
       "schema-5",
       "schema-6",
-      "schema-7"
+      "schema-7",
+      "schema-8"
     ].includes(registryInspection.kind)) {
       const source = registryInspection.source;
       createBackup(source, fileOperations, createBackupId);
@@ -824,7 +838,7 @@ export async function migrateLegacyConfiguration({
       if (activityStore) {
         await activityStore.append({
           category: "migration",
-          action: "provider-registry-schema-8",
+          action: "provider-registry-schema-9",
           providerId: null,
           result: "success",
           errorCode: null,
@@ -837,7 +851,7 @@ export async function migrateLegacyConfiguration({
         });
       }
       completed = true;
-      return { migrated: true, reason: "provider-registry-schema-8" };
+      return { migrated: true, reason: "provider-registry-schema-9" };
     }
 
     const configSource = readSource(legacyConfigPath, fileOperations);
@@ -900,7 +914,7 @@ export async function migrateLegacyConfiguration({
       fileOperations
     });
     const committed = registry.getDocument();
-    if (committed.schemaVersion !== 8
+    if (committed.schemaVersion !== 9
       || committed.activeProviderId !== null
       || committed.providers.length !== 1
       || committed.providers[0].lastTestStatus !== "untested") {

@@ -274,6 +274,18 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
       "The Capture setting was updated, but persistence cleanup degraded.",
       "Stop CRP and repair the residual provider-registry state before restarting."
     ],
+    CAPTURE_DETAILS_SETTING_UPDATE_FAILED: [
+      "The detailed Capture setting could not be updated.",
+      "Review Activity and try again."
+    ],
+    CAPTURE_DETAILS_SETTING_ROLLBACK_DEGRADED: [
+      "The detailed Capture setting failed and could not be restored safely.",
+      "Stop CRP and repair the Capture setting before restarting."
+    ],
+    CAPTURE_DETAILS_SETTING_COMMITTED_DEGRADED: [
+      "The detailed Capture setting was updated, but persistence cleanup degraded.",
+      "Stop CRP and repair the residual provider-registry state before restarting."
+    ],
     ROUTE_PREVIEW_INPUT_INVALID: [
       "The route preview model is invalid.",
       "Enter one bounded model name and try again."
@@ -1548,9 +1560,11 @@ export class ProviderService {
       }
       const document = this.registry.getDocument();
       const previousEnabled = document.settings.captureEnabled;
+      const previousDetailsEnabled = document.settings.captureDetailsEnabled;
       if (enabled === previousEnabled) {
         return {
           captureEnabled: enabled,
+          captureDetailsEnabled: document.settings.captureDetailsEnabled,
           generation: this.confirmedGeneration,
           worker: publicWorkerState(this.workerManager.getPublicState())
         };
@@ -1576,6 +1590,7 @@ export class ProviderService {
         candidateSnapshot = structuredClone(previousSnapshot);
         candidateSnapshot.generation = generation;
         candidateSnapshot.settings.capture.enabled = enabled;
+        if (!enabled) candidateSnapshot.settings.capture.detailsEnabled = false;
       }
 
       let persisted = false;
@@ -1624,6 +1639,7 @@ export class ProviderService {
         await this.#recordSettings("capture", "success", null, { enabled, generation });
         return {
           captureEnabled: enabled,
+          captureDetailsEnabled: enabled ? this.registry.getDocument().settings.captureDetailsEnabled : false,
           generation: this.confirmedGeneration,
           worker: publicWorkerState(workerState)
         };
@@ -1632,7 +1648,12 @@ export class ProviderService {
         let rollbackFailure = null;
         if (persisted) {
           try {
-            const restored = this.registry.setCaptureEnabledIfCurrent(enabled, previousEnabled);
+            const restored = this.registry.setCaptureSettingsIfCurrent(
+              enabled,
+              enabled ? previousDetailsEnabled : false,
+              previousEnabled,
+              previousDetailsEnabled
+            );
             if (!restored) throw new Error("Capture rollback lost compare-and-set");
           } catch (caught) {
             rollbackFailure = caught;
@@ -1674,6 +1695,51 @@ export class ProviderService {
         await this.#safeRecordSettingsFailure("capture", failure, { enabled, generation });
         throw failure;
       }
+    });
+  }
+
+  setCaptureDetailsEnabled(enabled) {
+    return this.#runExclusive(async () => {
+      if (typeof enabled !== "boolean") {
+        throw serviceError("CAPTURE_DETAILS_SETTING_UPDATE_FAILED", { status: 400 });
+      }
+      const previous = this.registry.getDocument().settings.captureDetailsEnabled;
+      if (enabled === previous) {
+        return {
+          captureDetailsEnabled: enabled,
+          generation: this.confirmedGeneration,
+          worker: publicWorkerState(this.workerManager.getPublicState())
+        };
+      }
+      let applied;
+      try {
+        applied = await this.#executeHotRegistryMutation({
+          mutate: () => this.registry.setCaptureDetailsEnabled(enabled),
+          reconcile: (document) => document.settings.captureDetailsEnabled === enabled
+            ? enabled
+            : undefined,
+          failureCode: "CAPTURE_DETAILS_SETTING_UPDATE_FAILED",
+          rollbackCode: "CAPTURE_DETAILS_SETTING_ROLLBACK_DEGRADED"
+        });
+      } catch (error) {
+        await this.#safeRecordSettingsFailure("capture-details", error, { enabled });
+        throw error;
+      }
+      const details = { enabled, generation: applied.generation };
+      if (applied.commitWarning) {
+        const committed = serviceError("CAPTURE_DETAILS_SETTING_COMMITTED_DEGRADED", {
+          cause: applied.commitWarning,
+          details: { committed: true, degraded: true, generation: applied.generation }
+        });
+        await this.#recordSettingsCommitted("capture-details", committed, details);
+        throw committed;
+      }
+      await this.#recordSettings("capture-details", "success", null, details);
+      return {
+        captureDetailsEnabled: enabled,
+        generation: applied.generation,
+        worker: applied.worker
+      };
     });
   }
 
@@ -2381,6 +2447,7 @@ export class ProviderService {
         proxy: structuredClone(primary.proxy),
         capture: {
           enabled: document.settings.captureEnabled,
+          detailsEnabled: document.settings.captureDetailsEnabled,
           dbPath: capturePath
         },
         access: {
