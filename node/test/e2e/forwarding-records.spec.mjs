@@ -27,11 +27,16 @@ test("lists, filters, inspects, and toggles metadata-only forwarding records", a
   await expect(page.locator(".records-table")).toContainText("Fallback API");
   await expect(page.locator(".records-table")).toContainText("gpt-5.6-sol");
   await expect(page.locator(".records-table")).toContainText("vendor/gpt-5.6-sol");
+  await expect(page.locator(".records-table")).not.toContainText("127.0.0.1:15100");
+  await expect(page.locator(".records-table")).not.toContainText("/models");
   await expect(page.locator(".records-table thead th")).toHaveCount(6);
+  const showModelRequests = page.getByRole("checkbox", { name: "Show /models requests" });
+  await expect(showModelRequests).not.toBeChecked();
 
   await page.getByRole("button", { name: "Open forwarding record 4" }).click();
   const detail = page.getByRole("complementary", { name: "Request metadata" });
   await expect(detail).toContainText("fallback-upstream-4");
+  await expect(detail).toContainText("http://127.0.0.1:15100/responses");
   await expect(detail).toContainText("gpt-5.6-sol");
   await expect(detail).toContainText("vendor/gpt-5.6-sol");
   await expect(detail).toContainText("Only bounded metadata is shown");
@@ -51,6 +56,15 @@ test("lists, filters, inspects, and toggles metadata-only forwarding records", a
     element.scrollWidth <= element.clientWidth + 1
   ))).toBe(true);
   await assertLayoutIntegrity(page);
+
+  await showModelRequests.check();
+  await expect(page.locator(".forwarding-summary")).toContainText("6");
+  await expect(page.locator(".records-table tbody tr")).toHaveCount(6);
+  await expect(page.locator(".records-table")).toContainText("/models");
+  await expect(page.locator(".records-table")).toContainText("/v1/models?refresh=1");
+  await showModelRequests.uncheck();
+  await expect(page.locator(".forwarding-summary")).toContainText("4");
+  await expect(page.locator(".records-table tbody tr")).toHaveCount(4);
 
   await page.getByRole("button", { name: "Aborted", exact: true }).click();
   await expect(page.locator(".records-table tbody tr")).toHaveCount(1);
@@ -98,6 +112,7 @@ test("keeps the forwarding workflow usable in Chinese on a phone viewport", asyn
   });
   await expect(page.getByRole("heading", { name: "转发记录", level: 1 })).toBeVisible();
   await expect(page.getByLabel("记录转发元数据")).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "显示 /models 请求" })).not.toBeChecked();
   await expect(page.locator(".records-table-wrap")).toBeVisible();
   await assertLayoutIntegrity(page);
   await assertNoSecrets(page, crp);

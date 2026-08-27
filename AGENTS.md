@@ -104,6 +104,7 @@
 - Forwarding history must preserve requested and effective forwarded models as separate bounded metadata fields.
 - Desktop tables beside persistent detail panes must fit core scan columns without horizontal overflow; secondary fields belong in details.
 - Routing previews must share the live scheduler and label conditional fallbacks and predicted outlets without claiming a guaranteed final provider.
+- Forwarding visibility filters must run before summaries and keyset paging, while list paths omit redundant origins and details retain full URLs.
 
 ## Required Checks
 

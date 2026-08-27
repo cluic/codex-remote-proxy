@@ -17,6 +17,13 @@ const USAGE_OBSERVATION_STATUSES = new Set([
   "protocol_unrecognized",
   "not_applicable"
 ]);
+const MODEL_REQUEST_HIDDEN_SQL = `(
+  incoming_url IS NULL OR (
+    incoming_url NOT LIKE '%/models'
+    AND incoming_url NOT LIKE '%/models?%'
+    AND incoming_url NOT LIKE '%/models/%'
+  )
+)`;
 
 function serviceError(cause) {
   return new CrpError(
@@ -145,16 +152,23 @@ function projectRow(row, providers) {
   };
 }
 
-function normalizeOptions({ limit = 50, before = null, outcome = "all", search = "" } = {}) {
+function normalizeOptions({
+  limit = 50,
+  before = null,
+  outcome = "all",
+  search = "",
+  includeModels = true
+} = {}) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LIMIT
     || (before !== null && (!Number.isSafeInteger(before) || before < 1))
     || !OUTCOMES.has(outcome)
+    || typeof includeModels !== "boolean"
     || typeof search !== "string"
     || [...search].length > MAX_SEARCH_CODE_POINTS
     || /[\u0000-\u001f\u007f]/.test(search)) {
     throw new TypeError("Forwarding record query is invalid.");
   }
-  return { limit, before, outcome, search: search.trim() };
+  return { limit, before, outcome, search: search.trim(), includeModels };
 }
 
 function outcomeSql(outcome) {
@@ -180,6 +194,7 @@ function escapeLike(value) {
 function buildWhere(options, { providerColumns = false, modelColumns = false } = {}) {
   const conditions = [];
   const parameters = {};
+  if (!options.includeModels) conditions.push(MODEL_REQUEST_HIDDEN_SQL);
   if (options.before !== null) {
     conditions.push("id < @before");
     parameters.before = options.before;
@@ -298,6 +313,7 @@ export class ForwardingRecordsService {
           SUM(CASE WHEN error_type = 'proxy_client_abort' THEN 1 ELSE 0 END) AS aborted,
           SUM(CASE WHEN (error_type IS NULL OR error_type != 'proxy_client_abort') AND (error_type IS NOT NULL OR response_status IS NULL OR response_status >= 500 OR response_status < 200 OR response_status BETWEEN 300 AND 399) THEN 1 ELSE 0 END) AS error
         FROM http_transactions
+        ${options.includeModels ? "" : `WHERE ${MODEL_REQUEST_HIDDEN_SQL}`}
       `).get();
       return {
         storageState: "ready",

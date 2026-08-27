@@ -1683,7 +1683,7 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
   assert.equal(unauthenticated.response.status, 401);
 
   const result = await harness.request(
-    "/api/v1/forwarding-records?limit=25&before=10&outcome=success&search=request",
+    "/api/v1/forwarding-records?limit=25&before=10&outcome=success&search=request&includeModels=false",
     { headers: bearer(harness) }
   );
   assert.equal(result.response.status, 200, result.text);
@@ -1726,14 +1726,31 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
   });
   assert.deepEqual(
     harness.calls.find(([name]) => name === "forwardingRecords"),
-    ["forwardingRecords", { limit: 25, before: 10, outcome: "success", search: "request" }]
+    ["forwardingRecords", {
+      limit: 25,
+      before: 10,
+      outcome: "success",
+      search: "request",
+      includeModels: false
+    }]
   );
+  const defaultVisibility = await harness.request(
+    "/api/v1/forwarding-records?limit=1",
+    { headers: bearer(harness) }
+  );
+  assert.equal(defaultVisibility.response.status, 200);
+  assert.deepEqual(harness.calls.filter(([name]) => name === "forwardingRecords").at(-1), [
+    "forwardingRecords",
+    { limit: 1, before: null, outcome: "all", search: "", includeModels: true }
+  ]);
 
   for (const path of [
     "/api/v1/forwarding-records?limit=0",
     "/api/v1/forwarding-records?before=1&before=2",
     "/api/v1/forwarding-records?outcome=pending",
     "/api/v1/forwarding-records?search=one&search=two",
+    "/api/v1/forwarding-records?includeModels=1",
+    "/api/v1/forwarding-records?includeModels=true&includeModels=false",
     "/api/v1/forwarding-records?unknown=1"
   ]) {
     const invalid = await harness.request(path, { headers: bearer(harness) });

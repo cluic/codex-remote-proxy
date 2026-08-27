@@ -61,7 +61,14 @@ function byteLabel(locale: Locale, bytes: number): string {
 }
 
 function displayPath(record: ForwardingRecord): string {
-  return record.incomingUrl ?? record.targetUrl ?? "-";
+  const value = record.incomingUrl ?? record.targetUrl;
+  if (value === null) return "-";
+  try {
+    const parsed = new URL(value, "http://127.0.0.1");
+    return `${parsed.pathname}${parsed.search}` || "/";
+  } catch {
+    return value;
+  }
 }
 
 function recordTimeParts(locale: Locale, value: string | null) {
@@ -185,6 +192,7 @@ export function ForwardingRecordsPage({
   const [outcome, setOutcome] = useState<ForwardingOutcome>("all");
   const [searchDraft, setSearchDraft] = useState("");
   const [search, setSearch] = useState("");
+  const [showModelRequests, setShowModelRequests] = useState(false);
   const [before, setBefore] = useState<number | null>(null);
   const [history, setHistory] = useState<Array<number | null>>([]);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -199,7 +207,13 @@ export function ForwardingRecordsPage({
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    void onLoad({ limit: 50, before, outcome, search }, controller.signal)
+    void onLoad({
+      limit: 50,
+      before,
+      outcome,
+      search,
+      includeModels: showModelRequests
+    }, controller.signal)
       .then((next) => {
         if (controller.signal.aborted) return;
         setData(next);
@@ -214,7 +228,7 @@ export function ForwardingRecordsPage({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [before, onLoad, outcome, refreshKey, search]);
+  }, [before, onLoad, outcome, refreshKey, search, showModelRequests]);
 
   const selected = useMemo(
     () => data?.records.find((record) => record.id === selectedId) ?? null,
@@ -232,6 +246,12 @@ export function ForwardingRecordsPage({
     setOutcome(next);
     setHistory([]);
     setBefore(null);
+  };
+
+  const toggleModelRequests = (visible: boolean) => {
+    setHistory([]);
+    setBefore(null);
+    setShowModelRequests(visible);
   };
 
   const nextPage = () => {
@@ -327,6 +347,16 @@ export function ForwardingRecordsPage({
               />
               <Button type="submit" className="button-small">{t("common.search")}</Button>
             </form>
+          </div>
+          <div className="records-visibility-bar">
+            <label className="records-model-filter">
+              <input
+                type="checkbox"
+                checked={showModelRequests}
+                onChange={(event) => toggleModelRequests(event.target.checked)}
+              />
+              <span>{t("forwarding.showModelRequests")}</span>
+            </label>
           </div>
           {error ? <div className="records-state"><ErrorNotice error={error} t={t} /></div> : null}
           {!error && !loading && records.length === 0 ? (

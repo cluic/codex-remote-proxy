@@ -1406,7 +1406,7 @@ export function createAdminServer({
       return;
     }
     if (url.pathname === `${API_PREFIX}/forwarding-records` && request.method === "GET") {
-      const allowed = new Set(["limit", "before", "outcome", "search"]);
+      const allowed = new Set(["limit", "before", "outcome", "search", "includeModels"]);
       for (const key of url.searchParams.keys()) {
         if (!allowed.has(key)) throw bodyError("API_BODY_INVALID");
       }
@@ -1427,6 +1427,12 @@ export function createAdminServer({
           && ([...searchValues[0]].length > 100 || /[\u0000-\u001f\u007f]/.test(searchValues[0])))) {
         throw bodyError("API_BODY_INVALID");
       }
+      const includeModelValues = url.searchParams.getAll("includeModels");
+      if (includeModelValues.length > 1
+        || (includeModelValues.length === 1
+          && !["true", "false"].includes(includeModelValues[0]))) {
+        throw bodyError("API_BODY_INVALID");
+      }
       if (!forwardingRecordsService || typeof forwardingRecordsService.list !== "function") {
         throw new CrpError(
           "FORWARDING_RECORDS_UNAVAILABLE",
@@ -1439,7 +1445,8 @@ export function createAdminServer({
         limit,
         before,
         outcome: outcomeValues[0] ?? "all",
-        search: searchValues[0] ?? ""
+        search: searchValues[0] ?? "",
+        includeModels: includeModelValues.length === 0 || includeModelValues[0] === "true"
       });
       sendJson(response, 200, projectForwardingRecordsPage(result, limit));
       return;
