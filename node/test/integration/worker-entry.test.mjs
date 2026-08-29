@@ -216,6 +216,7 @@ function makeSettings({ baseUrl, configPath, port = 0, apiKey = "worker-integrat
     proxy,
     capture: {
       enabled: false,
+      detailsEnabled: false,
       dbPath: join(configPath, "..", "traffic.sqlite3")
     },
     access: {

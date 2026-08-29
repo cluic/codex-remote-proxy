@@ -430,6 +430,8 @@ function createServices({ upstream }) {
     apiKeyAuthEnabled: false,
     accessKeys: [],
     captureEnabled: true,
+    captureDetailsEnabled: false,
+    forwardingDetailFailures: new Set(),
     autoStartEnabled: false,
     forwardingRecords: [
       {
@@ -600,7 +602,61 @@ function createServices({ upstream }) {
         requestedModel: null,
         forwardedModel: null
       }
-    ],
+    ].map((record) => ({
+      ...record,
+      cachedInputTokens: record.id === 3 ? 64 : null,
+      detailsAvailable: record.id === 3 || record.id === 4
+    })),
+    forwardingRecordDetails: new Map([
+      [4, {
+        id: 4,
+        detailsAvailable: true,
+        request: {
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "req-fixture-4",
+            authorization: "[REDACTED]"
+          },
+          body: {
+            content: '{"model":"gpt-5.6-sol","stream":true}',
+            encoding: "utf8",
+            bytes: 820,
+            truncated: false
+          }
+        },
+        response: {
+          headers: { "content-type": "text/event-stream" },
+          body: {
+            content: "event: response.completed\ndata: {\"id\":\"response-fixture-4\"}\n\n",
+            encoding: "utf8-truncated",
+            bytes: 1_420,
+            truncated: true
+          }
+        }
+      }],
+      [3, {
+        id: 3,
+        detailsAvailable: true,
+        request: {
+          headers: { "content-type": "application/json" },
+          body: {
+            content: '{"model":"gpt-5.6-sol","input":"hello"}',
+            encoding: "utf8",
+            bytes: 1_280,
+            truncated: false
+          }
+        },
+        response: {
+          headers: { "content-type": "application/json" },
+          body: {
+            content: '{"id":"response-fixture-3","status":"completed"}',
+            encoding: "utf8",
+            bytes: 18_420,
+            truncated: false
+          }
+        }
+      }]
+    ]),
     account: {
       phase: "ready",
       authMode: "chatgpt",
@@ -1353,6 +1409,23 @@ function createServices({ upstream }) {
             error: summaryRecords.filter((record) => record.outcome === "error").length
           }
         };
+      },
+      get(id) {
+        calls.push({ operation: "getForwardingRecordDetail", id });
+        if (state.forwardingDetailFailures.has(id)) {
+          throw new CrpError(
+            "FORWARDING_RECORD_DETAIL_FAILED",
+            "The forwarding detail fixture failed.",
+            "Retry the detail request.",
+            { status: 503 }
+          );
+        }
+        const record = state.forwardingRecords.find((candidate) => candidate.id === id);
+        if (!record) return null;
+        const detail = state.forwardingRecordDetails.get(id);
+        return detail
+          ? structuredClone(detail)
+          : { id, detailsAvailable: false };
       }
     },
     requestSupervisorShutdown() {
@@ -1372,6 +1445,7 @@ function createServices({ upstream }) {
           adminPort: 15101,
           apiKeyAuthEnabled: state.apiKeyAuthEnabled,
           captureEnabled: state.captureEnabled,
+          captureDetailsEnabled: state.captureDetailsEnabled,
           routingMode: state.routingMode,
           credentialBackend: "native",
           autoStartSupported: true,
@@ -1396,8 +1470,15 @@ function createServices({ upstream }) {
         } else if (Object.hasOwn(patch, "captureEnabled")) {
           assert.equal(typeof patch.captureEnabled, "boolean");
           state.captureEnabled = patch.captureEnabled;
+          if (!state.captureEnabled) state.captureDetailsEnabled = false;
           calls.push({ operation: "updateCapture", enabled: state.captureEnabled });
           addActivity("settings", "capture", null);
+        } else if (Object.hasOwn(patch, "captureDetailsEnabled")) {
+          assert.equal(typeof patch.captureDetailsEnabled, "boolean");
+          assert.equal(state.captureEnabled || !patch.captureDetailsEnabled, true);
+          state.captureDetailsEnabled = patch.captureDetailsEnabled;
+          calls.push({ operation: "updateCaptureDetails", enabled: state.captureDetailsEnabled });
+          addActivity("settings", "capture-details", null);
         } else if (Object.hasOwn(patch, "apiKeyAuthEnabled")) {
           assert.equal(typeof patch.apiKeyAuthEnabled, "boolean");
           if (state.proxyHost === "0.0.0.0" && !patch.apiKeyAuthEnabled) {
@@ -1662,6 +1743,7 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       }),
       fetchImpl: async () => new Response(JSON.stringify({
         captureConfigured: services.state.captureEnabled,
+        captureDetailsConfigured: services.state.captureDetailsEnabled,
         captureActive: services.state.captureEnabled,
         captureState: services.state.captureEnabled ? "enabled" : "disabled",
         failedWriteCount: 0,
@@ -1716,6 +1798,12 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       },
       failNextMutation({ code, status, details = {} }) {
         services.state.nextMutationError = { code, status, details };
+      },
+      failForwardingDetail(id) {
+        services.state.forwardingDetailFailures.add(id);
+      },
+      passForwardingDetail(id) {
+        services.state.forwardingDetailFailures.delete(id);
       },
       replaceSupervisorIdentity({ pid, startedAt }) {
         services.state.supervisorPid = pid;

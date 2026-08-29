@@ -8,6 +8,7 @@ import type {
   DiagnosticResult,
   ForwardingRecordsPageData,
   ForwardingRecordsQuery,
+  ForwardingRecordDetail,
   MetricsOverview,
   MetricsWindow,
   TokenHeatmapOverview,
@@ -345,6 +346,14 @@ export class CrpApi {
     return payload.settings;
   }
 
+  async updateCaptureDetailsEnabled(captureDetailsEnabled: boolean): Promise<Settings> {
+    const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
+      method: "PATCH",
+      body: { captureDetailsEnabled }
+    });
+    return payload.settings;
+  }
+
   async updateAutoStartEnabled(autoStartEnabled: boolean): Promise<Settings> {
     const payload = await this.mutate<{ settings: Settings }>("/api/v1/settings", {
       method: "PATCH",
@@ -391,6 +400,14 @@ export class CrpApi {
       `/api/v1/forwarding-records?${parameters.toString()}`,
       signal
     );
+  }
+
+  async getForwardingRecordDetail(id: number, signal?: AbortSignal): Promise<ForwardingRecordDetail> {
+    const payload = await this.get<{ record: ForwardingRecordDetail }>(
+      `/api/v1/forwarding-records/${encodeURIComponent(String(id))}`,
+      signal
+    );
+    return payload.record;
   }
 
   async getMetrics(window: MetricsWindow, signal?: AbortSignal): Promise<MetricsOverview> {

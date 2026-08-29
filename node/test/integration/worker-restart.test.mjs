@@ -82,7 +82,7 @@ function makeSnapshot({ generation, port, upstreamPort, dir }) {
         modelOverride: null,
         modelMappings: []
       },
-      capture: { enabled: false, dbPath: join(dir, "traffic.sqlite3") },
+      capture: { enabled: false, detailsEnabled: false, dbPath: join(dir, "traffic.sqlite3") },
       access: {
         enabled: false,
         dbPath: join(dir, "access-keys.sqlite3"),

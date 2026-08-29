@@ -46,6 +46,10 @@ function validateCaptureEnabled(value) {
   return value === undefined || typeof value === "boolean";
 }
 
+function validateCaptureDetailsEnabled(value) {
+  return value === undefined || typeof value === "boolean";
+}
+
 function validateCaptureDbPath(value) {
   return value === undefined || (typeof value === "string" && value.trim().length > 0);
 }
@@ -56,19 +60,29 @@ export function normalizeCaptureConfig(rawCapture = {}, { baseDir = process.cwd(
   if (!validateCaptureEnabled(capture.enabled)) {
     throw new Error("capture.enabled must be a boolean when provided");
   }
+  if (!validateCaptureDetailsEnabled(capture.detailsEnabled)) {
+    throw new Error("capture.detailsEnabled must be a boolean when provided");
+  }
   if (!validateCaptureDbPath(capture.dbPath)) {
     throw new Error("capture.dbPath must be a non-empty string when provided");
   }
-  if (strict && capture.enabled === undefined && capture.dbPath === undefined) {
+  if (strict && capture.enabled === undefined && capture.detailsEnabled === undefined && capture.dbPath === undefined) {
     return {
       enabled: false,
+      detailsEnabled: false,
       dbPath: defaultDbPath
     };
   }
 
   const dbPathRaw = typeof capture.dbPath === "string" && capture.dbPath.trim() ? capture.dbPath.trim() : defaultDbPath;
+  const enabled = typeof capture.enabled === "boolean" ? capture.enabled : false;
   return {
-    enabled: typeof capture.enabled === "boolean" ? capture.enabled : false,
+    enabled,
+    // Detail capture is subordinate to metadata capture. Re-enabling metadata
+    // must never resurrect a stale body-capture setting.
+    detailsEnabled: !enabled
+      ? false
+      : (typeof capture.detailsEnabled === "boolean" ? capture.detailsEnabled : false),
     dbPath: resolvePathValue(dbPathRaw, baseDir)
   };
 }
@@ -224,7 +238,9 @@ function createInsertStatement(db) {
       upstream_request_id,
       input_tokens,
       output_tokens,
+      cached_input_tokens,
       usage_observation_status,
+      details_captured,
       error_type,
       error_message
     ) VALUES (
@@ -255,7 +271,9 @@ function createInsertStatement(db) {
       @upstream_request_id,
       @input_tokens,
       @output_tokens,
+      @cached_input_tokens,
       @usage_observation_status,
+      @details_captured,
       @error_type,
       @error_message
     )
@@ -295,7 +313,9 @@ function initializeDatabase(db) {
       upstream_request_id TEXT,
       input_tokens INTEGER,
       output_tokens INTEGER,
+      cached_input_tokens INTEGER,
       usage_observation_status TEXT,
+      details_captured INTEGER NOT NULL DEFAULT 0,
       error_type TEXT,
       error_message TEXT
     );
@@ -311,6 +331,8 @@ function initializeDatabase(db) {
     ["forwarded_model", "TEXT"],
     ["input_tokens", "INTEGER"],
     ["output_tokens", "INTEGER"],
+    ["cached_input_tokens", "INTEGER"],
+    ["details_captured", "INTEGER NOT NULL DEFAULT 0"],
     ["usage_observation_status", "TEXT"]
   ]) {
     if (!columns.has(name)) db.exec(`ALTER TABLE http_transactions ADD COLUMN ${name} ${type}`);
@@ -548,15 +570,22 @@ export class CaptureManager {
 
     this.pendingRecords += 1;
     let finished = false;
+    const detailsEnabled = this.desiredConfig.detailsEnabled === true;
 
     return {
+      detailsEnabled,
       save: (record) => {
         if (finished) {
           return;
         }
         finished = true;
         try {
-          this.writeRecord(record);
+          this.writeRecord({
+            ...record,
+            // The capture mode is snapshotted at beginRecord time and cannot be
+            // forged by callers or changed by a later runtime reload.
+            detailsCaptured: detailsEnabled
+          });
         } finally {
           this.pendingRecords -= 1;
           if (!this.acceptingRecords && this.pendingRecords === 0 && this.state === "disabling") {
@@ -576,14 +605,20 @@ export class CaptureManager {
     }
 
     try {
-      const requestBody = encodeBody(record.requestBody, {
-        totalBytes: record.requestBodyBytes,
-        truncated: record.requestBodyTruncated === true
-      });
-      const responseBody = encodeBody(record.responseBody, {
-        totalBytes: record.responseBodyBytes,
-        truncated: record.responseBodyTruncated === true
-      });
+      const detailsCaptured = record.detailsCaptured === true ? 1 : 0;
+      const metadataBytes = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
+      const requestBody = detailsCaptured === 1
+        ? encodeBody(record.requestBody, {
+            totalBytes: record.requestBodyBytes,
+            truncated: record.requestBodyTruncated === true
+          })
+        : { body: "", encoding: "empty", bytes: metadataBytes(record.requestBodyBytes) };
+      const responseBody = detailsCaptured === 1
+        ? encodeBody(record.responseBody, {
+            totalBytes: record.responseBodyBytes,
+            truncated: record.responseBodyTruncated === true
+          })
+        : { body: "", encoding: "empty", bytes: metadataBytes(record.responseBodyBytes) };
       const inputTokens = Number.isSafeInteger(record.inputTokens)
         && record.inputTokens >= 0
         && record.inputTokens <= MAX_CAPTURE_TOKENS
@@ -594,6 +629,13 @@ export class CaptureManager {
         && record.outputTokens <= MAX_CAPTURE_TOKENS
         ? record.outputTokens
         : null;
+      const cachedInputTokens = Number.isSafeInteger(record.cachedInputTokens)
+        && record.cachedInputTokens >= 0
+        && record.cachedInputTokens <= MAX_CAPTURE_TOKENS
+        ? record.cachedInputTokens
+        : null;
+      const requestHeaders = detailsCaptured === 1 ? record.requestHeaders : {};
+      const responseHeaders = detailsCaptured === 1 ? record.responseHeaders : {};
       const usageObservationStatus = inputTokens !== null && outputTokens !== null
         ? "observed"
         : USAGE_OBSERVATION_STATUSES.has(record.usageObservationStatus)
@@ -614,20 +656,22 @@ export class CaptureManager {
         route: record.route ?? null,
         requested_model: normalizeCapturedModel(record.requestedModel),
         forwarded_model: normalizeCapturedModel(record.forwardedModel),
-        request_headers_json: JSON.stringify(redactHeaders(record.requestHeaders)),
-        request_body: requestBody.body,
-        request_body_encoding: requestBody.encoding,
+        request_headers_json: JSON.stringify(redactHeaders(requestHeaders)),
+        request_body: detailsCaptured === 1 ? requestBody.body : "",
+        request_body_encoding: detailsCaptured === 1 ? requestBody.encoding : "empty",
         request_body_bytes: requestBody.bytes,
         response_status: record.responseStatus ?? null,
-        response_headers_json: JSON.stringify(redactHeaders(record.responseHeaders)),
-        response_body: responseBody.body,
-        response_body_encoding: responseBody.encoding,
+        response_headers_json: JSON.stringify(redactHeaders(responseHeaders)),
+        response_body: detailsCaptured === 1 ? responseBody.body : "",
+        response_body_encoding: detailsCaptured === 1 ? responseBody.encoding : "empty",
         response_body_bytes: responseBody.bytes,
         is_stream: record.isStream ? 1 : 0,
         upstream_request_id: record.upstreamRequestId ?? null,
         input_tokens: inputTokens,
         output_tokens: outputTokens,
+        cached_input_tokens: cachedInputTokens,
         usage_observation_status: usageObservationStatus,
+        details_captured: detailsCaptured,
         error_type: record.errorType ?? null,
         error_message: record.errorMessage ?? null
       });
@@ -660,6 +704,7 @@ export class CaptureManager {
   getPublicState() {
     return {
       captureConfigured: this.desiredConfig.enabled,
+      captureDetailsConfigured: this.desiredConfig.detailsEnabled,
       captureActive: this.acceptingRecords,
       captureDbPath: this.desiredConfig.dbPath,
       captureRuntimeDbPath: this.activeDbPath,

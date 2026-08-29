@@ -21,6 +21,7 @@
   },
   "capture": {
     "enabled": false,
+    "detailsEnabled": false,
     "dbPath": "/Users/you/.codex-remote-proxy/traffic.sqlite3"
   }
 }

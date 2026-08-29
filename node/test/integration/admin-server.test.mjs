@@ -8,6 +8,7 @@ import os from "node:os";
 import { dirname, join } from "node:path";
 
 import { createAdminServer } from "../../src/supervisor/admin-server.mjs";
+import { FORWARDING_DETAIL_LIMITS } from "../../src/supervisor/forwarding-records-service.mjs";
 import { SessionAuth } from "../../src/supervisor/session-auth.mjs";
 import { createSupervisor } from "../../src/supervisor/supervisor.mjs";
 import { runSupervisor } from "../../src/supervisor/supervisor-entry.mjs";
@@ -592,6 +593,8 @@ function createServices() {
           responseBytes: 40,
           stream: true,
           upstreamRequestId: "upstream-9",
+          cachedInputTokens: 5,
+          detailsAvailable: true,
           errorType: null,
           errorMessage: null,
           outcome: "success",
@@ -606,6 +609,67 @@ function createServices() {
         page: { limit: query.limit, nextBefore: null, secret: SECRET },
         summary: { total: 1, success: 1, rejected: 0, error: 0, apiKey: SECRET },
         apiKey: SECRET
+      };
+    },
+    get(id) {
+      calls.push(["forwardingRecordDetail", id]);
+      if (id === 999) return null;
+      if (id === 10) {
+        return { id, detailsAvailable: false, secret: SECRET };
+      }
+      if (id === 11) {
+        return {
+          id,
+          detailsAvailable: true,
+          request: {
+            headers: Object.fromEntries(Array.from({ length: 256 }, (_, index) => [
+              `x-${index}`, "h".repeat(20_000)
+            ])),
+            body: {
+              content: "你".repeat(FORWARDING_DETAIL_LIMITS.bodyCodeUnits * 2),
+              encoding: "utf8",
+              bytes: FORWARDING_DETAIL_LIMITS.bytes + 1,
+              truncated: false
+            }
+          },
+          response: {
+            headers: {},
+            body: {
+              content: "r".repeat(FORWARDING_DETAIL_LIMITS.bodyCodeUnits * 2),
+              encoding: "utf8",
+              bytes: FORWARDING_DETAIL_LIMITS.bytes + 1,
+              truncated: false
+            }
+          }
+        };
+      }
+      return {
+        id,
+        detailsAvailable: true,
+        request: {
+          headers: {
+            "content-type": "application/json",
+            authorization: "[REDACTED]"
+          },
+          body: {
+            content: '{"model":"model-a"}',
+            encoding: "utf8",
+            bytes: 20,
+            truncated: false
+          },
+          secret: SECRET
+        },
+        response: {
+          headers: { "content-type": "application/json" },
+          body: {
+            content: '{"id":"response-9"}',
+            encoding: "utf8",
+            bytes: 40,
+            truncated: true
+          },
+          secret: SECRET
+        },
+        secret: SECRET
       };
     }
   };
@@ -1318,6 +1382,7 @@ test("projects start-at-login state and validates its settings mutation", async 
     apiKeyAuthEnabled: false,
     apiKeyAuthRequired: false,
     captureEnabled: false,
+    captureDetailsEnabled: false,
     routingMode: "custom_only",
     credentialBackend: "native",
     autoStartSupported: true,
@@ -1490,6 +1555,7 @@ test("status and refresh expose only bounded account and quota fields", async (t
     workerAvailable: false,
     active: false,
     state: "unavailable",
+    detailsEnabled: false,
     synchronized: null,
     failedWriteCount: 0,
     lastWriteErrorAt: null
@@ -1778,6 +1844,8 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
       upstreamRequestId: "upstream-9",
       inputTokens: null,
       outputTokens: null,
+      cachedInputTokens: 5,
+      detailsAvailable: true,
       usageObservationStatus: "legacy",
       errorType: null,
       errorMessage: null,
@@ -1825,6 +1893,89 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
     assert.equal(invalid.json.error.code, "API_BODY_INVALID");
   }
   const wrongMethod = await harness.request("/api/v1/forwarding-records", {
+    method: "POST",
+    headers: bearer(harness)
+  });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "GET");
+});
+
+test("forwarding record details are authenticated, nested, bounded, and uncached", async (t) => {
+  const harness = await createHarness(t);
+  const unauthenticated = await harness.request("/api/v1/forwarding-records/9");
+  assert.equal(unauthenticated.response.status, 401);
+
+  const detail = await harness.request("/api/v1/forwarding-records/9", {
+    headers: bearer(harness)
+  });
+  assert.equal(detail.response.status, 200, detail.text);
+  assert.equal(detail.response.headers.get("cache-control"), "no-store");
+  assertNoSensitiveResponse(detail);
+  assert.deepEqual(detail.json, {
+    record: {
+      id: 9,
+      detailsAvailable: true,
+      request: {
+        headers: {
+          "content-type": "application/json",
+          authorization: "[REDACTED]"
+        },
+        body: {
+          content: '{"model":"model-a"}',
+          encoding: "utf8",
+          bytes: 20,
+          truncated: false
+        }
+      },
+      response: {
+        headers: { "content-type": "application/json" },
+        body: {
+          content: '{"id":"response-9"}',
+          encoding: "utf8",
+          bytes: 40,
+          truncated: true
+        }
+      }
+    }
+  });
+  assert.equal(Object.hasOwn(detail.json.record.request, "content"), false);
+  assert.equal(Object.hasOwn(detail.json.record.response, "content"), false);
+  assert.deepEqual(
+    harness.calls.find(([name]) => name === "forwardingRecordDetail"),
+    ["forwardingRecordDetail", 9]
+  );
+
+  const oversized = await harness.request("/api/v1/forwarding-records/11", {
+    headers: bearer(harness)
+  });
+  assert.equal(oversized.response.status, 200, oversized.text);
+  assert.equal(oversized.json.record.request.body.content.length, FORWARDING_DETAIL_LIMITS.bodyCodeUnits);
+  assert.equal(oversized.json.record.request.body.bytes, 0);
+  assert.equal(oversized.json.record.request.body.truncated, true);
+  assert.equal(JSON.stringify(oversized.json.record.request.headers).length <= FORWARDING_DETAIL_LIMITS.headersJsonBytes, true);
+
+  const unavailable = await harness.request("/api/v1/forwarding-records/10", {
+    headers: bearer(harness)
+  });
+  assert.equal(unavailable.response.status, 200);
+  assertNoSensitiveResponse(unavailable);
+  assert.deepEqual(unavailable.json, {
+    record: { id: 10, detailsAvailable: false }
+  });
+
+  const invalidQuery = await harness.request("/api/v1/forwarding-records/9?unknown=1", {
+    headers: bearer(harness)
+  });
+  assert.equal(invalidQuery.response.status, 400);
+  assert.equal(invalidQuery.json.error.code, "API_BODY_INVALID");
+
+  const missing = await harness.request("/api/v1/forwarding-records/999", {
+    headers: bearer(harness)
+  });
+  assert.equal(missing.response.status, 404);
+  assert.equal(missing.json.error.code, "FORWARDING_RECORD_NOT_FOUND");
+
+  const wrongMethod = await harness.request("/api/v1/forwarding-records/9", {
     method: "POST",
     headers: bearer(harness)
   });

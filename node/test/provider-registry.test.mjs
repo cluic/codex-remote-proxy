@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
   adminPort: 15101,
   apiKeyAuthEnabled: false,
   captureEnabled: false,
+  captureDetailsEnabled: false,
   routingMode: "custom_only",
   routingRuleGroupId: null
 };
@@ -94,7 +95,7 @@ test("creates, lists, gets, and updates normalized providers", (t) => {
   });
 
   assert.deepEqual(registry.getDocument(), {
-    schemaVersion: 8,
+    schemaVersion: 9,
     activeProviderId: null,
     providers: [],
     modelMappingGroups: [],
@@ -638,7 +639,7 @@ test("loads a legacy controlled model override and allows replacing it safely", 
   }), { id: "provider-legacy", now: FIXED_NOW });
   legacy.modelOverride = "legacy\tmodel";
   writeFileSync(registryPath, `${JSON.stringify({
-    schemaVersion: 8,
+    schemaVersion: 9,
     activeProviderId: null,
     providers: [legacy],
     modelMappingGroups: [],
@@ -805,6 +806,31 @@ test("persists Capture as a compare-and-set global setting", (t) => {
   assert.throws(
     () => registry.setCaptureEnabled("yes"),
     assertCrpError("CAPTURE_SETTING_INVALID", 400)
+  );
+});
+
+test("detailed Capture is subordinate to metadata Capture and rolls back atomically", (t) => {
+  const { registryPath } = makeTempRegistry(t);
+  const registry = new ProviderRegistry({ path: registryPath, now: () => FIXED_NOW });
+  assert.throws(
+    () => registry.setCaptureDetailsEnabled(true),
+    assertCrpError("CAPTURE_DETAILS_REQUIRES_CAPTURE", 400)
+  );
+  registry.setCaptureEnabled(true);
+  assert.equal(registry.setCaptureDetailsEnabled(true), true);
+  assert.equal(registry.getDocument().settings.captureDetailsEnabled, true);
+  assert.equal(
+    registry.setCaptureSettingsIfCurrent(true, true, false, false),
+    true
+  );
+  assert.deepEqual(
+    registry.getDocument().settings,
+    { ...DEFAULT_SETTINGS, captureEnabled: false, captureDetailsEnabled: false }
+  );
+  assert.equal(registry.setCaptureSettingsIfCurrent(false, false, true, true), true);
+  assert.deepEqual(
+    registry.getDocument().settings,
+    { ...DEFAULT_SETTINGS, captureEnabled: true, captureDetailsEnabled: true }
   );
 });
 

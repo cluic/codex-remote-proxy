@@ -32,6 +32,7 @@ import type {
   BootstrapResult,
   DiagnosticResult,
   ForwardingRecordsPageData,
+  ForwardingRecordDetail,
   ForwardingRecordsQuery,
   Locale,
   MetricsOverview,
@@ -588,6 +589,14 @@ export function App() {
     ) !== null
   ), [api, executeMutation]);
 
+  const updateCaptureDetailsEnabled = useCallback(async (captureDetailsEnabled: boolean): Promise<boolean> => (
+    await executeMutation(
+      "capture-details-setting",
+      () => api.updateCaptureDetailsEnabled(captureDetailsEnabled),
+      captureDetailsEnabled ? "notice.captureDetailsEnabled" : "notice.captureDetailsDisabled"
+    ) !== null
+  ), [api, executeMutation]);
+
   const updateAutoStartEnabled = useCallback((autoStartEnabled: boolean) => {
     void executeMutation(
       "autostart-setting",
@@ -645,6 +654,11 @@ export function App() {
   ): Promise<ForwardingRecordsPageData> => (
     await api.getForwardingRecords(query, signal)
   ), [api]);
+
+  const loadForwardingRecordDetail = useCallback(async (
+    id: number,
+    signal?: AbortSignal
+  ): Promise<ForwardingRecordDetail> => api.getForwardingRecordDetail(id, signal), [api]);
 
   const changeMetricsWindow = useCallback((next: MetricsWindow) => {
     metricsWindowRef.current = next;
@@ -904,11 +918,14 @@ export function App() {
           locale={locale}
           t={t}
           captureEnabled={workspace.settings.captureEnabled}
+          captureDetailsEnabled={workspace.settings.captureDetailsEnabled}
           captureStatus={workspace.status.capture}
           readOnly={accessMode !== "writable"}
           pending={pending}
           onLoad={loadForwardingRecords}
+          onLoadDetail={loadForwardingRecordDetail}
           onCaptureChange={updateCaptureEnabled}
+          onCaptureDetailsChange={updateCaptureDetailsEnabled}
         />
       ) : null}
       {route === "activity" ? (

@@ -36,6 +36,7 @@ test("normalizeCaptureConfig applies defaults", () => {
     strict: true
   });
   assert.equal(normalized.enabled, false);
+  assert.equal(normalized.detailsEnabled, false);
   assert.equal(normalized.dbPath, DEFAULT_CAPTURE_DB_PATH);
 });
 
@@ -84,10 +85,10 @@ test("capture manager persists truncated prefixes with total observed byte count
   mkdirSync(dir, { recursive: true });
   const runtimeConfigPath = join(dir, "proxy-config.json");
   const dbPath = join(dir, "traffic.sqlite3");
-  writeFileSync(runtimeConfigPath, JSON.stringify({ capture: { enabled: true, dbPath } }));
+  writeFileSync(runtimeConfigPath, JSON.stringify({ capture: { enabled: true, detailsEnabled: true, dbPath } }));
   const manager = new CaptureManager({
     configPath: runtimeConfigPath,
-    capture: { enabled: true, dbPath },
+    capture: { enabled: true, detailsEnabled: true, dbPath },
     watchRuntimeConfig: false
   }).start();
   t.after(() => {
@@ -136,6 +137,7 @@ test("capture manager writes a complete request/response record", async () => {
   writeFileSync(runtimeConfigPath, `${JSON.stringify({
     capture: {
       enabled: true,
+      detailsEnabled: true,
       dbPath
     }
   }, null, 2)}\n`, "utf8");
@@ -144,6 +146,7 @@ test("capture manager writes a complete request/response record", async () => {
     configPath: runtimeConfigPath,
     capture: {
       enabled: true,
+      detailsEnabled: true,
       dbPath
     },
     watchRuntimeConfig: false
@@ -170,13 +173,17 @@ test("capture manager writes a complete request/response record", async () => {
       Authorization: "Bearer super-secret",
       Accept: "application/json"
     },
-    requestBody: Buffer.from("{\"hello\":\"world\"}", "utf8"),
+      requestBody: Buffer.from("{\"hello\":\"world\"}", "utf8"),
+      requestBodyBytes: 17,
+      requestBodyTruncated: false,
     responseStatus: 200,
     responseHeaders: {
       "Content-Type": "text/event-stream",
       "X-Request-Id": "upstream-1"
     },
-    responseBody: Buffer.from("event: ok\ndata: {}\n\n", "utf8"),
+      responseBody: Buffer.from("event: ok\ndata: {}\n\n", "utf8"),
+      responseBodyBytes: 20,
+      responseBodyTruncated: false,
     isStream: true,
     upstreamRequestId: "upstream-1",
     inputTokens: 23,
@@ -205,6 +212,71 @@ test("capture manager writes a complete request/response record", async () => {
   assert.match(rows[0].response_body, /event: ok/);
 
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("capture details fail closed, preserve byte metadata, and honor in-flight mode snapshots", (t) => {
+  const dir = makeTempDir("crp-capture-details-snapshot");
+  mkdirSync(dir, { recursive: true });
+  const runtimeConfigPath = join(dir, "proxy-config.json");
+  const dbPath = join(dir, "traffic.sqlite3");
+  writeFileSync(runtimeConfigPath, JSON.stringify({
+    capture: { enabled: true, detailsEnabled: false, dbPath }
+  }));
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, detailsEnabled: false, dbPath },
+    watchRuntimeConfig: false
+  }).start();
+  t.after(() => {
+    manager.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const save = (handle, requestId, detailsCaptured) => handle.save({
+    startedAt: "2026-05-19T00:00:00.000Z",
+    completedAt: "2026-05-19T00:00:01.000Z",
+    durationMs: 1,
+    requestId,
+    method: "POST",
+    incomingUrl: "/v1/responses",
+    targetUrl: "https://example.test/v1/responses",
+    requestHeaders: { Authorization: "sentinel" },
+    requestBody: Buffer.from("sentinel-request"),
+    requestBodyBytes: 1024,
+    requestBodyTruncated: true,
+    responseHeaders: { "X-Secret": "sentinel" },
+    responseBody: Buffer.from("sentinel-response"),
+    responseBodyBytes: 2048,
+    responseBodyTruncated: true,
+    responseStatus: 200,
+    detailsCaptured
+  });
+  const offHandle = manager.beginRecord();
+  assert.ok(offHandle);
+  save(offHandle, "details-off", true);
+  manager.applyRuntimeConfig({ enabled: true, detailsEnabled: true, dbPath });
+  const inFlight = manager.beginRecord();
+  assert.ok(inFlight);
+  manager.applyRuntimeConfig({ enabled: true, detailsEnabled: false, dbPath });
+  save(inFlight, "details-snapshotted", false);
+  manager.close();
+  const database = new DatabaseSync(dbPath);
+  const rows = database.prepare(`SELECT request_id, request_headers_json, request_body,
+    request_body_bytes, response_body, response_body_bytes, details_captured
+    FROM http_transactions ORDER BY id`).all();
+  database.close();
+  assert.equal(rows.length, 2);
+  assert.deepEqual({ ...rows[0] }, {
+    request_id: "details-off",
+    request_headers_json: "{}",
+    request_body: "",
+    request_body_bytes: 1024,
+    response_body: "",
+    response_body_bytes: 2048,
+    details_captured: 0
+  });
+  assert.equal(rows[1].details_captured, 1);
+  assert.match(rows[1].request_body, /sentinel-request/);
+  assert.doesNotMatch(JSON.stringify(rows[0]), /sentinel/);
 });
 
 test("capture manager upgrades schema 1 and persists model, provider, and usage metadata", (t) => {
@@ -245,7 +317,7 @@ test("capture manager upgrades schema 1 and persists model, provider, and usage 
   legacy.close();
   const manager = new CaptureManager({
     configPath: runtimeConfigPath,
-    capture: { enabled: true, dbPath },
+    capture: { enabled: true, detailsEnabled: true, dbPath },
     watchRuntimeConfig: false
   }).start();
   t.after(() => {

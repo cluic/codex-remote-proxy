@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 
 import { sanitizeActivityValue } from "./activity-store.mjs";
+import { FORWARDING_DETAIL_LIMITS } from "./forwarding-records-service.mjs";
 import { listProviderPresets } from "../providers/provider-presets.mjs";
 import { getPublicBuildInfo } from "../shared/build-info.mjs";
 import { CrpError, toPublicError } from "../shared/errors.mjs";
@@ -521,6 +522,8 @@ function projectSettings(settings) {
     apiKeyAuthEnabled: settings?.apiKeyAuthEnabled === true,
     apiKeyAuthRequired: settings?.proxyHost === "0.0.0.0",
     captureEnabled: settings?.captureEnabled === true,
+    captureDetailsEnabled: settings?.captureDetailsEnabled === true
+      && settings?.captureEnabled === true,
     routingMode: ROUTING_MODES.has(settings?.routingMode)
       ? settings.routingMode
       : "custom_only",
@@ -574,6 +577,7 @@ async function projectCaptureState(worker, settings, fetchImpl) {
       workerAvailable: false,
       active: false,
       state: "stopped",
+      detailsEnabled: false,
       synchronized: null,
       failedWriteCount: 0,
       lastWriteErrorAt: null
@@ -595,6 +599,8 @@ async function projectCaptureState(worker, settings, fetchImpl) {
       configured,
       workerAvailable: true,
       active: health?.captureActive === true,
+      detailsEnabled: health?.captureDetailsConfigured === true
+        && health?.captureConfigured === true,
       state: ["disabled", "enabling", "enabled", "disabling", "error"]
         .includes(health?.captureState) ? health.captureState : "unknown",
       synchronized: runtimeConfigured === configured,
@@ -609,6 +615,7 @@ async function projectCaptureState(worker, settings, fetchImpl) {
       workerAvailable: false,
       active: false,
       state: "unavailable",
+      detailsEnabled: false,
       synchronized: null,
       failedWriteCount: 0,
       lastWriteErrorAt: null
@@ -881,6 +888,8 @@ function projectForwardingRecord(record) {
     upstreamRequestId: projectMetricText(record?.upstreamRequestId, 256),
     inputTokens: boundedTokenCount(record?.inputTokens),
     outputTokens: boundedTokenCount(record?.outputTokens),
+    cachedInputTokens: boundedTokenCount(record?.cachedInputTokens),
+    detailsAvailable: record?.detailsAvailable === true,
     usageObservationStatus: [
       "observed",
       "upstream_unreported",
@@ -1041,6 +1050,75 @@ function parseProviderRoute(pathname) {
   return { id, action };
 }
 
+function parseForwardingRecordRoute(pathname) {
+  const prefix = `${API_PREFIX}/forwarding-records/`;
+  if (!pathname.startsWith(prefix)) return null;
+  const rawId = pathname.slice(prefix.length);
+  if (rawId.length === 0 || rawId.includes("/") || !/^\d+$/.test(rawId)) return null;
+  const id = Number(rawId);
+  return Number.isSafeInteger(id) && id > 0 ? { id } : null;
+}
+
+function projectForwardingRecordDetails(details) {
+  if (!details || details.detailsAvailable !== true) {
+    return {
+      id: Number.isSafeInteger(details?.id) && details.id > 0 ? details.id : null,
+      detailsAvailable: false
+    };
+  }
+  const projectHeaders = (headers) => {
+    if (!headers || typeof headers !== "object" || Array.isArray(headers)) return {};
+    const result = {};
+    let budget = FORWARDING_DETAIL_LIMITS.headersJsonBytes;
+    let count = 0;
+    for (const [key, value] of Object.entries(headers)) {
+      if (count >= FORWARDING_DETAIL_LIMITS.headerCount || budget <= 0) break;
+      if (typeof key !== "string" || key.length > 256) continue;
+      if (typeof value === "string") result[key] = value.slice(0, FORWARDING_DETAIL_LIMITS.headerValueCodeUnits);
+      else if (Array.isArray(value)) {
+        result[key] = value.filter((item) => typeof item === "string")
+          .slice(0, FORWARDING_DETAIL_LIMITS.headerArrayItems)
+          .map((item) => item.slice(0, FORWARDING_DETAIL_LIMITS.headerValueCodeUnits));
+      }
+      if (!Object.hasOwn(result, key)) continue;
+      const encodedLength = Buffer.byteLength(JSON.stringify({ [key]: result[key] }));
+      if (encodedLength > budget) {
+        delete result[key];
+        break;
+      }
+      budget -= encodedLength;
+      count += 1;
+    }
+    return result;
+  };
+  const projectBody = (value) => ({
+    content: typeof value?.content === "string"
+      ? value.content.slice(0, FORWARDING_DETAIL_LIMITS.bodyCodeUnits)
+      : "",
+    encoding: typeof value?.encoding === "string" ? value.encoding.slice(0, 32) : "empty",
+    bytes: Number.isSafeInteger(value?.bytes)
+      && value.bytes >= 0
+      && value.bytes <= FORWARDING_DETAIL_LIMITS.bytes
+      ? value.bytes
+      : 0,
+    truncated: value?.truncated === true
+      || (typeof value?.content === "string"
+        && value.content.length > FORWARDING_DETAIL_LIMITS.bodyCodeUnits)
+  });
+  return {
+    id: Number.isSafeInteger(details.id) && details.id > 0 ? details.id : null,
+    detailsAvailable: true,
+    request: {
+      headers: projectHeaders(details.request?.headers),
+      body: projectBody(details.request?.body)
+    },
+    response: {
+      headers: projectHeaders(details.response?.headers),
+      body: projectBody(details.response?.body)
+    }
+  };
+}
+
 function parseModelMappingRoute(pathname) {
   const prefix = `${API_PREFIX}/model-mappings/`;
   if (!pathname.startsWith(prefix)) return null;
@@ -1124,6 +1202,7 @@ function allowedMethods(pathname) {
   if (parseModelMappingRoute(pathname)) return ["GET", "PATCH", "DELETE"];
   if (parseRoutingRuleGroupRoute(pathname)) return ["GET", "PATCH", "DELETE"];
   if (parseAccessKeyRoute(pathname)) return ["GET", "PATCH", "DELETE"];
+  if (parseForwardingRecordRoute(pathname)) return ["GET"];
   const providerRoute = parseProviderRoute(pathname);
   if (!providerRoute) return null;
   if (providerRoute.action === null) return ["GET", "PATCH", "DELETE"];
@@ -1480,6 +1559,30 @@ export function createAdminServer({
         includeModels: includeModelValues.length === 0 || includeModelValues[0] === "true"
       });
       sendJson(response, 200, projectForwardingRecordsPage(result, limit));
+      return;
+    }
+    const forwardingRecordRoute = parseForwardingRecordRoute(url.pathname);
+    if (forwardingRecordRoute && request.method === "GET") {
+      if (url.searchParams.toString() !== "") throw bodyError("API_BODY_INVALID");
+      response.setHeader("cache-control", "no-store");
+      if (!forwardingRecordsService || typeof forwardingRecordsService.get !== "function") {
+        throw new CrpError(
+          "FORWARDING_RECORDS_UNAVAILABLE",
+          "Forwarding records could not be read.",
+          "Verify the Capture database and try again.",
+          { status: 503 }
+        );
+      }
+      const details = forwardingRecordsService.get(forwardingRecordRoute.id);
+      if (!details) {
+        throw apiError(
+          "FORWARDING_RECORD_NOT_FOUND",
+          "The forwarding record does not exist.",
+          "Refresh the forwarding records and try again.",
+          404
+        );
+      }
+      sendJson(response, 200, { record: projectForwardingRecordDetails(details) });
       return;
     }
     if (url.pathname === `${API_PREFIX}/routing-preview` && request.method === "GET") {
@@ -1891,6 +1994,7 @@ export function createAdminServer({
           "apiKeyAuthEnabled",
           "autoStartEnabled",
           "captureEnabled",
+          "captureDetailsEnabled",
           "proxyHost",
           "routingMode"
         ]
@@ -1916,9 +2020,11 @@ export function createAdminServer({
       }
       const booleanValue = Object.hasOwn(patch, "captureEnabled")
         ? patch.captureEnabled
-        : Object.hasOwn(patch, "apiKeyAuthEnabled")
-          ? patch.apiKeyAuthEnabled
-          : patch.autoStartEnabled;
+        : Object.hasOwn(patch, "captureDetailsEnabled")
+          ? patch.captureDetailsEnabled
+          : Object.hasOwn(patch, "apiKeyAuthEnabled")
+            ? patch.apiKeyAuthEnabled
+            : patch.autoStartEnabled;
       if (typeof booleanValue !== "boolean") throw bodyError("API_BODY_INVALID");
       sendJson(response, 200, {
         settings: projectSettings(await settingsService.updateSettings(patch))

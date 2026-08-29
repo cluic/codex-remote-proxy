@@ -40,7 +40,11 @@ function makeSnapshot(generation = 1, port = 15100, providerId = null) {
       }],
       upstream,
       proxy,
-      capture: { enabled: false, dbPath: "/tmp/crp-worker-manager/traffic.sqlite3" },
+      capture: {
+        enabled: false,
+        detailsEnabled: false,
+        dbPath: "/tmp/crp-worker-manager/traffic.sqlite3"
+      },
       access: {
         enabled: false,
         dbPath: "/tmp/crp-worker-manager/access-keys.sqlite3",

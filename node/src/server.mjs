@@ -507,9 +507,12 @@ function isRecoverablyCompressedBody(buffer) {
   }
 }
 
-function captureBodySnapshot(collector, contentEncoding, protectedValues) {
-  const body = collector?.buffer() ?? Buffer.alloc(0);
+function captureBodySnapshot(collector, contentEncoding, protectedValues, { detailsEnabled = true } = {}) {
   const totalBytes = collector?.totalBytes ?? 0;
+  if (!detailsEnabled) {
+    return { body: Buffer.alloc(0), totalBytes, truncated: false };
+  }
+  const body = collector?.buffer() ?? Buffer.alloc(0);
   const normalizedEncoding = singleContentEncoding(contentEncoding);
   const opaqueEncoding = protectedValues.length > 0
     && (normalizedEncoding === null
@@ -1266,7 +1269,18 @@ function normalizeMetricUsage(value) {
     || outputTokens > METRIC_MAX_OBSERVATION_TOKENS) {
     return null;
   }
-  return { inputTokens, outputTokens };
+  const cachedInputTokens = value.input_tokens_details?.cached_tokens
+    ?? value.prompt_tokens_details?.cached_tokens
+    ?? null;
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: Number.isSafeInteger(cachedInputTokens)
+      && cachedInputTokens >= 0
+      && cachedInputTokens <= METRIC_MAX_OBSERVATION_TOKENS
+      ? cachedInputTokens
+      : null
+  };
 }
 
 function metricResultForStatus(statusCode) {
@@ -1505,11 +1519,13 @@ function buildRequestContext({
     }
   }
 
-  const captureHeaders = sanitizeHeadersForCapture(
-    requestHeaders,
-    settings.upstream.authHeader,
-    protectedHeaderValues(settings)
-  );
+  const captureHeaders = captureHandle?.detailsEnabled === true
+    ? sanitizeHeadersForCapture(
+        requestHeaders,
+        settings.upstream.authHeader,
+        protectedHeaderValues(settings)
+      )
+    : {};
 
   return {
     requestId,
@@ -1528,6 +1544,7 @@ function buildRequestContext({
     providerId,
     providerName,
     route,
+    detailsCaptured: captureHandle?.detailsEnabled === true,
     requestHeaders: captureHeaders,
     requestBody,
     startedAt: new Date(startedAt).toISOString(),
@@ -1555,6 +1572,7 @@ function saveCaptureRecord(captureContext, fields) {
     requestedModel: fields.requestedModel ?? null,
     forwardedModel: fields.forwardedModel ?? null,
     requestHeaders: captureContext.requestHeaders,
+    detailsCaptured: captureContext.detailsCaptured === true,
     requestBody: captureContext.requestBody,
     requestBodyBytes: captureContext.requestBodyBytes,
     requestBodyTruncated: captureContext.requestBodyTruncated,
@@ -1567,6 +1585,7 @@ function saveCaptureRecord(captureContext, fields) {
     upstreamRequestId: fields.upstreamRequestId ?? null,
     inputTokens: fields.inputTokens ?? null,
     outputTokens: fields.outputTokens ?? null,
+    cachedInputTokens: fields.cachedInputTokens ?? null,
     usageObservationStatus: fields.usageObservationStatus ?? "not_applicable",
     errorType: fields.errorType ?? null,
     errorMessage: fields.errorMessage ?? null
@@ -1707,7 +1726,11 @@ export function createServer(settings, {
     const normalizedRequestEncoding = singleContentEncoding(requestEncoding);
     const directRequestInspection = normalizedRequestEncoding === "" || normalizedRequestEncoding === "identity";
     const captureHandle = captureManager.beginRecord();
-    let requestCapture = captureHandle ? createBoundedCollector(CAPTURE_BODY_MAX_BYTES) : null;
+    // Keep bounded byte counters for metadata even when body details are disabled;
+    // CaptureStore drops the buffered content in that mode.
+    let requestCapture = captureHandle
+      ? createBoundedCollector(captureHandle.detailsEnabled === true ? CAPTURE_BODY_MAX_BYTES : 0)
+      : null;
     const requestPreview = requestDebugEnabled ? createBoundedCollector(4096) : null;
     const initialAccountRoute = metricRoute === "account";
     const requestModelInspector = (!modelTransformRequired || initialAccountRoute) && directRequestInspection
@@ -1745,7 +1768,12 @@ export function createServer(settings, {
     let upstreamConnected = false;
 
     function requestCaptureSnapshot() {
-      const snapshot = captureBodySnapshot(requestCapture, requestEncoding, requestProtectedValues);
+      const snapshot = captureBodySnapshot(
+        requestCapture,
+        requestEncoding,
+        requestProtectedValues,
+        { detailsEnabled: captureHandle?.detailsEnabled === true }
+      );
       return {
         requestBody: snapshot.body,
         requestBodyBytes: snapshot.totalBytes,
@@ -1894,11 +1922,13 @@ export function createServer(settings, {
         captureContext.providerId = currentCustomProvider.id;
         captureContext.providerName = currentCustomProvider.name;
         captureContext.route = "custom";
-        captureContext.requestHeaders = sanitizeHeadersForCapture(
-          forwardedHeaders,
-          requestSettings.upstream.authHeader,
-          requestProtectedValues
-        );
+        captureContext.requestHeaders = captureContext.detailsCaptured === true
+          ? sanitizeHeadersForCapture(
+              forwardedHeaders,
+              requestSettings.upstream.authHeader,
+              requestProtectedValues
+            )
+          : {};
       }
       return true;
     }
@@ -1987,7 +2017,9 @@ export function createServer(settings, {
         upsertHeader(forwardedHeaders, "content-length", String(forwardedBody.length));
       }
       if (requestCapture) {
-        requestCapture = createBoundedCollector(CAPTURE_BODY_MAX_BYTES);
+        requestCapture = createBoundedCollector(
+          captureHandle?.detailsEnabled === true ? CAPTURE_BODY_MAX_BYTES : 0
+        );
         requestCapture.append(forwardedBody);
       }
       requestModel = safeMetricModel(targetModel, requestSettings, requestProtectedValues);
@@ -1997,7 +2029,9 @@ export function createServer(settings, {
 
     function prepareCustomPassthroughBody(encodedBody) {
       if (requestCapture) {
-        requestCapture = createBoundedCollector(CAPTURE_BODY_MAX_BYTES);
+        requestCapture = createBoundedCollector(
+          captureHandle?.detailsEnabled === true ? CAPTURE_BODY_MAX_BYTES : 0
+        );
         requestCapture.append(encodedBody);
       }
       const decoded = decodeBoundedBody(
@@ -2097,7 +2131,8 @@ export function createServer(settings, {
       const snapshot = captureBodySnapshot(
         responseState?.capture,
         responseState?.contentEncoding,
-        requestProtectedValues
+        requestProtectedValues,
+        { detailsEnabled: captureHandle?.detailsEnabled === true }
       );
       return {
         responseBody: snapshot.body,
@@ -2185,6 +2220,7 @@ export function createServer(settings, {
           upstreamRequestId: responseState.upstreamRequestId,
           inputTokens: inspected.usage?.inputTokens ?? null,
           outputTokens: inspected.usage?.outputTokens ?? null,
+          cachedInputTokens: inspected.usage?.cachedInputTokens ?? null,
           usageObservationStatus: inspected.usage ? "observed" : "upstream_unreported"
         });
         finalizeMetric("success", inspected.usage);
@@ -2242,6 +2278,7 @@ export function createServer(settings, {
         upstreamRequestId: responseState.upstreamRequestId,
         inputTokens: inspected.usage?.inputTokens ?? null,
         outputTokens: inspected.usage?.outputTokens ?? null,
+        cachedInputTokens: inspected.usage?.cachedInputTokens ?? null,
         usageObservationStatus: inspected.usage
           ? "observed"
           : responsesRequest
@@ -2300,15 +2337,19 @@ export function createServer(settings, {
         statusCode: incoming.statusCode || 502,
         stream,
         contentEncoding,
-        captureHeaders: sanitizeHeadersForCapture(
-          incoming.headers,
-          requestSettings.upstream.authHeader,
-          requestProtectedValues
-        ),
+        captureHeaders: captureHandle?.detailsEnabled === true
+          ? sanitizeHeadersForCapture(
+              incoming.headers,
+              requestSettings.upstream.authHeader,
+              requestProtectedValues
+            )
+          : {},
         upstreamRequestId: typeof incoming.headers["x-request-id"] === "string"
           ? redactRecoverableProtectedText(incoming.headers["x-request-id"], requestProtectedValues)
           : null,
-        capture: captureHandle ? createBoundedCollector(CAPTURE_BODY_MAX_BYTES) : null,
+        capture: captureHandle
+          ? createBoundedCollector(captureHandle.detailsEnabled === true ? CAPTURE_BODY_MAX_BYTES : 0)
+          : null,
         preview: requestDebugEnabled ? createBoundedCollector(4096) : null,
         metricCollector: (!directInspection || !stream)
           ? createBoundedCollector(METRIC_BODY_INSPECTION_MAX_BYTES)
