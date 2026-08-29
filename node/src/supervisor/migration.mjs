@@ -14,6 +14,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   ProviderRegistry,
@@ -42,6 +43,11 @@ const DEFAULT_FILE_OPERATIONS = {
 };
 const BACKUP_ATTEMPTS = 8;
 const REPLACEMENT_COMMITTED_IDENTITY = Symbol("replacementCommittedIdentity");
+const LEGACY_URL_KEYS = Object.freeze(["baseUrl", "upstreamBaseUrl", "upstream_base_url"]);
+const LEGACY_SECRET_KEYS = Object.freeze(["apiKey", "upstreamApiKey", "upstream_api_key"]);
+const LEGACY_AUTH_HEADER_KEYS = Object.freeze(["authHeader"]);
+const LEGACY_AUTH_SCHEME_KEYS = Object.freeze(["authScheme"]);
+const LEGACY_EXTRA_HEADER_KEYS = Object.freeze(["extraHeaders"]);
 
 function migrationError(code, cause, details = {}) {
   const contracts = {
@@ -101,59 +107,168 @@ function parseJson(bytes) {
   }
 }
 
-function optionalString(...values) {
-  return values.find((value) => typeof value === "string" && value.trim().length > 0)?.trim() ?? null;
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function sourceValues(config, runtime) {
-  const runtimeUpstream = runtime?.upstream;
-  const runtimeObject = runtimeUpstream !== null && typeof runtimeUpstream === "object"
-    && !Array.isArray(runtimeUpstream) ? runtimeUpstream : {};
-  const secretCandidates = [
-    runtimeObject.apiKey,
-    runtime?.apiKey,
-    runtime?.upstreamApiKey,
-    runtime?.upstream_api_key,
-    config?.apiKey,
-    config?.upstreamApiKey,
-    config?.upstream_api_key
-  ].filter((value) => typeof value === "string" && value.length > 0);
-  if (new Set(secretCandidates).size > 1) {
-    throw migrationError("MIGRATION_INPUT_INVALID");
+function resolveAliases(scopes, keys, { trim = true, normalize = (value) => value } = {}) {
+  const candidates = [];
+  for (const scope of scopes) {
+    if (!isPlainObject(scope)) continue;
+    for (const key of keys) {
+      if (!Object.hasOwn(scope, key)) continue;
+      const raw = scope[key];
+      if (typeof raw !== "string" || raw.length === 0) {
+        return { value: null, comparable: null, conflict: false, invalid: true };
+      }
+      const value = trim ? raw.trim() : raw;
+      if (trim && value.length === 0) {
+        return { value: null, comparable: null, conflict: false, invalid: true };
+      }
+      let comparable;
+      try {
+        comparable = normalize(value);
+      } catch {
+        return { value: null, comparable: null, conflict: false, invalid: true };
+      }
+      candidates.push({ value, comparable });
+    }
+  }
+  if (candidates.length === 0) {
+    return { value: null, comparable: null, conflict: false, invalid: false };
+  }
+  if (new Set(candidates.map(({ comparable }) => comparable)).size !== 1) {
+    return { value: null, comparable: null, conflict: true, invalid: false };
   }
   return {
-    baseUrl: optionalString(
-      runtimeObject.baseUrl,
-      runtime?.baseUrl,
-      runtime?.upstreamBaseUrl,
-      runtime?.upstream_base_url,
-      config?.upstreamBaseUrl,
-      config?.upstream_base_url,
-      config?.baseUrl
-    ),
-    secret: secretCandidates[0] ?? null,
-    authHeader: optionalString(runtimeObject.authHeader, runtime?.authHeader) ?? "authorization",
-    authScheme: typeof runtimeObject.authScheme === "string"
-      ? runtimeObject.authScheme
-      : (typeof runtime?.authScheme === "string" ? runtime.authScheme : "Bearer"),
-    extraHeaders: runtimeObject.extraHeaders ?? runtime?.extraHeaders ?? {}
+    value: candidates[0].value,
+    comparable: candidates[0].comparable,
+    conflict: false,
+    invalid: false
   };
+}
+
+function resolveExtraHeaders(scopes) {
+  const candidates = [];
+  for (const scope of scopes) {
+    if (!isPlainObject(scope)) continue;
+    for (const key of LEGACY_EXTRA_HEADER_KEYS) {
+      if (!Object.hasOwn(scope, key)) continue;
+      if (!isPlainObject(scope[key])) {
+        return { value: null, conflict: false, invalid: true, explicit: true };
+      }
+      candidates.push(scope[key]);
+    }
+  }
+  if (candidates.length === 0) {
+    return { value: {}, conflict: false, invalid: false, explicit: false };
+  }
+  if (candidates.some((candidate) => !isDeepStrictEqual(candidate, candidates[0]))) {
+    return { value: null, conflict: true, invalid: false, explicit: true };
+  }
+  return { value: candidates[0], conflict: false, invalid: false, explicit: true };
+}
+
+function canonicalUrl(value) {
+  const parsed = new URL(value);
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+  return parsed.toString();
+}
+
+function candidateFromDocument(source, document) {
+  const nested = isPlainObject(document?.upstream) ? document.upstream : null;
+  const scopes = nested === null ? [document] : [document, nested];
+  if (!isPlainObject(document)) return { source, state: "invalid" };
+  const url = resolveAliases(scopes, LEGACY_URL_KEYS, { normalize: canonicalUrl });
+  const secret = resolveAliases(scopes, LEGACY_SECRET_KEYS, { trim: false });
+  const authHeader = resolveAliases(scopes, LEGACY_AUTH_HEADER_KEYS, {
+    normalize: (value) => value.toLowerCase()
+  });
+  const authScheme = resolveAliases(scopes, LEGACY_AUTH_SCHEME_KEYS);
+  const extraHeaders = resolveExtraHeaders(scopes);
+  if (url.invalid || url.conflict || secret.invalid || secret.conflict
+    || authHeader.invalid || authHeader.conflict || authScheme.invalid || authScheme.conflict
+    || extraHeaders.invalid || extraHeaders.conflict) {
+    return { source, state: "invalid" };
+  }
+  if (url.value === null || secret.value === null) {
+    return { source, state: "incomplete" };
+  }
+  const hasExplicitAuth = authHeader.value !== null
+    || authScheme.value !== null
+    || extraHeaders.explicit;
+  const candidate = {
+    source,
+    state: "complete",
+    baseUrl: url.value,
+    canonicalBaseUrl: url.comparable,
+    secret: secret.value,
+    authHeader: authHeader.value ?? "authorization",
+    authScheme: authScheme.value ?? "Bearer",
+    extraHeaders: extraHeaders.value,
+    hasExplicitAuth
+  };
+  try {
+    const normalized = normalizeProvider({
+      name: "Legacy candidate",
+      baseUrl: candidate.baseUrl,
+      credentialRef: "legacy-candidate",
+      authHeader: candidate.authHeader,
+      authScheme: candidate.authScheme,
+      extraHeaders: candidate.extraHeaders,
+      modelMode: "passthrough",
+      modelOverride: null
+    }, { id: `legacy-${source}`, now: "2000-01-01T00:00:00.000Z" });
+    return { ...candidate, normalized };
+  } catch {
+    return { source, state: "invalid" };
+  }
+}
+
+function sameConnection(left, right) {
+  return left.canonicalBaseUrl === right.canonicalBaseUrl
+    && left.secret === right.secret
+    && left.normalized.authHeader.toLowerCase() === right.normalized.authHeader.toLowerCase()
+    && left.normalized.authScheme === right.normalized.authScheme
+    && isDeepStrictEqual(left.normalized.extraHeaders, right.normalized.extraHeaders);
+}
+
+function sameBaseAndSecret(left, right) {
+  return left.canonicalBaseUrl === right.canonicalBaseUrl
+    && left.secret === right.secret;
+}
+
+function resolveImportCandidates(candidates) {
+  const runtime = candidates.find(({ source }) => source === "runtime") ?? null;
+  const saved = candidates.find(({ source }) => source === "saved") ?? null;
+  if (!runtime || !saved) return { candidates, conflict: false };
+  if (sameConnection(runtime, saved)) {
+    return { candidates: [runtime], conflict: false };
+  }
+  if (sameBaseAndSecret(runtime, saved)
+    && runtime.hasExplicitAuth !== saved.hasExplicitAuth) {
+    return {
+      candidates: [runtime.hasExplicitAuth ? runtime : saved],
+      conflict: false
+    };
+  }
+  return { candidates: [runtime, saved], conflict: true };
 }
 
 function scrubDocument(document) {
   const next = structuredClone(document);
-  for (const key of ["apiKey", "upstreamApiKey", "upstream_api_key"]) delete next[key];
+  for (const key of LEGACY_SECRET_KEYS) delete next[key];
   if (next.upstream !== null && typeof next.upstream === "object" && !Array.isArray(next.upstream)) {
-    delete next.upstream.apiKey;
+    for (const key of LEGACY_SECRET_KEYS) delete next.upstream[key];
   }
   return next;
 }
 
-function registryBytesForProvider(provider) {
+function registryBytesForProviders(providers) {
   return Buffer.from(`${JSON.stringify({
     schemaVersion: 9,
     activeProviderId: null,
-    providers: [provider],
+    providers,
     modelMappingGroups: [],
     routingRuleGroups: [],
     settings: {
@@ -460,10 +575,24 @@ function replaceFile(path, bytes, expectedIdentity, fileOperations, createId) {
   }
 }
 
-function readSource(path, fileOperations) {
-  const source = readSafeFile(path, fileOperations, { missing: true });
-  if (source === null) return null;
-  return { ...source, currentIdentity: source.identity, document: parseJson(source.bytes) };
+function readLegacySource(path, sourceName, fileOperations) {
+  const fileSource = readSafeFile(path, fileOperations, { missing: true });
+  if (fileSource === null) return { source: sourceName, state: "missing", file: null };
+  try {
+    const document = JSON.parse(fileSource.bytes);
+    if (!isPlainObject(document)) throw new Error("not an object");
+    return {
+      source: sourceName,
+      state: "valid",
+      file: { ...fileSource, currentIdentity: fileSource.identity, document }
+    };
+  } catch {
+    return {
+      source: sourceName,
+      state: "malformed",
+      file: { ...fileSource, currentIdentity: fileSource.identity, document: null }
+    };
+  }
 }
 
 function validateSchema2Registry(document) {
@@ -783,14 +912,15 @@ export async function migrateLegacyConfiguration({
 
   let completed = false;
   let providerId = null;
-  let credentialRef = null;
-  let credentialAttempted = false;
+  let providerIds = [];
+  const credentialAttempts = [];
   let registryOwned = null;
   let upgradedRegistry = null;
   let commitWarning = null;
   const sources = [];
   const scrubbedSources = [];
   let failure;
+  let rollbackDegraded = false;
 
   try {
     const registryInspection = inspectCurrentRegistry(paths.registryPath, fileOperations);
@@ -835,63 +965,99 @@ export async function migrateLegacyConfiguration({
       if (!sameIdentity(verified.identity, currentIdentity) || !verified.bytes.equals(bytes)) {
         throw migrationError("MIGRATION_FAILED");
       }
-      if (activityStore) {
-        await activityStore.append({
-          category: "migration",
-          action: "provider-registry-schema-9",
-          providerId: null,
-          result: "success",
-          errorCode: null,
-          details: {
-            sourceSchemaVersion: source.document.schemaVersion,
-            ...(source.document.schemaVersion < 4
-              ? { providerWeight: DEFAULT_PROVIDER_WEIGHT }
-              : {})
-          }
-        });
-      }
       completed = true;
+      if (activityStore) {
+        try {
+          await activityStore.append({
+            category: "migration",
+            action: "provider-registry-schema-9",
+            providerId: null,
+            result: "success",
+            errorCode: null,
+            details: {
+              sourceSchemaVersion: source.document.schemaVersion,
+              ...(source.document.schemaVersion < 4
+                ? { providerWeight: DEFAULT_PROVIDER_WEIGHT }
+                : {})
+            }
+          });
+        } catch (error) {
+          throw migrationError("MIGRATION_COMMITTED_DEGRADED", error, {
+            committed: true,
+            degraded: true
+          });
+        }
+      }
       return { migrated: true, reason: "provider-registry-schema-9" };
     }
 
-    const configSource = readSource(legacyConfigPath, fileOperations);
-    const runtimeSource = readSource(runtimeConfigPath, fileOperations);
-    if (configSource) sources.push(configSource);
-    if (runtimeSource) sources.push(runtimeSource);
-    if (sources.length === 0) {
+    const legacySources = [
+      readLegacySource(legacyConfigPath, "saved", fileOperations),
+      readLegacySource(runtimeConfigPath, "runtime", fileOperations)
+    ];
+    const existingSources = legacySources.filter(({ state }) => state !== "missing");
+    if (existingSources.length === 0) {
       completed = true;
       return { migrated: false, reason: "no-legacy-config" };
     }
+    const parseableSources = legacySources.filter(({ state }) => state === "valid");
+    for (const source of parseableSources) sources.push(source.file);
+    const candidateStates = parseableSources.map(({ source, file }) => (
+      candidateFromDocument(source, file.document)
+    ));
+    const completeCandidates = candidateStates.filter(({ state }) => state === "complete");
+    const invalidSourceCount = existingSources.length - completeCandidates.length;
+    const resolved = resolveImportCandidates(completeCandidates);
+    if (resolved.candidates.length === 0) {
+      completed = true;
+      return { migrated: false, reason: "legacy-config-requires-setup" };
+    }
 
-    const values = sourceValues(configSource?.document, runtimeSource?.document);
-    if (!values.baseUrl || !values.secret) throw migrationError("MIGRATION_INPUT_INVALID");
+    const timestamp = now();
+    const allocations = resolved.candidates.map((candidate) => ({
+      candidate,
+      providerId: createProviderId(),
+      credentialRef: createCredentialRef()
+    }));
+    if (new Set(allocations.map(({ providerId: id }) => id)).size !== allocations.length
+      || new Set(allocations.map(({ credentialRef: ref }) => ref)).size !== allocations.length) {
+      throw migrationError("MIGRATION_INPUT_INVALID");
+    }
+    const profiles = allocations.map(({ candidate, providerId: id, credentialRef: ref }) => (
+      normalizeProvider({
+        name: allocations.length === 1
+          ? "Default"
+          : candidate.source === "runtime"
+            ? "Recovered runtime"
+            : "Recovered saved",
+        baseUrl: candidate.baseUrl,
+        credentialRef: ref,
+        authHeader: candidate.authHeader,
+        authScheme: candidate.authScheme,
+        extraHeaders: candidate.extraHeaders,
+        modelMode: "passthrough",
+        modelOverride: null
+      }, { id, now: timestamp })
+    ));
+    providerIds = profiles.map(({ id }) => id);
+    providerId = profiles.length === 1 ? profiles[0].id : null;
 
     fileOperations.mkdirSync(paths.globalHome, { recursive: true, mode: 0o700 });
     for (const source of sources) {
       createBackup(source, fileOperations, createBackupId);
     }
 
-    providerId = createProviderId();
-    credentialRef = createCredentialRef();
-    credentialAttempted = true;
-    try {
-      await credentialStore.set(credentialRef, values.secret);
-    } catch (error) {
-      if (isCommittedError(error)) commitWarning = error;
-      else throw error;
+    for (const { candidate, credentialRef } of allocations) {
+      credentialAttempts.push(credentialRef);
+      try {
+        await credentialStore.set(credentialRef, candidate.secret);
+      } catch (error) {
+        if (isCommittedError(error)) commitWarning ??= error;
+        else throw error;
+      }
     }
 
-    const profile = normalizeProvider({
-      name: "Default",
-      baseUrl: values.baseUrl,
-      credentialRef,
-      authHeader: values.authHeader,
-      authScheme: values.authScheme,
-      extraHeaders: values.extraHeaders,
-      modelMode: "passthrough",
-      modelOverride: null
-    }, { id: providerId, now: now() });
-    const initialRegistryBytes = registryBytesForProvider(profile);
+    const initialRegistryBytes = registryBytesForProviders(profiles);
     try {
       registryOwned = {
         identity: writeExclusive(
@@ -916,8 +1082,8 @@ export async function migrateLegacyConfiguration({
     const committed = registry.getDocument();
     if (committed.schemaVersion !== 9
       || committed.activeProviderId !== null
-      || committed.providers.length !== 1
-      || committed.providers[0].lastTestStatus !== "untested") {
+      || committed.providers.length !== profiles.length
+      || committed.providers.some((provider) => provider.lastTestStatus !== "untested")) {
       throw migrationError("MIGRATION_FAILED");
     }
     const committedRegistry = readSafeFile(paths.registryPath, fileOperations);
@@ -949,24 +1115,40 @@ export async function migrateLegacyConfiguration({
       }
     }
 
-    if (activityStore) {
-      await activityStore.append({
-        category: "migration",
-        action: "legacy-config",
-        providerId,
-        result: commitWarning ? "degraded" : "success",
-        errorCode: commitWarning ? "MIGRATION_COMMITTED_DEGRADED" : null,
-        details: { sourceCount: sources.length }
-      });
-    }
     completed = true;
+    const activityDetails = {
+      selectedSource: profiles.length === 1 ? resolved.candidates[0].source : null,
+      importedSources: resolved.candidates.map(({ source }) => source),
+      conflict: resolved.conflict,
+      invalidSourceCount,
+      sourceCount: existingSources.length
+    };
+    if (activityStore) {
+      try {
+        await activityStore.append({
+          category: "migration",
+          action: "legacy-config",
+          providerId,
+          result: commitWarning ? "degraded" : "success",
+          errorCode: commitWarning ? "MIGRATION_COMMITTED_DEGRADED" : null,
+          details: activityDetails
+        });
+      } catch (error) {
+        throw migrationError("MIGRATION_COMMITTED_DEGRADED", error, {
+          committed: true,
+          degraded: true
+        });
+      }
+    }
     if (commitWarning) {
       throw migrationError("MIGRATION_COMMITTED_DEGRADED", commitWarning, {
         committed: true,
         degraded: true
       });
     }
-    return { migrated: true, providerId };
+    return profiles.length === 1
+      ? { migrated: true, providerId: profiles[0].id }
+      : { migrated: true, providerIds };
   } catch (error) {
     if (completed && isCommittedError(error)) throw error;
     failure = error;
@@ -1016,8 +1198,8 @@ export async function migrateLegacyConfiguration({
         rollbackFailed = true;
       }
     }
-    if (credentialAttempted && credentialRef !== null) {
-      try { await credentialStore.delete(credentialRef); } catch { rollbackFailed = true; }
+    for (const ref of [...credentialAttempts].reverse()) {
+      try { await credentialStore.delete(ref); } catch { rollbackFailed = true; }
     }
     if (activityStore) {
       try {
@@ -1038,6 +1220,7 @@ export async function migrateLegacyConfiguration({
       }
     }
     if (rollbackFailed) {
+      rollbackDegraded = true;
       throw migrationError("MIGRATION_ROLLBACK_DEGRADED", failure, {
         committed: false,
         degraded: true
@@ -1051,34 +1234,36 @@ export async function migrateLegacyConfiguration({
     }
     throw migrationError("MIGRATION_FAILED", failure, { committed: false });
   } finally {
-    let registryReleased = true;
-    if (!registryLockReleased) {
-      registryLockReleased = true;
-      registryReleased = releaseLock({
-        lockPath: registryLockPath,
-        lock: registryLock,
+    if (!rollbackDegraded) {
+      let registryReleased = true;
+      if (!registryLockReleased) {
+        registryLockReleased = true;
+        registryReleased = releaseLock({
+          lockPath: registryLockPath,
+          lock: registryLock,
+          fileOperations,
+          createId: createLockId
+        });
+      }
+      const migrationReleased = releaseLock({
+        lockPath,
+        lock,
         fileOperations,
         createId: createLockId
       });
-    }
-    const migrationReleased = releaseLock({
-      lockPath,
-      lock,
-      fileOperations,
-      createId: createLockId
-    });
-    const released = registryReleased && migrationReleased;
-    if (!released && completed) {
-      throw migrationError("MIGRATION_COMMITTED_LOCK_DEGRADED", null, {
-        committed: true,
-        degraded: true
-      });
-    }
-    if (!released && !completed) {
-      throw migrationError("MIGRATION_ROLLBACK_DEGRADED", failure, {
-        committed: false,
-        degraded: true
-      });
+      const released = registryReleased && migrationReleased;
+      if (!released && completed) {
+        throw migrationError("MIGRATION_COMMITTED_LOCK_DEGRADED", null, {
+          committed: true,
+          degraded: true
+        });
+      }
+      if (!released && !completed) {
+        throw migrationError("MIGRATION_ROLLBACK_DEGRADED", failure, {
+          committed: false,
+          degraded: true
+        });
+      }
     }
   }
 }

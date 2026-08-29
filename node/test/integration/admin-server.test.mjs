@@ -9,9 +9,11 @@ import { dirname, join } from "node:path";
 
 import { createAdminServer } from "../../src/supervisor/admin-server.mjs";
 import { FORWARDING_DETAIL_LIMITS } from "../../src/supervisor/forwarding-records-service.mjs";
+import { migrateLegacyConfiguration } from "../../src/supervisor/migration.mjs";
 import { SessionAuth } from "../../src/supervisor/session-auth.mjs";
 import { createSupervisor } from "../../src/supervisor/supervisor.mjs";
 import { runSupervisor } from "../../src/supervisor/supervisor-entry.mjs";
+import { ProviderRegistry } from "../../src/providers/provider-registry.mjs";
 import { getPaths } from "../../src/shared/paths.mjs";
 import { CrpError } from "../../src/shared/errors.mjs";
 
@@ -2771,6 +2773,60 @@ test("supervisor migrates before registry construction and writes private state 
     "worker.close", "admin.close", "auth.close", "metrics.close"
   ]);
   assert.equal(existsSync(harness.paths.statePath), false);
+});
+
+test("supervisor reaches empty Setup when legacy sources cannot form one provider", async (t) => {
+  const harness = supervisorDependencies(t);
+  mkdirSync(harness.paths.globalHome, { recursive: true, mode: 0o700 });
+  const legacyBytes = Buffer.from(`${JSON.stringify({
+    upstreamBaseUrl: "https://incomplete.example/v1"
+  }, null, 2)}\n`, "utf8");
+  const legacyConfigPath = join(harness.paths.globalHome, "config.json");
+  writeFileSync(legacyConfigPath, legacyBytes, { mode: 0o600 });
+  const credentialValues = new Map();
+  const credentials = {
+    backend: "native",
+    async set(ref, value) { credentialValues.set(ref, value); },
+    async delete(ref) { return credentialValues.delete(ref); }
+  };
+  let registry = null;
+  harness.options.credentialStoreFactory = () => {
+    harness.order.push("credential");
+    return credentials;
+  };
+  harness.options.migrate = async (input) => {
+    harness.order.push("migration");
+    const result = await migrateLegacyConfiguration(input);
+    assert.deepEqual(result, {
+      migrated: false,
+      reason: "legacy-config-requires-setup"
+    });
+    return result;
+  };
+  harness.options.registryFactory = ({ path }) => {
+    harness.order.push("registry");
+    registry = new ProviderRegistry({ path });
+    return registry;
+  };
+  const provider = { getStatus: async () => ({ worker: workerState() }) };
+  harness.options.providerServiceFactory = (input) => {
+    harness.order.push("provider");
+    assert.equal(input.registry, registry);
+    return provider;
+  };
+  harness.options.adminServerFactory = () => {
+    harness.order.push("admin");
+    return harness.admin;
+  };
+
+  const supervisor = await createSupervisor(harness.options);
+  assert.equal(registry.getDocument().schemaVersion, 9);
+  assert.deepEqual(registry.list(), []);
+  assert.equal(registry.getActive(), null);
+  assert.equal(existsSync(harness.paths.registryPath), false);
+  assert.deepEqual(readFileSync(legacyConfigPath), legacyBytes);
+  assert.equal(credentialValues.size, 0);
+  await supervisor.close();
 });
 
 test("supervisor cleans up in reverse order when Admin readiness fails", async (t) => {

@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 
 import { migrateLegacyConfiguration } from "../src/supervisor/migration.mjs";
 import { ProviderRegistry } from "../src/providers/provider-registry.mjs";
+import { CrpError } from "../src/shared/errors.mjs";
 
 const NOW = "2026-07-13T01:00:00.000Z";
 
@@ -198,7 +199,7 @@ test("migrates the runtime flat config and scrubs every backed-up secret source"
   );
 });
 
-test("rejects divergent legacy credentials before migration side effects", async (t) => {
+test("imports divergent saved and runtime credentials as separate inactive recovery providers", async (t) => {
   const legacySecret = makeSecret();
   const runtimeSecret = makeSecret();
   const harness = makeHarness(t, {
@@ -213,55 +214,561 @@ test("rejects divergent legacy credentials before migration side effects", async
     }
   });
   const activity = [];
-  let credentialSetCalls = 0;
-  let credentialDeleteCalls = 0;
-  const credentials = {
-    async set() { credentialSetCalls += 1; },
-    async delete() { credentialDeleteCalls += 1; }
-  };
-
-  const failure = await migrateLegacyConfiguration({
+  const credentials = new MemoryCredentialStore();
+  const providerIds = ["provider-runtime", "provider-saved"];
+  const credentialRefs = ["credential-runtime", "credential-saved"];
+  const result = await migrateLegacyConfiguration({
     paths: harness.paths,
     credentialStore: credentials,
     activityStore: {
       async append(event) { activity.push(structuredClone(event)); }
-    }
-  }).then(
-    () => null,
-    (error) => error
-  );
+    },
+    now: () => NOW,
+    createProviderId: () => providerIds.shift(),
+    createCredentialRef: () => credentialRefs.shift()
+  });
 
-  const publicFailure = {
-    code: failure?.code,
-    message: failure?.message,
-    action: failure?.action,
-    status: failure?.status,
-    details: failure?.details
-  };
-  const serializedPublicState = JSON.stringify({ publicFailure, activity });
+  const registry = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  const serializedPublicState = JSON.stringify({ result, activity });
   assert.equal(serializedPublicState.includes(legacySecret), false);
   assert.equal(serializedPublicState.includes(runtimeSecret), false);
-  assert.equal(failure?.code, "MIGRATION_INPUT_INVALID");
-  assert.equal(failure?.status, 400);
+  assert.equal(serializedPublicState.includes("https://saved.example/v1"), false);
+  assert.equal(serializedPublicState.includes("https://runtime.example/v1"), false);
+  assert.deepEqual(result, {
+    migrated: true,
+    providerIds: ["provider-runtime", "provider-saved"]
+  });
+  assert.equal(registry.activeProviderId, null);
+  assert.deepEqual(registry.providers.map(({ id, name, baseUrl, credentialRef, lastTestStatus }) => ({
+    id, name, baseUrl, credentialRef, lastTestStatus
+  })), [
+    {
+      id: "provider-runtime",
+      name: "Recovered runtime",
+      baseUrl: "https://runtime.example/v1",
+      credentialRef: "credential-runtime",
+      lastTestStatus: "untested"
+    },
+    {
+      id: "provider-saved",
+      name: "Recovered saved",
+      baseUrl: "https://saved.example/v1",
+      credentialRef: "credential-saved",
+      lastTestStatus: "untested"
+    }
+  ]);
+  assert.equal(credentials.values.get("credential-runtime"), runtimeSecret);
+  assert.equal(credentials.values.get("credential-saved"), legacySecret);
   assert.deepEqual(activity, [{
     category: "migration",
     action: "legacy-config",
     providerId: null,
-    result: "failed",
-    errorCode: "MIGRATION_INPUT_INVALID",
-    details: { rollbackDegraded: false }
+    result: "success",
+    errorCode: null,
+    details: {
+      selectedSource: null,
+      importedSources: ["runtime", "saved"],
+      conflict: true,
+      invalidSourceCount: 0,
+      sourceCount: 2
+    }
   }]);
-  assert.equal(credentialSetCalls, 0);
-  assert.equal(credentialDeleteCalls, 0);
-  assert.equal(existsSync(harness.registryPath), false);
   assert.equal(existsSync(`${harness.registryPath}.migration.lock`), false);
-  assert.equal(readFileSync(harness.legacyConfigPath).equals(harness.legacyBytes), true);
-  assert.equal(readFileSync(harness.runtimeConfigPath).equals(runtimeBytes), true);
-  assert.equal(readdirSync(harness.globalHome).some((name) => name.endsWith(".bak")), false);
+  assert.equal(readFileSync(harness.legacyConfigPath, "utf8").includes(legacySecret), false);
+  assert.equal(readFileSync(harness.runtimeConfigPath, "utf8").includes(runtimeSecret), false);
+  assert.ok(readdirSync(harness.globalHome).some((name) => name.endsWith(".bak")));
+  assert.ok(readdirSync(join(harness.globalHome, "node")).some((name) => name.endsWith(".bak")));
+  assert.equal(runtimeBytes.includes(runtimeSecret), true);
+});
+
+test("uses a complete runtime source while preserving malformed saved bytes", async (t) => {
+  const secret = makeSecret();
+  const harness = makeHarness(t, {});
+  const malformed = Buffer.from("{malformed-saved\n", "utf8");
+  writeFileSync(harness.legacyConfigPath, malformed, { mode: 0o600 });
+  const runtimeBytes = writeRuntime(harness, {
+    upstream: {
+      baseUrl: "https://runtime.example/v1",
+      apiKey: secret,
+      authHeader: "x-runtime-auth",
+      authScheme: "Token",
+      extraHeaders: { "x-region": "recovery" }
+    }
+  });
+  const credentials = new MemoryCredentialStore();
+  const activity = [];
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    activityStore: { append: async (event) => { activity.push(structuredClone(event)); } },
+    now: () => NOW,
+    createProviderId: () => "provider-runtime",
+    createCredentialRef: () => "credential-runtime"
+  });
+
+  const registry = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  const serialized = JSON.stringify({ result, activity });
+  assert.equal(serialized.includes(secret), false);
+  assert.equal(serialized.includes("https://runtime.example/v1"), false);
+  assert.deepEqual(result, { migrated: true, providerId: "provider-runtime" });
+  assert.equal(registry.providers[0].baseUrl, "https://runtime.example/v1");
+  assert.equal(registry.providers[0].authHeader, "x-runtime-auth");
+  assert.equal(credentials.values.get("credential-runtime"), secret);
+  assert.deepEqual(readFileSync(harness.legacyConfigPath), malformed);
+  assert.equal(readFileSync(harness.runtimeConfigPath, "utf8").includes(secret), false);
   assert.equal(
-    readdirSync(join(harness.globalHome, "node")).some((name) => name.endsWith(".bak")),
+    readdirSync(harness.globalHome).some((name) => name.startsWith("config.json.") && name.endsWith(".bak")),
     false
   );
+  assert.ok(readdirSync(join(harness.globalHome, "node"))
+    .some((name) => name.startsWith("proxy-config.json.") && name.endsWith(".bak")));
+  assert.equal(runtimeBytes.includes(secret), true);
+  assert.deepEqual(activity[0].details, {
+    selectedSource: "runtime",
+    importedSources: ["runtime"],
+    conflict: false,
+    invalidSourceCount: 1,
+    sourceCount: 2
+  });
+});
+
+test("uses a complete saved source while preserving malformed runtime bytes", async (t) => {
+  const secret = makeSecret();
+  const harness = makeHarness(t, {
+    upstreamBaseUrl: "https://saved.example/v1",
+    apiKey: secret
+  });
+  mkdirSync(dirname(harness.runtimeConfigPath), { recursive: true, mode: 0o700 });
+  const malformed = Buffer.from("[malformed-runtime\n", "utf8");
+  writeFileSync(harness.runtimeConfigPath, malformed, { mode: 0o600 });
+  const credentials = new MemoryCredentialStore();
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    now: () => NOW,
+    createProviderId: () => "provider-saved",
+    createCredentialRef: () => "credential-saved"
+  });
+
+  assert.deepEqual(result, { migrated: true, providerId: "provider-saved" });
+  assert.equal(credentials.values.get("credential-saved"), secret);
+  assert.equal(readFileSync(harness.legacyConfigPath, "utf8").includes(secret), false);
+  assert.deepEqual(readFileSync(harness.runtimeConfigPath), malformed);
+  assert.equal(
+    readdirSync(dirname(harness.runtimeConfigPath))
+      .some((name) => name.startsWith("proxy-config.json.") && name.endsWith(".bak")),
+    false
+  );
+});
+
+test("deduplicates the same URL and credential while preserving explicit runtime auth", async (t) => {
+  const secret = makeSecret();
+  const harness = makeHarness(t, {
+    upstreamBaseUrl: "https://same.example/v1",
+    apiKey: secret
+  });
+  writeRuntime(harness, {
+    upstream: {
+      baseUrl: "https://same.example/v1/",
+      apiKey: secret,
+      authHeader: "x-runtime-auth",
+      authScheme: "Token",
+      extraHeaders: { "x-region": "same" }
+    }
+  });
+  const credentials = new MemoryCredentialStore();
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    now: () => NOW,
+    createProviderId: () => "provider-default",
+    createCredentialRef: () => "credential-default"
+  });
+
+  const registry = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  assert.deepEqual(result, { migrated: true, providerId: "provider-default" });
+  assert.equal(registry.providers.length, 1);
+  assert.equal(registry.providers[0].name, "Default");
+  assert.equal(registry.providers[0].authHeader, "x-runtime-auth");
+  assert.equal(registry.providers[0].authScheme, "Token");
+  assert.deepEqual(registry.providers[0].extraHeaders, { "x-region": "same" });
+});
+
+test("keeps explicit auth conflicts as two recovery providers", async (t) => {
+  const secret = makeSecret();
+  const harness = makeHarness(t, {
+    baseUrl: "https://same.example/v1",
+    apiKey: secret,
+    authHeader: "x-saved-auth",
+    authScheme: "Saved"
+  });
+  writeRuntime(harness, {
+    baseUrl: "https://same.example/v1",
+    apiKey: secret,
+    authHeader: "x-runtime-auth",
+    authScheme: "Runtime"
+  });
+  const credentials = new MemoryCredentialStore();
+  const providerIds = ["provider-runtime", "provider-saved"];
+  const credentialRefs = ["credential-runtime", "credential-saved"];
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    now: () => NOW,
+    createProviderId: () => providerIds.shift(),
+    createCredentialRef: () => credentialRefs.shift()
+  });
+
+  const registry = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  assert.deepEqual(result.providerIds, ["provider-runtime", "provider-saved"]);
+  assert.deepEqual(
+    registry.providers.map(({ name, authHeader, authScheme }) => ({ name, authHeader, authScheme })),
+    [
+      { name: "Recovered runtime", authHeader: "x-runtime-auth", authScheme: "Runtime" },
+      { name: "Recovered saved", authHeader: "x-saved-auth", authScheme: "Saved" }
+    ]
+  );
+});
+
+test("enters fresh Setup without combining incomplete legacy sources", async (t) => {
+  const secret = makeSecret();
+  const harness = makeHarness(t, { upstreamBaseUrl: "https://saved.example/v1" });
+  const runtimeBytes = writeRuntime(harness, { apiKey: secret });
+  const credentials = new MemoryCredentialStore();
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials
+  });
+
+  const publicResult = JSON.stringify(result);
+  assert.equal(publicResult.includes(secret), false);
+  assert.deepEqual(result, { migrated: false, reason: "legacy-config-requires-setup" });
+  assert.equal(existsSync(harness.registryPath), false);
+  assert.deepEqual(readFileSync(harness.legacyConfigPath), harness.legacyBytes);
+  assert.deepEqual(readFileSync(harness.runtimeConfigPath), runtimeBytes);
+  assert.equal(credentials.values.size, 0);
+  assert.equal(readdirSync(harness.globalHome).some((name) => name.endsWith(".bak")), false);
+  assert.equal(readdirSync(dirname(harness.runtimeConfigPath)).some((name) => name.endsWith(".bak")), false);
+  const emptyRegistry = new ProviderRegistry({ path: harness.registryPath });
+  assert.equal(emptyRegistry.getDocument().schemaVersion, 9);
+  assert.deepEqual(emptyRegistry.list(), []);
+  assert.equal(emptyRegistry.getActive(), null);
+});
+
+test("enters fresh Setup when one source has conflicting credential aliases", async (t) => {
+  const firstSecret = makeSecret();
+  const secondSecret = makeSecret();
+  const harness = makeHarness(t, {
+    upstreamBaseUrl: "https://saved.example/v1",
+    apiKey: firstSecret,
+    upstreamApiKey: secondSecret
+  });
+  const credentials = new MemoryCredentialStore();
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials
+  });
+
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes(firstSecret), false);
+  assert.equal(serialized.includes(secondSecret), false);
+  assert.deepEqual(result, { migrated: false, reason: "legacy-config-requires-setup" });
+  assert.equal(existsSync(harness.registryPath), false);
+  assert.deepEqual(readFileSync(harness.legacyConfigPath), harness.legacyBytes);
+});
+
+test("rejects every present but empty or non-string legacy alias without exposing it", async (t) => {
+  const secret = makeSecret();
+  const cases = [
+    { upstreamApiKey: 123 },
+    { upstreamApiKey: "" },
+    { upstream_base_url: 123 },
+    { upstream_base_url: "" },
+    { authHeader: 123 },
+    { authHeader: "" },
+    { authScheme: 123 },
+    { authScheme: "" }
+  ];
+  for (const [index, invalid] of cases.entries()) {
+    const harness = makeHarness(t, {
+      upstreamBaseUrl: `https://invalid-${index}.example/v1`,
+      apiKey: secret,
+      ...invalid
+    });
+    const credentials = new MemoryCredentialStore();
+    const result = await migrateLegacyConfiguration({
+      paths: harness.paths,
+      credentialStore: credentials
+    });
+    const serialized = JSON.stringify(result);
+    assert.equal(serialized.includes(secret), false);
+    assert.deepEqual(result, { migrated: false, reason: "legacy-config-requires-setup" });
+    assert.equal(existsSync(harness.registryPath), false);
+    assert.deepEqual(readFileSync(harness.legacyConfigPath), harness.legacyBytes);
+  }
+});
+
+test("accepts matching root and nested aliases but rejects an internal conflict", async (t) => {
+  const matchingSecret = makeSecret();
+  const matching = makeHarness(t, {});
+  writeRuntime(matching, {
+    baseUrl: "https://matching.example/v1",
+    apiKey: matchingSecret,
+    upstream: {
+      upstream_base_url: "https://matching.example/v1/",
+      upstream_api_key: matchingSecret
+    }
+  });
+  const matchingCredentials = new MemoryCredentialStore();
+  const migrated = await migrateLegacyConfiguration({
+    paths: matching.paths,
+    credentialStore: matchingCredentials,
+    now: () => NOW,
+    createProviderId: () => "provider-matching",
+    createCredentialRef: () => "credential-matching"
+  });
+  assert.deepEqual(migrated, { migrated: true, providerId: "provider-matching" });
+  assert.equal(matchingCredentials.values.get("credential-matching"), matchingSecret);
+
+  const conflictingSecret = makeSecret();
+  const conflicting = makeHarness(t, {});
+  const conflictingBytes = writeRuntime(conflicting, {
+    baseUrl: "https://root.example/v1",
+    apiKey: conflictingSecret,
+    upstream: {
+      baseUrl: "https://nested.example/v1",
+      apiKey: conflictingSecret
+    }
+  });
+  const conflictResult = await migrateLegacyConfiguration({
+    paths: conflicting.paths,
+    credentialStore: new MemoryCredentialStore()
+  });
+  assert.equal(JSON.stringify(conflictResult).includes(conflictingSecret), false);
+  assert.deepEqual(conflictResult, {
+    migrated: false,
+    reason: "legacy-config-requires-setup"
+  });
+  assert.equal(existsSync(conflicting.registryPath), false);
+  assert.deepEqual(readFileSync(conflicting.runtimeConfigPath), conflictingBytes);
+});
+
+test("scrubs an incomplete parseable source when another source migrates", async (t) => {
+  const savedSecret = makeSecret();
+  const incompleteSecret = makeSecret();
+  const harness = makeHarness(t, {
+    upstream_base_url: "https://saved.example/v1",
+    upstream_api_key: savedSecret
+  });
+  const runtimeBytes = writeRuntime(harness, {
+    upstream: { upstreamApiKey: incompleteSecret }
+  });
+  const credentials = new MemoryCredentialStore();
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    now: () => NOW,
+    createProviderId: () => "provider-saved",
+    createCredentialRef: () => "credential-saved"
+  });
+
+  const publicResult = JSON.stringify(result);
+  assert.equal(publicResult.includes(savedSecret), false);
+  assert.equal(publicResult.includes(incompleteSecret), false);
+  assert.deepEqual(result, { migrated: true, providerId: "provider-saved" });
+  assert.equal(readFileSync(harness.legacyConfigPath, "utf8").includes(savedSecret), false);
+  assert.equal(readFileSync(harness.runtimeConfigPath, "utf8").includes(incompleteSecret), false);
+  const scrubbedRuntime = JSON.parse(readFileSync(harness.runtimeConfigPath, "utf8"));
+  assert.equal("upstreamApiKey" in scrubbedRuntime.upstream, false);
+  assert.ok(readdirSync(dirname(harness.runtimeConfigPath))
+    .some((name) => name.startsWith("proxy-config.json.") && name.endsWith(".bak")));
+  assert.equal(runtimeBytes.includes(incompleteSecret), true);
+});
+
+test("deduplicates different alias forms for the same canonical connection", async (t) => {
+  const secret = makeSecret();
+  const harness = makeHarness(t, {
+    upstream_base_url: "https://aliases.example/v1",
+    upstream_api_key: secret
+  });
+  writeRuntime(harness, {
+    upstream: {
+      baseUrl: "https://aliases.example/v1/",
+      apiKey: secret
+    }
+  });
+  const credentials = new MemoryCredentialStore();
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: credentials,
+    now: () => NOW,
+    createProviderId: () => "provider-aliases",
+    createCredentialRef: () => "credential-aliases"
+  });
+
+  const registry = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  assert.deepEqual(result, { migrated: true, providerId: "provider-aliases" });
+  assert.equal(registry.providers.length, 1);
+  assert.equal(registry.providers[0].name, "Default");
+});
+
+test("rolls back every attempted credential when the second recovery credential fails", async (t) => {
+  const savedSecret = makeSecret();
+  const runtimeSecret = makeSecret();
+  const harness = makeHarness(t, {
+    upstreamBaseUrl: "https://saved.example/v1",
+    apiKey: savedSecret
+  });
+  writeRuntime(harness, {
+    upstream: { baseUrl: "https://runtime.example/v1", apiKey: runtimeSecret }
+  });
+  const values = new Map();
+  const deleted = [];
+  let setCount = 0;
+  const credentials = {
+    async set(ref, value) {
+      setCount += 1;
+      if (setCount === 2) throw new Error("private second credential failure");
+      values.set(ref, value);
+    },
+    async delete(ref) {
+      deleted.push(ref);
+      values.delete(ref);
+    }
+  };
+  const providerIds = ["provider-runtime", "provider-saved"];
+  const credentialRefs = ["credential-runtime", "credential-saved"];
+
+  await assert.rejects(
+    () => migrateLegacyConfiguration({
+      paths: harness.paths,
+      credentialStore: credentials,
+      createProviderId: () => providerIds.shift(),
+      createCredentialRef: () => credentialRefs.shift()
+    }),
+    (error) => error?.code === "MIGRATION_FAILED"
+      && !error.message.includes(savedSecret)
+      && !error.message.includes(runtimeSecret)
+  );
+
+  assert.deepEqual(deleted, ["credential-saved", "credential-runtime"]);
+  assert.equal(values.size, 0);
+  assert.equal(existsSync(harness.registryPath), false);
+  assert.deepEqual(readFileSync(harness.legacyConfigPath), harness.legacyBytes);
+});
+
+test("retains canonical migration blockers when multi-credential cleanup degrades", async (t) => {
+  const savedSecret = makeSecret();
+  const runtimeSecret = makeSecret();
+  const harness = makeHarness(t, {
+    upstreamBaseUrl: "https://saved.example/v1",
+    apiKey: savedSecret
+  });
+  writeRuntime(harness, {
+    upstream: { baseUrl: "https://runtime.example/v1", apiKey: runtimeSecret }
+  });
+  let setCount = 0;
+  const credentials = {
+    async set() {
+      setCount += 1;
+      if (setCount === 2) throw new Error("private second credential failure");
+    },
+    async delete(ref) {
+      if (ref === "credential-runtime") throw new Error("private credential cleanup failure");
+    }
+  };
+  const providerIds = ["provider-runtime", "provider-saved"];
+  const credentialRefs = ["credential-runtime", "credential-saved"];
+
+  await assert.rejects(
+    () => migrateLegacyConfiguration({
+      paths: harness.paths,
+      credentialStore: credentials,
+      createProviderId: () => providerIds.shift(),
+      createCredentialRef: () => credentialRefs.shift()
+    }),
+    (error) => error?.code === "MIGRATION_ROLLBACK_DEGRADED"
+      && error.details.committed === false
+      && error.details.degraded === true
+      && !error.message.includes(savedSecret)
+      && !error.message.includes(runtimeSecret)
+  );
+
+  assert.equal(existsSync(`${harness.registryPath}.migration.lock`), true);
+  assert.equal(existsSync(`${harness.registryPath}.crp.lock`), true);
+  assert.equal(existsSync(harness.registryPath), false);
+  assert.deepEqual(readFileSync(harness.legacyConfigPath), harness.legacyBytes);
+});
+
+test("compensates both credentials when the second set commits with warning before registry failure", async (t) => {
+  const savedSecret = makeSecret();
+  const runtimeSecret = makeSecret();
+  const harness = makeHarness(t, {
+    upstreamBaseUrl: "https://saved.example/v1",
+    apiKey: savedSecret
+  });
+  writeRuntime(harness, {
+    upstream: { baseUrl: "https://runtime.example/v1", apiKey: runtimeSecret }
+  });
+  const values = new Map();
+  const deleted = [];
+  let setCount = 0;
+  const credentials = {
+    async set(ref, value) {
+      setCount += 1;
+      values.set(ref, value);
+      if (setCount === 2) {
+        throw new CrpError(
+          "CREDENTIAL_WRITE_COMMITTED_DEGRADED",
+          "Credential write committed with degraded cleanup.",
+          "Repair the credential backend.",
+          { status: 500, details: { committed: true } }
+        );
+      }
+    },
+    async delete(ref) {
+      deleted.push(ref);
+      values.delete(ref);
+    }
+  };
+  const providerIds = ["provider-runtime", "provider-saved"];
+  const credentialRefs = ["credential-runtime", "credential-saved"];
+
+  await assert.rejects(
+    () => migrateLegacyConfiguration({
+      paths: harness.paths,
+      credentialStore: credentials,
+      createProviderId: () => providerIds.shift(),
+      createCredentialRef: () => credentialRefs.shift(),
+      fileOperations: {
+        ...realFileOperations,
+        openSync(path, flags, mode) {
+          if (path === harness.registryPath && flags === "wx") {
+            const error = new Error("private registry publication failure");
+            error.code = "EIO";
+            throw error;
+          }
+          return realFileOperations.openSync(path, flags, mode);
+        }
+      }
+    }),
+    (error) => error?.code === "MIGRATION_FAILED"
+      && !error.message.includes(savedSecret)
+      && !error.message.includes(runtimeSecret)
+  );
+
+  assert.deepEqual(deleted, ["credential-saved", "credential-runtime"]);
+  assert.equal(values.size, 0);
+  assert.equal(existsSync(harness.registryPath), false);
+  assert.deepEqual(readFileSync(harness.legacyConfigPath), harness.legacyBytes);
 });
 
 test("does not overwrite an exclusive backup collision and is idempotent after schema 3", async (t) => {
@@ -306,7 +813,7 @@ test("does not overwrite an exclusive backup collision and is idempotent after s
   );
 });
 
-test("backs up and atomically upgrades a schema 2 registry to access-control schema 8", async (t) => {
+test("backs up and atomically upgrades a schema 2 registry to schema 9", async (t) => {
   const harness = makeHarness(t, { upstreamBaseUrl: "https://legacy.example/v1" });
   const schema2 = {
     schemaVersion: 2,
@@ -632,7 +1139,7 @@ test("upgrades schema 7 with loopback keyless access as the compatibility defaul
   assert.deepEqual(readFileSync(`${harness.registryPath}.schema-7.bak`), originalBytes);
 });
 
-test("restores exact schema 2 bytes when post-upgrade activity recording fails", async (t) => {
+test("keeps committed schema 9 when post-upgrade activity recording fails", async (t) => {
   const harness = makeHarness(t, {});
   const originalBytes = Buffer.from(`${JSON.stringify({
     schemaVersion: 2,
@@ -655,11 +1162,14 @@ test("restores exact schema 2 bytes when post-upgrade activity recording fails",
       createBackupId: () => "schema-2-rollback",
       activityStore: { append: async () => { throw new Error("private activity failure"); } }
     }),
-    (error) => error?.code === "MIGRATION_ROLLBACK_DEGRADED"
-      && error.details.committed === false
+    (error) => error?.code === "MIGRATION_COMMITTED_DEGRADED"
+      && error.details.committed === true
+      && error.details.degraded === true
   );
 
-  assert.deepEqual(readFileSync(harness.registryPath), originalBytes);
+  const committed = JSON.parse(readFileSync(harness.registryPath, "utf8"));
+  assert.equal(committed.schemaVersion, 9);
+  assert.deepEqual(committed.providers, []);
   assert.deepEqual(
     readFileSync(`${harness.registryPath}.schema-2-rollback.bak`),
     originalBytes
@@ -798,6 +1308,8 @@ test("reports stable degraded rollback state and retains backups when compensati
 
   assert.ok(readdirSync(harness.globalHome).some((name) => name.endsWith(".bak")));
   assert.ok(readdirSync(join(harness.globalHome, "node")).some((name) => name.endsWith(".bak")));
+  assert.equal(existsSync(`${harness.registryPath}.migration.lock`), true);
+  assert.equal(existsSync(`${harness.registryPath}.crp.lock`), true);
 });
 
 test("serializes migration transactions with an exclusive preserved lock", async (t) => {
@@ -974,7 +1486,7 @@ test("rejects symlink legacy and registry paths without reading or replacing the
   assert.deepEqual(readFileSync(registryTarget), registryTargetBytes);
 });
 
-test("rollback preserves a foreign registry replacement it does not own", async (t) => {
+test("post-commit Activity failure preserves a foreign registry replacement without false rollback", async (t) => {
   const secret = makeSecret();
   const harness = makeHarness(t, {
     upstreamBaseUrl: "https://legacy.example/v1",
@@ -1000,12 +1512,16 @@ test("rollback preserves a foreign registry replacement it does not own", async 
       createProviderId: () => "provider-default",
       createCredentialRef: () => "credential-opaque"
     }),
-    (error) => error?.code === "MIGRATION_ROLLBACK_DEGRADED"
+    (error) => error?.code === "MIGRATION_COMMITTED_DEGRADED"
+      && error.details.committed === true
       && error.details.degraded === true
   );
   assert.deepEqual(readFileSync(harness.registryPath), foreignRegistry);
-  assert.deepEqual(readFileSync(harness.legacyConfigPath), harness.legacyBytes);
-  assert.equal(credentials.values.size, 0);
+  const displaced = JSON.parse(readFileSync(displacedRegistry, "utf8"));
+  assert.equal(displaced.schemaVersion, 9);
+  assert.equal(displaced.providers.length, 1);
+  assert.equal(readFileSync(harness.legacyConfigPath, "utf8").includes(secret), false);
+  assert.equal(credentials.values.get("credential-opaque"), secret);
 });
 
 test("lock initialization failure preserves a foreign canonical replacement and blocks retry", async (t) => {
@@ -1096,7 +1612,7 @@ test("release token mismatch restores a canonical blocker before the next transa
   );
 });
 
-test("keeps committed schema 8 and credential when the shared registry lock degrades", async (t) => {
+test("keeps committed schema 9 and credential when the shared registry lock degrades", async (t) => {
   const secret = makeSecret();
   const harness = makeHarness(t, {
     upstreamBaseUrl: "https://legacy.example/v1",
