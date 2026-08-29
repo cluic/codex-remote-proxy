@@ -22,6 +22,50 @@ import { ProviderRegistry } from "../src/providers/provider-registry.mjs";
 import { CrpError } from "../src/shared/errors.mjs";
 
 const NOW = "2026-07-13T01:00:00.000Z";
+const LARGE_IDENTITY_OFFSET = 1n << 80n;
+
+function mappedIdentityStats(stats, mapIdentity) {
+  return {
+    ...stats,
+    dev: mapIdentity(stats.dev),
+    ino: mapIdentity(stats.ino),
+    isFile: () => stats.isFile(),
+    isSymbolicLink: () => stats.isSymbolicLink()
+  };
+}
+
+function mappedIdentityFileOperations(mapIdentity, overrides = {}) {
+  return {
+    ...realFileOperations,
+    lstatSync(path, options) {
+      return mappedIdentityStats(realFileOperations.lstatSync(path, {
+        ...(options ?? {}),
+        bigint: true
+      }), mapIdentity);
+    },
+    fstatSync(descriptor, options) {
+      return mappedIdentityStats(realFileOperations.fstatSync(descriptor, {
+        ...(options ?? {}),
+        bigint: true
+      }), mapIdentity);
+    },
+    ...overrides
+  };
+}
+
+function largeIdentityFileOperations(overrides = {}) {
+  return mappedIdentityFileOperations(
+    (value) => LARGE_IDENTITY_OFFSET + value,
+    overrides
+  );
+}
+
+function safeIdentityFileOperations(overrides = {}) {
+  return mappedIdentityFileOperations(
+    (value) => BigInt.asUintN(52, value),
+    overrides
+  );
+}
 
 function makeSecret() {
   return `migration-test-${crypto.randomUUID()}`;
@@ -174,6 +218,50 @@ test("registry quarantine Activity is best-effort and cannot block Setup", async
   );
   assert.equal(existsSync(`${harness.registryPath}.migration.lock`), false);
   assert.equal(existsSync(`${harness.registryPath}.crp.lock`), false);
+});
+
+test("flushes the recovery marker through a writable identity-bound handle", async (t) => {
+  const harness = makeHarness(t, {});
+  rmSync(harness.legacyConfigPath);
+  const invalidBytes = Buffer.from("{writable-marker-flush\n", "utf8");
+  const markerPath = `${harness.registryPath}.recovery-invalid`;
+  writeFileSync(harness.registryPath, invalidBytes, { mode: 0o600 });
+  const markerDescriptors = new Map();
+  let writableMarkerFlushed = false;
+
+  const result = await migrateLegacyConfiguration({
+    paths: harness.paths,
+    credentialStore: new MemoryCredentialStore(),
+    createBackupId: () => "writable-marker-backup",
+    fileOperations: {
+      ...realFileOperations,
+      openSync(path, flags, mode) {
+        const descriptor = realFileOperations.openSync(path, flags, mode);
+        if (path === markerPath) markerDescriptors.set(descriptor, flags);
+        return descriptor;
+      },
+      closeSync(descriptor) {
+        markerDescriptors.delete(descriptor);
+        return realFileOperations.closeSync(descriptor);
+      },
+      fsyncSync(descriptor) {
+        if (markerDescriptors.has(descriptor)) {
+          const flags = markerDescriptors.get(descriptor);
+          assert.equal(flags & realFileOperations.constants.O_RDWR,
+            realFileOperations.constants.O_RDWR);
+          writableMarkerFlushed = true;
+        }
+        return realFileOperations.fsyncSync(descriptor);
+      }
+    }
+  });
+
+  assert.deepEqual(result, {
+    migrated: false,
+    reason: "invalid-registry-requires-setup"
+  });
+  assert.equal(writableMarkerFlushed, true);
+  assert.deepEqual(readFileSync(markerPath), invalidBytes);
 });
 
 test("repeated startup retains the invalid marker and permits a new registry", async (t) => {
@@ -429,8 +517,7 @@ test("resumes a crashed link-before-release quarantine before ordinary lock acqu
       createBackupId: () => "crash-backup",
       createLockId: () => "crash-first",
       processId: 41001,
-      fileOperations: {
-        ...realFileOperations,
+      fileOperations: largeIdentityFileOperations({
         renameSync(from, to) {
           if (from === harness.registryPath && to.endsWith(".claim")) {
             const error = new Error("simulated process interruption before canonical release");
@@ -439,7 +526,7 @@ test("resumes a crashed link-before-release quarantine before ordinary lock acqu
           }
           return realFileOperations.renameSync(from, to);
         }
-      }
+      })
     }),
     (error) => error?.code === "MIGRATION_COMMITTED_DEGRADED"
       && error.details.committed === true
@@ -453,7 +540,8 @@ test("resumes a crashed link-before-release quarantine before ordinary lock acqu
     () => migrateLegacyConfiguration({
       paths: harness.paths,
       credentialStore: new MemoryCredentialStore(),
-      isProcessAlive: () => true
+      isProcessAlive: () => true,
+      fileOperations: largeIdentityFileOperations()
     }),
     (error) => error?.code === "MIGRATION_BUSY"
   );
@@ -464,7 +552,8 @@ test("resumes a crashed link-before-release quarantine before ordinary lock acqu
     credentialStore: new MemoryCredentialStore(),
     createLockId: () => "crash-resume",
     processId: 41002,
-    isProcessAlive: () => false
+    isProcessAlive: () => false,
+    fileOperations: largeIdentityFileOperations()
   });
   assert.deepEqual(resumed, { migrated: false, reason: "no-legacy-config" });
   assert.equal(existsSync(harness.registryPath), false);
@@ -472,6 +561,90 @@ test("resumes a crashed link-before-release quarantine before ordinary lock acqu
   assert.equal(existsSync(pendingPath), false);
   assert.equal(existsSync(`${harness.registryPath}.migration.lock`), false);
   assert.equal(existsSync(`${harness.registryPath}.crp.lock`), false);
+});
+
+test("normalizes exact numeric version 1 identities and rejects lossy identities", async (t) => {
+  async function leaveLinkedJournal(label) {
+    const harness = makeHarness(t, {});
+    rmSync(harness.legacyConfigPath);
+    const invalidBytes = Buffer.from(`{${label}\n`, "utf8");
+    const markerPath = `${harness.registryPath}.recovery-invalid`;
+    const pendingPath = `${harness.registryPath}.recovery-pending`;
+    writeFileSync(harness.registryPath, invalidBytes, { mode: 0o600 });
+    await assert.rejects(
+      () => migrateLegacyConfiguration({
+        paths: harness.paths,
+        credentialStore: new MemoryCredentialStore(),
+        createBackupId: () => `${label}-backup`,
+        createTransactionId: () => `${label}-transaction`,
+        processId: 41501,
+        fileOperations: safeIdentityFileOperations({
+          renameSync(from, to) {
+            if (from === harness.registryPath && to.endsWith(".claim")) {
+              const error = new Error("simulated interruption before canonical release");
+              error.code = "EINTR";
+              throw error;
+            }
+            return realFileOperations.renameSync(from, to);
+          }
+        })
+      }),
+      (error) => error?.code === "MIGRATION_COMMITTED_DEGRADED"
+        && error.details.committed === true
+    );
+    return { harness, invalidBytes, markerPath, pendingPath };
+  }
+
+  await t.test("safe numeric identities", async () => {
+    const scene = await leaveLinkedJournal("numeric-v1");
+    const state = JSON.parse(readFileSync(scene.pendingPath, "utf8"));
+    for (const identity of [
+      state.sourceIdentity,
+      state.migrationLock.identity,
+      state.registryLock.identity
+    ]) {
+      identity.dev = Number(identity.dev);
+      identity.ino = Number(identity.ino);
+      assert.equal(Number.isSafeInteger(identity.dev), true);
+      assert.equal(Number.isSafeInteger(identity.ino), true);
+    }
+    writeFileSync(scene.pendingPath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+
+    const result = await migrateLegacyConfiguration({
+      paths: scene.harness.paths,
+      credentialStore: new MemoryCredentialStore(),
+      processId: 41502,
+      isProcessAlive: () => false,
+      fileOperations: safeIdentityFileOperations()
+    });
+    assert.deepEqual(result, { migrated: false, reason: "no-legacy-config" });
+    assert.equal(existsSync(scene.harness.registryPath), false);
+    assert.deepEqual(readFileSync(scene.markerPath), scene.invalidBytes);
+    assert.equal(existsSync(scene.pendingPath), false);
+  });
+
+  await t.test("unsafe numeric identity", async () => {
+    const scene = await leaveLinkedJournal("lossy-v1");
+    const state = JSON.parse(readFileSync(scene.pendingPath, "utf8"));
+    state.sourceIdentity.ino = Number.MAX_SAFE_INTEGER + 1;
+    writeFileSync(scene.pendingPath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+
+    await assert.rejects(
+      () => migrateLegacyConfiguration({
+        paths: scene.harness.paths,
+        credentialStore: new MemoryCredentialStore(),
+        isProcessAlive: () => false,
+        fileOperations: safeIdentityFileOperations()
+      }),
+      (error) => error?.code === "MIGRATION_INPUT_INVALID"
+        && error.details.reason === "registry-recovery-pending-invalid"
+    );
+    assert.equal(existsSync(scene.harness.registryPath), true);
+    assert.deepEqual(readFileSync(scene.markerPath), scene.invalidBytes);
+    assert.equal(existsSync(scene.pendingPath), true);
+    assert.equal(existsSync(`${scene.harness.registryPath}.migration.lock`), true);
+    assert.equal(existsSync(`${scene.harness.registryPath}.crp.lock`), true);
+  });
 });
 
 test("resumes a prepared journal left before marker linking", async (t) => {

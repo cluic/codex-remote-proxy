@@ -98,6 +98,8 @@
 - SQLite test fixtures must close every database handle before deleting their temporary directory.
 - SVG endpoint labels must anchor inward so platform font metrics cannot overflow the viewport.
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
+- Persisted filesystem identities must use canonical strings derived from BigInt stats; JavaScript number identities are prohibited.
+- Windows file durability checks must flush through a write-capable identity-validated handle.
 - Long-range Metrics visualizations must use compact daily rollups instead of expanding high-cardinality hourly buckets.
 - Compact responsive route diagrams must preserve internal containment instead of relying on off-canvas horizontal overflow.
 - Conditional routing branches must default to a complete summary and disclose the full rail only after explicit expansion.

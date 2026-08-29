@@ -278,7 +278,12 @@ function registryBytesForProviders(providers) {
 }
 
 function identityOf(stats) {
-  return { dev: stats.dev, ino: stats.ino };
+  const identityPart = (value) => {
+    if (typeof value === "bigint" && value >= 0n) return value.toString(10);
+    if (Number.isSafeInteger(value) && value >= 0) return String(value);
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  };
+  return { dev: identityPart(stats.dev), ino: identityPart(stats.ino) };
 }
 
 function sameIdentity(left, right) {
@@ -310,7 +315,7 @@ function fsyncDirectory(path, fileOperations) {
 function lstatRegular(path, fileOperations, { missing = false } = {}) {
   let stats;
   try {
-    stats = fileOperations.lstatSync(path);
+    stats = fileOperations.lstatSync(path, { bigint: true });
   } catch (error) {
     if (missing && error?.code === "ENOENT") return null;
     throw migrationError("MIGRATION_INPUT_INVALID", error);
@@ -328,7 +333,7 @@ function readSafeFile(path, fileOperations, { missing = false } = {}) {
   let descriptor;
   try {
     descriptor = fileOperations.openSync(path, FS_CONSTANTS.O_RDONLY | noFollow);
-    const descriptorStats = fileOperations.fstatSync(descriptor);
+    const descriptorStats = fileOperations.fstatSync(descriptor, { bigint: true });
     if (!descriptorStats.isFile()
       || !sameIdentity(before.identity, identityOf(descriptorStats))) {
       throw migrationError("MIGRATION_INPUT_INVALID");
@@ -408,7 +413,7 @@ function createLock({ lockPath, fileOperations, createId, token: providedToken }
   let closed = false;
   try {
     descriptor = fileOperations.openSync(lockPath, "wx", 0o600);
-    identity = identityOf(fileOperations.fstatSync(descriptor));
+    identity = identityOf(fileOperations.fstatSync(descriptor, { bigint: true }));
     fileOperations.writeFileSync(descriptor, token, "utf8");
     fileOperations.fchmodSync(descriptor, 0o600);
     fileOperations.fsyncSync(descriptor);
@@ -475,7 +480,7 @@ function writeExclusive(path, bytes, fileOperations, createId = randomUUID) {
   let closed = false;
   try {
     descriptor = fileOperations.openSync(path, "wx", 0o600);
-    identity = identityOf(fileOperations.fstatSync(descriptor));
+    identity = identityOf(fileOperations.fstatSync(descriptor, { bigint: true }));
     fileOperations.writeFileSync(descriptor, bytes);
     fileOperations.fchmodSync(descriptor, 0o600);
     fileOperations.fsyncSync(descriptor);
@@ -540,11 +545,22 @@ function secureMarker(path, expectedIdentity, fileOperations) {
   let descriptor;
   try {
     descriptor = fileOperations.openSync(path, FS_CONSTANTS.O_RDONLY | noFollow);
-    const stats = fileOperations.fstatSync(descriptor);
+    const stats = fileOperations.fstatSync(descriptor, { bigint: true });
     if (!stats.isFile() || !sameIdentity(identityOf(stats), expectedIdentity)) {
       throw new Error("registry recovery marker identity mismatch");
     }
     fileOperations.fchmodSync(descriptor, 0o600);
+    fileOperations.closeSync(descriptor);
+    descriptor = undefined;
+
+    // Windows FlushFileBuffers requires a write-capable handle. Reopen after
+    // tightening permissions, then bind the durable flush to the same inode.
+    descriptor = fileOperations.openSync(path, FS_CONSTANTS.O_RDWR | noFollow);
+    const writableStats = fileOperations.fstatSync(descriptor, { bigint: true });
+    if (!writableStats.isFile()
+      || !sameIdentity(identityOf(writableStats), expectedIdentity)) {
+      throw new Error("registry recovery marker identity mismatch");
+    }
     fileOperations.fsyncSync(descriptor);
     fileOperations.closeSync(descriptor);
     descriptor = undefined;
@@ -736,16 +752,28 @@ function quarantineInvalidRegistry({
   }
 }
 
-function validIdentity(value) {
-  return isPlainObject(value)
-    && Number.isSafeInteger(value.dev) && value.dev >= 0
-    && Number.isSafeInteger(value.ino) && value.ino >= 0;
+function normalizePersistedIdentity(value) {
+  const normalizePart = (part) => {
+    if (typeof part === "string" && /^(?:0|[1-9][0-9]{0,63})$/.test(part)) {
+      return part;
+    }
+    if (Number.isSafeInteger(part) && part >= 0) return String(part);
+    return null;
+  };
+  if (!isPlainObject(value)
+    || Object.keys(value).length !== 2
+    || !Object.hasOwn(value, "dev")
+    || !Object.hasOwn(value, "ino")) return null;
+  const dev = normalizePart(value.dev);
+  const ino = normalizePart(value.ino);
+  return dev === null || ino === null ? null : { dev, ino };
 }
 
 function validPersistedLock(value) {
   return isPlainObject(value)
+    && Object.keys(value).length === 2
     && typeof value.token === "string" && value.token.length >= 2 && value.token.length <= 256
-    && validIdentity(value.identity);
+    && normalizePersistedIdentity(value.identity) !== null;
 }
 
 function parseQuarantinePending(bytes) {
@@ -766,21 +794,31 @@ function parseQuarantinePending(bytes) {
     "migrationLock",
     "registryLock"
   ]);
+  const sourceIdentity = normalizePersistedIdentity(value?.sourceIdentity);
+  const migrationLockIdentity = normalizePersistedIdentity(value?.migrationLock?.identity);
+  const registryLockIdentity = normalizePersistedIdentity(value?.registryLock?.identity);
   if (!isPlainObject(value)
     || Object.keys(value).length !== fields.size
     || Object.keys(value).some((key) => !fields.has(key))
     || value.version !== REGISTRY_QUARANTINE_STATE_VERSION
     || !["prepared", "linked", "canonical-released"].includes(value.phase)
     || !Number.isSafeInteger(value.pid) || value.pid < 1
-    || !validIdentity(value.sourceIdentity)
+    || sourceIdentity === null
     || typeof value.reason !== "string" || !/^registry-[a-z-]{1,96}$/.test(value.reason)
     || !validPersistedLock(value.migrationLock)
-    || !validPersistedLock(value.registryLock)) {
+    || !validPersistedLock(value.registryLock)
+    || migrationLockIdentity === null
+    || registryLockIdentity === null) {
     throw migrationError("MIGRATION_INPUT_INVALID", null, {
       reason: "registry-recovery-pending-invalid"
     });
   }
-  return value;
+  return {
+    ...value,
+    sourceIdentity,
+    migrationLock: { ...value.migrationLock, identity: migrationLockIdentity },
+    registryLock: { ...value.registryLock, identity: registryLockIdentity }
+  };
 }
 
 function quarantineResumeDegraded(cause) {
