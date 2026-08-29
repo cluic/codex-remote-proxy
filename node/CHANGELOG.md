@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.12
+
+### Patch Changes
+
+- c46e86c: Redesign Forwarding Records as an eight-column request ledger with cached Token attribution, a default-off detailed Capture mode, and on-demand privacy-screened request and response inspection.
+
 ## 0.4.11
 
 ### Patch Changes
