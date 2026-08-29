@@ -171,3 +171,12 @@ final result: passed
 - If no source independently forms a complete Provider, migration performs no backup, scrub, registry, or credential mutation and the Supervisor continues into ordinary Web Setup with an empty in-memory schema-9 registry.
 - Parseable sources are backed up before credential writes and scrubbed only after the complete multi-Provider registry is verified. Partial credential writes compensate in reverse order; rollback degradation preserves the canonical migration and registry locks as discoverable blockers; post-commit Activity failures report committed degradation.
 - Final verification: source lint, patch Changeset validation, package dry-run, runtime dependency audit, 628/628 unit tests, and 65/65 integration tests passed. The fixed-port core-chain gate exited with `EADDRINUSE` because the user's existing CRP still owns `127.0.0.1:15100` and `127.0.0.1:15101`; it remained untouched.
+
+## Invalid Registry Quarantine QA
+
+- Verified on 2026-08-29 with an independent L3 review result of `APPROVE`.
+- Only safely readable regular files with invalid JSON, unsupported schema, or invalid registry documents are recoverable. Symlinks, directories, permission/open/fstat failures, identity races, foreign markers, and foreign/malformed transaction locks remain blocking and unchanged.
+- Recovery writes a private byte-exact backup, then creates the fixed `providers.json.recovery-invalid` marker through same-directory `linkSync` no-replace semantics, verifies the original inode, fixes mode `0600`, fsyncs the marker, and removes only a canonical link that still matches the source identity.
+- The `prepared`, `linked`, and `canonical-released` pending phases bind source identity, PID, transaction ID, and both lock identities. Dead-process startup can resume pre-journal, pre-link, post-link, partial-lock-release, and completed-marker scenes before ordinary lock acquisition; live owners remain busy.
+- Recovery never reads, writes, or deletes credential-store entries. Activity is safe best-effort metadata and cannot block Setup after quarantine succeeds.
+- Final verification: source lint, patch Changeset validation, package dry-run, runtime dependency audit, 643/643 unit tests, and 66/66 integration tests passed. The fixed-port core-chain gate remains unavailable locally because the user's existing CRP owns `127.0.0.1:15100` and `127.0.0.1:15101`; it was left untouched.

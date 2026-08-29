@@ -108,6 +108,7 @@
 - Forwarding visibility filters must run before summaries and keyset paging, while list paths omit redundant origins and details retain full URLs.
 - Forwarding detail contracts must keep body metadata nested under both `request.body` and `response.body` across services, Admin projection, UI types, and fixtures.
 - Recoverable legacy-source ambiguity must import separate inactive Providers or enter Setup; it must not force users to edit secret-bearing files.
+- Invalid registry quarantine must use a fixed no-replace marker and a crash-resumable journal bound to source and lock identities.
 
 ## Required Checks
 

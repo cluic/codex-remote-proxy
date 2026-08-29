@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as realFileOperations from "node:fs";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import http from "node:http";
 import os from "node:os";
@@ -2826,6 +2826,60 @@ test("supervisor reaches empty Setup when legacy sources cannot form one provide
   assert.equal(existsSync(harness.paths.registryPath), false);
   assert.deepEqual(readFileSync(legacyConfigPath), legacyBytes);
   assert.equal(credentialValues.size, 0);
+  await supervisor.close();
+});
+
+test("supervisor quarantines invalid registry content and reaches empty Setup", async (t) => {
+  const harness = supervisorDependencies(t);
+  mkdirSync(harness.paths.globalHome, { recursive: true, mode: 0o700 });
+  const invalidBytes = Buffer.from("{invalid-provider-registry\n", "utf8");
+  writeFileSync(harness.paths.registryPath, invalidBytes, { mode: 0o600 });
+  const credentialCalls = [];
+  const credentials = {
+    backend: "native",
+    async set() { credentialCalls.push("set"); },
+    async delete() { credentialCalls.push("delete"); }
+  };
+  let registry = null;
+  harness.options.credentialStoreFactory = () => {
+    harness.order.push("credential");
+    return credentials;
+  };
+  harness.options.migrate = async (input) => {
+    harness.order.push("migration");
+    const result = await migrateLegacyConfiguration(input);
+    assert.deepEqual(result, {
+      migrated: false,
+      reason: "invalid-registry-requires-setup"
+    });
+    return result;
+  };
+  harness.options.registryFactory = ({ path }) => {
+    harness.order.push("registry");
+    registry = new ProviderRegistry({ path });
+    return registry;
+  };
+  const provider = { getStatus: async () => ({ worker: workerState() }) };
+  harness.options.providerServiceFactory = (input) => {
+    harness.order.push("provider");
+    assert.equal(input.registry, registry);
+    return provider;
+  };
+  harness.options.adminServerFactory = () => {
+    harness.order.push("admin");
+    return harness.admin;
+  };
+
+  const supervisor = await createSupervisor(harness.options);
+  const markerPath = `${harness.paths.registryPath}.recovery-invalid`;
+  assert.equal(registry.getDocument().schemaVersion, 9);
+  assert.deepEqual(registry.list(), []);
+  assert.equal(registry.getActive(), null);
+  assert.equal(existsSync(harness.paths.registryPath), false);
+  assert.deepEqual(readFileSync(markerPath), invalidBytes);
+  assert.ok(readdirSync(harness.paths.globalHome)
+    .some((name) => name.startsWith("providers.json.") && name.endsWith(".bak")));
+  assert.deepEqual(credentialCalls, []);
   await supervisor.close();
 });
 

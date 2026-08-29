@@ -189,7 +189,9 @@ CLI 发起的兼容性测试（包括 `provider add --model`）只会在当前�
 
 迁移会独立解析旧 `config.json` 与运行时 `node/proxy-config.json`。只有一个完整来源时，创建一个未激活、未测试的 `Default` Provider；规范化后的连接事实完全相同时会去重。如果两个完整来源的 URL、凭据或显式鉴权事实不同，CRP 不替用户选择，而是分别导入为未激活的 `Recovered runtime` 与 `Recovered saved`，并为每份凭据创建独立的原生后端引用。所有可解析来源会先创建字节完全一致的私有备份；schema-9 registry 验证成功后才清除旧来源中的密钥。无法解析的旧 JSON 会保持原始字节不变。
 
-如果没有任何来源能够独立组成一个完整且有效的 Provider，迁移不会修改、备份或清理旧文件，而会让 Web UI 使用空的内存 schema-9 registry 正常进入 Setup。用户可以直接在界面添加 Provider，无需编辑或删除含密钥的文件。路径不安全、已有 `providers.json` 无效、身份竞态或权限错误仍会严格失败，绝不会为了启动界面而丢弃已经迁移的多 Provider 数据。
+如果没有任何来源能够独立组成一个完整且有效的 Provider，迁移不会修改、备份或清理旧文件，而会让 Web UI 使用空的内存 schema-9 registry 正常进入 Setup。用户可以直接在界面添加 Provider，无需编辑或删除含密钥的文件。registry 路径不安全、身份竞态或权限错误仍会严格失败，绝不会为了启动界面而丢弃已经迁移的多 Provider 数据。
+
+如果现有 `providers.json` 是能够安全读取的普通文件，但其 JSON、schema 或文档内容无效，CRP 现在会在不删除原文的情况下自动恢复：先创建私有、字节完全一致的备份，再通过同目录 hard link 把原 inode 保留到固定且禁止覆盖的 `providers.json.recovery-invalid` marker，收紧为 `0600` 并 fsync，最后只释放仍与原 inode 匹配的 canonical 链接。Supervisor 随后使用空的内存 registry 打开 Setup。符号链接、目录、权限失败、身份竞态和外部 recovery marker 仍会严格失败。`prepared → linked → canonical-released` 持久 journal 会绑定源 inode、PID 与两把事务锁，让后续启动可以安全完成中断恢复，而不会删除 foreign lock 或文件。
 
 如果事务在提交前失败，CRP 只按逆序恢复本次实际修改的来源，并补偿本次创建的凭据；外部替换文件绝不会被删除。回滚降级时会保留固定的迁移锁与 registry 锁作为可发现阻断。Activity 在主迁移提交后失败会报告 committed-degraded，不会谎称主操作未提交。出现 `MIGRATION_COMMITTED_DEGRADED`、`MIGRATION_COMMITTED_LOCK_DEGRADED` 或 `MIGRATION_ROLLBACK_DEGRADED` 时，必须停止 CRP，保留私有备份，并检查已脱敏 Activity 错误码。
 
