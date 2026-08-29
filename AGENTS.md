@@ -107,6 +107,7 @@
 - Routing previews must share the live scheduler and label conditional fallbacks and predicted outlets without claiming a guaranteed final provider.
 - Forwarding visibility filters must run before summaries and keyset paging, while list paths omit redundant origins and details retain full URLs.
 - Forwarding detail contracts must keep body metadata nested under both `request.body` and `response.body` across services, Admin projection, UI types, and fixtures.
+- Recoverable legacy-source ambiguity must import separate inactive Providers or enter Setup; it must not force users to edit secret-bearing files.
 
 ## Required Checks
 

@@ -185,13 +185,13 @@ CLI 发起的兼容性测试（包括 `provider add --model`）只会在当前�
 1. 停止旧的托管代理。
 2. 私下备份 `~/.codex-remote-proxy/` 和 `~/.codex/config.toml`；所有备份都应视为包含敏感信息。
 3. 运行 `crp ui`。
-4. 检查迁移得到的 `Default` 提供商，运行兼容性测试，并且只在测试通过后激活。
+4. 检查恢复得到的一个或多个 Provider 候选，运行兼容性测试，并且只在测试通过后选择。
 
-如果存在旧的 `config.json` 和运行时 `node/proxy-config.json`，迁移会读取它们。CRP 先创建防碰撞、字节完全一致的私有备份，再通过必需的原生凭据后端保存凭据，创建 `custom_only` 模式、权重 `100`、回环监听、客户端 Key 鉴权关闭、详细 Capture 关闭、未激活、未测试、默认 `/models` 获取路径、新模型默认启用且映射/路由规则组为空的 schema-9 provider registry，验证已经提交的 registry，最后才从旧文件中清除密钥字段。备份会保留。schema-2 至 schema-8 升级也会保留字节完全一致的备份；验证或发布失败时恢复原始字节。
+迁移会独立解析旧 `config.json` 与运行时 `node/proxy-config.json`。只有一个完整来源时，创建一个未激活、未测试的 `Default` Provider；规范化后的连接事实完全相同时会去重。如果两个完整来源的 URL、凭据或显式鉴权事实不同，CRP 不替用户选择，而是分别导入为未激活的 `Recovered runtime` 与 `Recovered saved`，并为每份凭据创建独立的原生后端引用。所有可解析来源会先创建字节完全一致的私有备份；schema-9 registry 验证成功后才清除旧来源中的密钥。无法解析的旧 JSON 会保持原始字节不变。
 
-如果多个旧配置源包含不同凭据，迁移会在创建备份、访问凭据存储、写入 registry 或修改任一源文件之前返回 `MIGRATION_INPUT_INVALID`。CRP 不会自动选择其中一个凭据；该冲突只能在经过操作员审查的真实 HOME 迁移中解决。
+如果没有任何来源能够独立组成一个完整且有效的 Provider，迁移不会修改、备份或清理旧文件，而会让 Web UI 使用空的内存 schema-9 registry 正常进入 Setup。用户可以直接在界面添加 Provider，无需编辑或删除含密钥的文件。路径不安全、已有 `providers.json` 无效、身份竞态或权限错误仍会严格失败，绝不会为了启动界面而丢弃已经迁移的多 Provider 数据。
 
-如果事务在提交前失败，CRP 会尝试恢复原始字节，并且只删除能够证明属于本次事务的 registry 与凭据状态；外部替换的文件不会被删除。出现 `MIGRATION_COMMITTED_DEGRADED`、`MIGRATION_COMMITTED_LOCK_DEGRADED` 或 `MIGRATION_ROLLBACK_DEGRADED`，表示最终状态不确定或需要修复：停止 CRP，不要连续重试，保留备份，并在修改文件前查看 Activity 中已脱敏的错误码。处于降级状态时，CRP 不会擅自用备份自动覆盖当前状态。
+如果事务在提交前失败，CRP 只按逆序恢复本次实际修改的来源，并补偿本次创建的凭据；外部替换文件绝不会被删除。回滚降级时会保留固定的迁移锁与 registry 锁作为可发现阻断。Activity 在主迁移提交后失败会报告 committed-degraded，不会谎称主操作未提交。出现 `MIGRATION_COMMITTED_DEGRADED`、`MIGRATION_COMMITTED_LOCK_DEGRADED` 或 `MIGRATION_ROLLBACK_DEGRADED` 时，必须停止 CRP，保留私有备份，并检查已脱敏 Activity 错误码。
 
 回退到 `0.2.2` 不是 schema 降级。必须先停止 CRP，再把完整的升级前私有备份作为一个整体恢复；不要只把密钥复制回某一个旧文件，也不要混用 schema-9 registry 与扁平配置。真实 HOME 上的迁移和回退仍属于 L3 操作，需要对应平台的人工审查。
 
