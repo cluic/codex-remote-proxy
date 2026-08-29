@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.14
+
+### Patch Changes
+
+- 9854e6e: Quarantine safely readable invalid Provider registries into a fixed crash-resumable recovery marker so `crp ui` can open Web Setup without deleting the original registry.
+
 ## 0.4.13
 
 ### Patch Changes
