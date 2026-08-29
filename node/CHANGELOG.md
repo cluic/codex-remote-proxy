@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.13
+
+### Patch Changes
+
+- 50b6c56: Recover early-version legacy configuration automatically by importing conflicting complete sources as separate inactive Providers or continuing into Web Setup when no complete source exists.
+
 ## 0.4.12
 
 ### Patch Changes
