@@ -98,6 +98,8 @@
 - SQLite test fixtures must close every database handle before deleting their temporary directory.
 - SVG endpoint labels must anchor inward so platform font metrics cannot overflow the viewport.
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
+- Persisted filesystem identities must use canonical strings derived from BigInt stats; JavaScript number identities are prohibited.
+- Windows file durability checks must flush through a write-capable identity-validated handle.
 - Long-range Metrics visualizations must use compact daily rollups instead of expanding high-cardinality hourly buckets.
 - Compact responsive route diagrams must preserve internal containment instead of relying on off-canvas horizontal overflow.
 - Conditional routing branches must default to a complete summary and disclose the full rail only after explicit expansion.
@@ -108,6 +110,7 @@
 - Forwarding visibility filters must run before summaries and keyset paging, while list paths omit redundant origins and details retain full URLs.
 - Forwarding detail contracts must keep body metadata nested under both `request.body` and `response.body` across services, Admin projection, UI types, and fixtures.
 - Recoverable legacy-source ambiguity must import separate inactive Providers or enter Setup; it must not force users to edit secret-bearing files.
+- Invalid registry quarantine must use a fixed no-replace marker and a crash-resumable journal bound to source and lock identities.
 
 ## Required Checks
 

@@ -5,6 +5,7 @@ import {
   fchmodSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -33,6 +34,7 @@ const DEFAULT_FILE_OPERATIONS = {
   fchmodSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -43,6 +45,8 @@ const DEFAULT_FILE_OPERATIONS = {
 };
 const BACKUP_ATTEMPTS = 8;
 const REPLACEMENT_COMMITTED_IDENTITY = Symbol("replacementCommittedIdentity");
+const REGISTRY_QUARANTINE_COMMITTED = Symbol("registryQuarantineCommitted");
+const REGISTRY_QUARANTINE_STATE_VERSION = 1;
 const LEGACY_URL_KEYS = Object.freeze(["baseUrl", "upstreamBaseUrl", "upstream_base_url"]);
 const LEGACY_SECRET_KEYS = Object.freeze(["apiKey", "upstreamApiKey", "upstream_api_key"]);
 const LEGACY_AUTH_HEADER_KEYS = Object.freeze(["authHeader"]);
@@ -93,18 +97,6 @@ function migrationError(code, cause, details = {}) {
 
 function isCommittedError(error) {
   return error instanceof CrpError && error.details?.committed === true;
-}
-
-function parseJson(bytes) {
-  try {
-    const value = JSON.parse(bytes);
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("not an object");
-    }
-    return value;
-  } catch (error) {
-    throw migrationError("MIGRATION_INPUT_INVALID", error);
-  }
 }
 
 function isPlainObject(value) {
@@ -286,7 +278,12 @@ function registryBytesForProviders(providers) {
 }
 
 function identityOf(stats) {
-  return { dev: stats.dev, ino: stats.ino };
+  const identityPart = (value) => {
+    if (typeof value === "bigint" && value >= 0n) return value.toString(10);
+    if (Number.isSafeInteger(value) && value >= 0) return String(value);
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  };
+  return { dev: identityPart(stats.dev), ino: identityPart(stats.ino) };
 }
 
 function sameIdentity(left, right) {
@@ -318,7 +315,7 @@ function fsyncDirectory(path, fileOperations) {
 function lstatRegular(path, fileOperations, { missing = false } = {}) {
   let stats;
   try {
-    stats = fileOperations.lstatSync(path);
+    stats = fileOperations.lstatSync(path, { bigint: true });
   } catch (error) {
     if (missing && error?.code === "ENOENT") return null;
     throw migrationError("MIGRATION_INPUT_INVALID", error);
@@ -336,7 +333,7 @@ function readSafeFile(path, fileOperations, { missing = false } = {}) {
   let descriptor;
   try {
     descriptor = fileOperations.openSync(path, FS_CONSTANTS.O_RDONLY | noFollow);
-    const descriptorStats = fileOperations.fstatSync(descriptor);
+    const descriptorStats = fileOperations.fstatSync(descriptor, { bigint: true });
     if (!descriptorStats.isFile()
       || !sameIdentity(before.identity, identityOf(descriptorStats))) {
       throw migrationError("MIGRATION_INPUT_INVALID");
@@ -408,15 +405,15 @@ function claimOwnedPath(path, expectedIdentity, fileOperations, createId = rando
   }
 }
 
-function createLock({ lockPath, fileOperations, createId }) {
+function createLock({ lockPath, fileOperations, createId, token: providedToken }) {
   fileOperations.mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
-  const token = `${createId()}\n`;
+  const token = providedToken ?? `${createId()}\n`;
   let descriptor;
   let identity = null;
   let closed = false;
   try {
     descriptor = fileOperations.openSync(lockPath, "wx", 0o600);
-    identity = identityOf(fileOperations.fstatSync(descriptor));
+    identity = identityOf(fileOperations.fstatSync(descriptor, { bigint: true }));
     fileOperations.writeFileSync(descriptor, token, "utf8");
     fileOperations.fchmodSync(descriptor, 0o600);
     fileOperations.fsyncSync(descriptor);
@@ -483,7 +480,7 @@ function writeExclusive(path, bytes, fileOperations, createId = randomUUID) {
   let closed = false;
   try {
     descriptor = fileOperations.openSync(path, "wx", 0o600);
-    identity = identityOf(fileOperations.fstatSync(descriptor));
+    identity = identityOf(fileOperations.fstatSync(descriptor, { bigint: true }));
     fileOperations.writeFileSync(descriptor, bytes);
     fileOperations.fchmodSync(descriptor, 0o600);
     fileOperations.fsyncSync(descriptor);
@@ -529,6 +526,456 @@ function createBackup(source, fileOperations, createBackupId) {
     }
   }
   throw migrationError("MIGRATION_FAILED");
+}
+
+function pathExists(path, fileOperations) {
+  try {
+    fileOperations.lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw migrationError("MIGRATION_INPUT_INVALID", error, {
+      reason: "registry-recovery-marker-unreadable"
+    });
+  }
+}
+
+function secureMarker(path, expectedIdentity, fileOperations) {
+  const noFollow = typeof FS_CONSTANTS.O_NOFOLLOW === "number" ? FS_CONSTANTS.O_NOFOLLOW : 0;
+  let descriptor;
+  try {
+    descriptor = fileOperations.openSync(path, FS_CONSTANTS.O_RDONLY | noFollow);
+    const stats = fileOperations.fstatSync(descriptor, { bigint: true });
+    if (!stats.isFile() || !sameIdentity(identityOf(stats), expectedIdentity)) {
+      throw new Error("registry recovery marker identity mismatch");
+    }
+    fileOperations.fchmodSync(descriptor, 0o600);
+    fileOperations.closeSync(descriptor);
+    descriptor = undefined;
+
+    // Windows FlushFileBuffers requires a write-capable handle. Reopen after
+    // tightening permissions, then bind the durable flush to the same inode.
+    descriptor = fileOperations.openSync(path, FS_CONSTANTS.O_RDWR | noFollow);
+    const writableStats = fileOperations.fstatSync(descriptor, { bigint: true });
+    if (!writableStats.isFile()
+      || !sameIdentity(identityOf(writableStats), expectedIdentity)) {
+      throw new Error("registry recovery marker identity mismatch");
+    }
+    fileOperations.fsyncSync(descriptor);
+    fileOperations.closeSync(descriptor);
+    descriptor = undefined;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { fileOperations.closeSync(descriptor); } catch {}
+    }
+    throw error;
+  }
+}
+
+function defaultIsProcessAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function transactionLockToken(pid, transactionId, purpose) {
+  return `${JSON.stringify({ version: 1, pid, transactionId, purpose })}\n`;
+}
+
+function parseTransactionLock(bytes, purpose) {
+  try {
+    const value = JSON.parse(bytes);
+    if (!isPlainObject(value)
+      || value.version !== 1
+      || !Number.isSafeInteger(value.pid) || value.pid < 1
+      || typeof value.transactionId !== "string"
+      || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value.transactionId)
+      || value.purpose !== purpose
+      || Object.keys(value).length !== 4) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function quarantinePendingBytes({
+  phase,
+  pid,
+  sourceIdentity,
+  reason,
+  lock,
+  registryLock
+}) {
+  return Buffer.from(`${JSON.stringify({
+    version: REGISTRY_QUARANTINE_STATE_VERSION,
+    phase,
+    pid,
+    sourceIdentity,
+    reason,
+    migrationLock: lock,
+    registryLock
+  }, null, 2)}\n`, "utf8");
+}
+
+function quarantineInvalidRegistry({
+  path,
+  source,
+  reason,
+  fileOperations,
+  createBackupId,
+  createId,
+  pid,
+  lock,
+  registryLock
+}) {
+  const markerPath = `${path}.recovery-invalid`;
+  const pendingPath = `${path}.recovery-pending`;
+  if (pathExists(markerPath, fileOperations)) {
+    throw migrationError("MIGRATION_INPUT_INVALID", null, {
+      reason: "registry-recovery-marker-exists"
+    });
+  }
+  const before = lstatRegular(path, fileOperations);
+  if (!sameIdentity(before.identity, source.identity)) {
+    throw migrationError("MIGRATION_INPUT_INVALID", null, {
+      reason: "registry-identity-changed"
+    });
+  }
+  let pendingBytes = quarantinePendingBytes({
+    phase: "prepared",
+    pid,
+    sourceIdentity: source.identity,
+    reason,
+    lock,
+    registryLock
+  });
+  let pendingIdentity;
+  try {
+    pendingIdentity = writeExclusive(pendingPath, pendingBytes, fileOperations, createId);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw migrationError("MIGRATION_INPUT_INVALID", error, {
+        reason: "registry-recovery-pending-exists"
+      });
+    }
+    throw error;
+  }
+  const updatePendingPhase = (phase) => {
+    const nextBytes = quarantinePendingBytes({
+      phase,
+      pid,
+      sourceIdentity: source.identity,
+      reason,
+      lock,
+      registryLock
+    });
+    pendingIdentity = replaceFile(
+      pendingPath,
+      nextBytes,
+      pendingIdentity,
+      fileOperations,
+      createId
+    );
+    pendingBytes = nextBytes;
+  };
+  let linked = false;
+  try {
+    createBackup(source, fileOperations, createBackupId);
+    try {
+      fileOperations.linkSync(path, markerPath);
+      linked = true;
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        throw migrationError("MIGRATION_INPUT_INVALID", error, {
+          reason: "registry-recovery-marker-exists"
+        });
+      }
+      throw error;
+    }
+    updatePendingPhase("linked");
+    const marker = lstatRegular(markerPath, fileOperations);
+    const canonical = lstatRegular(path, fileOperations, { missing: true });
+    if (!sameIdentity(marker.identity, source.identity)
+      || canonical === null
+      || !sameIdentity(canonical.identity, source.identity)) {
+      throw new Error("registry quarantine identity mismatch");
+    }
+    secureMarker(markerPath, source.identity, fileOperations);
+    if (!claimOwnedPath(path, source.identity, fileOperations, createId)) {
+      throw new Error("registry quarantine canonical release failed");
+    }
+    const releasedCanonical = lstatRegular(path, fileOperations, { missing: true });
+    const retainedMarker = lstatRegular(markerPath, fileOperations);
+    if (releasedCanonical !== null || !sameIdentity(retainedMarker.identity, source.identity)) {
+      throw new Error("registry quarantine final verification failed");
+    }
+    fsyncDirectory(dirname(path), fileOperations);
+    updatePendingPhase("canonical-released");
+    return {
+      markerPath,
+      markerIdentity: retainedMarker.identity,
+      reason,
+      pending: { path: pendingPath, identity: pendingIdentity, bytes: pendingBytes }
+    };
+  } catch (error) {
+    if (!linked) {
+      if (!claimOwnedPath(pendingPath, pendingIdentity, fileOperations, createId)) {
+        const degraded = migrationError("MIGRATION_ROLLBACK_DEGRADED", error, {
+          committed: false,
+          degraded: true,
+          reason: "registry-recovery-pending-cleanup-failed"
+        });
+        Object.defineProperty(degraded, REGISTRY_QUARANTINE_COMMITTED, {
+          value: true
+        });
+        throw degraded;
+      }
+      if (error instanceof CrpError) throw error;
+      throw migrationError("MIGRATION_FAILED", error, {
+        committed: false,
+        reason: "registry-quarantine-link-failed"
+      });
+    }
+    const degraded = migrationError("MIGRATION_COMMITTED_DEGRADED", error, {
+      committed: true,
+      degraded: true,
+      reason: "registry-quarantine-verification-failed"
+    });
+    Object.defineProperty(degraded, REGISTRY_QUARANTINE_COMMITTED, {
+      value: true
+    });
+    throw degraded;
+  }
+}
+
+function normalizePersistedIdentity(value) {
+  const normalizePart = (part) => {
+    if (typeof part === "string" && /^(?:0|[1-9][0-9]{0,63})$/.test(part)) {
+      return part;
+    }
+    if (Number.isSafeInteger(part) && part >= 0) return String(part);
+    return null;
+  };
+  if (!isPlainObject(value)
+    || Object.keys(value).length !== 2
+    || !Object.hasOwn(value, "dev")
+    || !Object.hasOwn(value, "ino")) return null;
+  const dev = normalizePart(value.dev);
+  const ino = normalizePart(value.ino);
+  return dev === null || ino === null ? null : { dev, ino };
+}
+
+function validPersistedLock(value) {
+  return isPlainObject(value)
+    && Object.keys(value).length === 2
+    && typeof value.token === "string" && value.token.length >= 2 && value.token.length <= 256
+    && normalizePersistedIdentity(value.identity) !== null;
+}
+
+function parseQuarantinePending(bytes) {
+  let value;
+  try {
+    value = JSON.parse(bytes);
+  } catch {
+    throw migrationError("MIGRATION_INPUT_INVALID", null, {
+      reason: "registry-recovery-pending-invalid"
+    });
+  }
+  const fields = new Set([
+    "version",
+    "phase",
+    "pid",
+    "sourceIdentity",
+    "reason",
+    "migrationLock",
+    "registryLock"
+  ]);
+  const sourceIdentity = normalizePersistedIdentity(value?.sourceIdentity);
+  const migrationLockIdentity = normalizePersistedIdentity(value?.migrationLock?.identity);
+  const registryLockIdentity = normalizePersistedIdentity(value?.registryLock?.identity);
+  if (!isPlainObject(value)
+    || Object.keys(value).length !== fields.size
+    || Object.keys(value).some((key) => !fields.has(key))
+    || value.version !== REGISTRY_QUARANTINE_STATE_VERSION
+    || !["prepared", "linked", "canonical-released"].includes(value.phase)
+    || !Number.isSafeInteger(value.pid) || value.pid < 1
+    || sourceIdentity === null
+    || typeof value.reason !== "string" || !/^registry-[a-z-]{1,96}$/.test(value.reason)
+    || !validPersistedLock(value.migrationLock)
+    || !validPersistedLock(value.registryLock)
+    || migrationLockIdentity === null
+    || registryLockIdentity === null) {
+    throw migrationError("MIGRATION_INPUT_INVALID", null, {
+      reason: "registry-recovery-pending-invalid"
+    });
+  }
+  return {
+    ...value,
+    sourceIdentity,
+    migrationLock: { ...value.migrationLock, identity: migrationLockIdentity },
+    registryLock: { ...value.registryLock, identity: registryLockIdentity }
+  };
+}
+
+function quarantineResumeDegraded(cause) {
+  return migrationError("MIGRATION_COMMITTED_DEGRADED", cause, {
+    committed: true,
+    degraded: true,
+    reason: "registry-quarantine-resume-failed"
+  });
+}
+
+function resumeInvalidRegistryQuarantine({
+  registryPath,
+  fileOperations,
+  createId,
+  isProcessAlive
+}) {
+  const pendingPath = `${registryPath}.recovery-pending`;
+  const pending = readSafeFile(pendingPath, fileOperations, { missing: true });
+  if (pending === null) {
+    const migrationLockPath = `${registryPath}.migration.lock`;
+    const registryLockPath = `${registryPath}.crp.lock`;
+    const migrationLockSource = readSafeFile(migrationLockPath, fileOperations, { missing: true });
+    const registryLockSource = readSafeFile(registryLockPath, fileOperations, { missing: true });
+    if (migrationLockSource === null && registryLockSource === null) return false;
+    const parsedMigration = migrationLockSource === null
+      ? null
+      : parseTransactionLock(migrationLockSource.bytes, "migration");
+    const parsedRegistry = registryLockSource === null
+      ? null
+      : parseTransactionLock(registryLockSource.bytes, "registry");
+    if ((migrationLockSource !== null && parsedMigration === null)
+      || (registryLockSource !== null && parsedRegistry === null)) return false;
+    const owner = parsedMigration ?? parsedRegistry;
+    if (owner === null
+      || (parsedMigration !== null && parsedMigration.transactionId !== owner.transactionId)
+      || (parsedRegistry !== null && parsedRegistry.transactionId !== owner.transactionId)
+      || (parsedMigration !== null && parsedMigration.pid !== owner.pid)
+      || (parsedRegistry !== null && parsedRegistry.pid !== owner.pid)) return false;
+    const inspection = inspectCurrentRegistry(registryPath, fileOperations);
+    if (inspection.kind !== "invalid-registry") return false;
+    if (isProcessAlive(owner.pid)) throw migrationError("MIGRATION_BUSY");
+    if (registryLockSource !== null && !releaseLock({
+      lockPath: registryLockPath,
+      lock: { token: registryLockSource.bytes.toString("utf8"), identity: registryLockSource.identity },
+      fileOperations,
+      createId
+    })) throw quarantineResumeDegraded();
+    if (migrationLockSource !== null && !releaseLock({
+      lockPath: migrationLockPath,
+      lock: { token: migrationLockSource.bytes.toString("utf8"), identity: migrationLockSource.identity },
+      fileOperations,
+      createId
+    })) throw quarantineResumeDegraded();
+    return true;
+  }
+  const state = parseQuarantinePending(pending.bytes);
+  const markerPath = `${registryPath}.recovery-invalid`;
+  let marker;
+  let canonical;
+  let migrationLockSource;
+  let registryLockSource;
+  try {
+    marker = lstatRegular(markerPath, fileOperations, { missing: true });
+    canonical = lstatRegular(registryPath, fileOperations, { missing: true });
+    migrationLockSource = readSafeFile(`${registryPath}.migration.lock`, fileOperations, {
+      missing: true
+    });
+    registryLockSource = readSafeFile(`${registryPath}.crp.lock`, fileOperations, {
+      missing: true
+    });
+  } catch (error) {
+    throw quarantineResumeDegraded(error);
+  }
+  if ((marker !== null && !sameIdentity(marker.identity, state.sourceIdentity))
+    || (canonical !== null && !sameIdentity(canonical.identity, state.sourceIdentity))) {
+    throw quarantineResumeDegraded();
+  }
+  if (migrationLockSource !== null && (
+    !sameIdentity(migrationLockSource.identity, state.migrationLock.identity)
+    || migrationLockSource.bytes.toString("utf8") !== state.migrationLock.token
+  )) throw quarantineResumeDegraded();
+  if (registryLockSource !== null && (
+    !sameIdentity(registryLockSource.identity, state.registryLock.identity)
+    || registryLockSource.bytes.toString("utf8") !== state.registryLock.token
+  )) throw quarantineResumeDegraded();
+  const anyLockPresent = migrationLockSource !== null || registryLockSource !== null;
+  if (anyLockPresent) {
+    if (isProcessAlive(state.pid)) {
+      throw migrationError("MIGRATION_BUSY");
+    }
+  }
+  if (marker === null) {
+    if (state.phase !== "prepared" || canonical === null) {
+      throw quarantineResumeDegraded();
+    }
+    try {
+      if (registryLockSource !== null && !releaseLock({
+        lockPath: `${registryPath}.crp.lock`,
+        lock: state.registryLock,
+        fileOperations,
+        createId
+      })) throw new Error("registry quarantine prepared registry-lock release failed");
+      if (migrationLockSource !== null && !releaseLock({
+        lockPath: `${registryPath}.migration.lock`,
+        lock: state.migrationLock,
+        fileOperations,
+        createId
+      })) throw new Error("registry quarantine prepared migration-lock release failed");
+      if (!claimOwnedPath(pendingPath, pending.identity, fileOperations, createId)) {
+        throw new Error("registry quarantine prepared pending cleanup failed");
+      }
+      return true;
+    } catch (error) {
+      throw quarantineResumeDegraded(error);
+    }
+  }
+  try {
+    secureMarker(markerPath, state.sourceIdentity, fileOperations);
+    if (canonical !== null
+      && !claimOwnedPath(registryPath, state.sourceIdentity, fileOperations, createId)) {
+      throw new Error("registry quarantine resume release failed");
+    }
+    const finalCanonical = lstatRegular(registryPath, fileOperations, { missing: true });
+    const finalMarker = lstatRegular(markerPath, fileOperations);
+    if (finalCanonical !== null || !sameIdentity(finalMarker.identity, state.sourceIdentity)) {
+      throw new Error("registry quarantine resume verification failed");
+    }
+    fsyncDirectory(dirname(registryPath), fileOperations);
+    if (registryLockSource !== null) {
+      const registryReleased = releaseLock({
+        lockPath: `${registryPath}.crp.lock`,
+        lock: state.registryLock,
+        fileOperations,
+        createId
+      });
+      if (!registryReleased) {
+        throw new Error("registry quarantine resume registry-lock release failed");
+      }
+    }
+    if (migrationLockSource !== null) {
+      const migrationReleased = releaseLock({
+        lockPath: `${registryPath}.migration.lock`,
+        lock: state.migrationLock,
+        fileOperations,
+        createId
+      });
+      if (!migrationReleased) {
+        throw new Error("registry quarantine resume migration-lock release failed");
+      }
+    }
+    if (!claimOwnedPath(pendingPath, pending.identity, fileOperations, createId)) {
+      throw new Error("registry quarantine pending cleanup failed");
+    }
+    return true;
+  } catch (error) {
+    throw quarantineResumeDegraded(error);
+  }
 }
 
 function replaceFile(path, bytes, expectedIdentity, fileOperations, createId) {
@@ -803,58 +1250,72 @@ function upgradeRegistryDocument(document) {
 }
 
 function inspectCurrentRegistry(path, fileOperations) {
-  const source = readSafeFile(path, fileOperations, { missing: true });
+  let source;
+  try {
+    source = readSafeFile(path, fileOperations, { missing: true });
+  } catch (error) {
+    throw migrationError("MIGRATION_INPUT_INVALID", error, {
+      reason: "registry-path-unsafe"
+    });
+  }
   if (source === null) return { kind: "missing" };
-  const document = parseJson(source.bytes);
-  if (document.schemaVersion === 2) {
-    validateSchema2Registry(document);
-    return { kind: "schema-2", source: { ...source, document } };
-  }
-  if (document.schemaVersion === 3) {
-    validateSchema3Registry(document);
-    return { kind: "schema-3", source: { ...source, document } };
-  }
-  if (document.schemaVersion === 4) {
-    validateSchema4Registry(document);
-    return { kind: "schema-4", source: { ...source, document } };
-  }
-  if (document.schemaVersion === 5) {
-    try {
-      validateProviderRegistryDocument(upgradeRegistryDocument(document));
-    } catch (error) {
-      throw migrationError("MIGRATION_INPUT_INVALID", error);
+  const invalid = (reason) => {
+    const after = lstatRegular(path, fileOperations);
+    if (!sameIdentity(after.identity, source.identity)) {
+      throw migrationError("MIGRATION_INPUT_INVALID", null, {
+        reason: "registry-identity-changed"
+      });
     }
-    return { kind: "schema-5", source: { ...source, document } };
+    return { kind: "invalid-registry", source, reason };
+  };
+  let document;
+  try {
+    document = JSON.parse(source.bytes);
+    if (!isPlainObject(document)) throw new Error("not an object");
+  } catch {
+    return invalid("registry-json-invalid");
   }
-  if (document.schemaVersion === 6) {
-    try {
-      validateProviderRegistryDocument(upgradeRegistryDocument(document));
-    } catch (error) {
-      throw migrationError("MIGRATION_INPUT_INVALID", error);
+  if (![2, 3, 4, 5, 6, 7, 8, 9].includes(document.schemaVersion)) {
+    return invalid("registry-schema-unsupported");
+  }
+  try {
+    if (document.schemaVersion === 2) {
+      validateSchema2Registry(document);
+      return { kind: "schema-2", source: { ...source, document } };
     }
-    return { kind: "schema-6", source: { ...source, document } };
-  }
-  if (document.schemaVersion === 7) {
-    try {
-      validateProviderRegistryDocument(upgradeRegistryDocument(document));
-    } catch (error) {
-      throw migrationError("MIGRATION_INPUT_INVALID", error);
+    if (document.schemaVersion === 3) {
+      validateSchema3Registry(document);
+      return { kind: "schema-3", source: { ...source, document } };
     }
-    return { kind: "schema-7", source: { ...source, document } };
-  }
-  if (document.schemaVersion === 8) {
-    try {
-      validateProviderRegistryDocument(upgradeRegistryDocument(document));
-    } catch (error) {
-      throw migrationError("MIGRATION_INPUT_INVALID", error);
+    if (document.schemaVersion === 4) {
+      validateSchema4Registry(document);
+      return { kind: "schema-4", source: { ...source, document } };
     }
-    return { kind: "schema-8", source: { ...source, document } };
+    if (document.schemaVersion === 5) {
+      validateProviderRegistryDocument(upgradeRegistryDocument(document));
+      return { kind: "schema-5", source: { ...source, document } };
+    }
+    if (document.schemaVersion === 6) {
+      validateProviderRegistryDocument(upgradeRegistryDocument(document));
+      return { kind: "schema-6", source: { ...source, document } };
+    }
+    if (document.schemaVersion === 7) {
+      validateProviderRegistryDocument(upgradeRegistryDocument(document));
+      return { kind: "schema-7", source: { ...source, document } };
+    }
+    if (document.schemaVersion === 8) {
+      validateProviderRegistryDocument(upgradeRegistryDocument(document));
+      return { kind: "schema-8", source: { ...source, document } };
+    }
+    validateProviderRegistryDocument(document);
+  } catch {
+    return invalid("registry-document-invalid");
   }
-  if (document.schemaVersion !== 9) throw migrationError("MIGRATION_INPUT_INVALID");
-  new ProviderRegistry({ path, fileOperations });
   const after = lstatRegular(path, fileOperations);
   if (!sameIdentity(after.identity, source.identity)) {
-    throw migrationError("MIGRATION_INPUT_INVALID");
+    throw migrationError("MIGRATION_INPUT_INVALID", null, {
+      reason: "registry-identity-changed"
+    });
   }
   return { kind: "current" };
 }
@@ -868,22 +1329,40 @@ export async function migrateLegacyConfiguration({
   createCredentialRef = randomUUID,
   createBackupId = randomUUID,
   createLockId = randomUUID,
+  createTransactionId = randomUUID,
+  processId = process.pid,
+  isProcessAlive = defaultIsProcessAlive,
   fileOperations: overrides = {}
 }) {
   if (!paths || typeof paths.globalHome !== "string" || typeof paths.registryPath !== "string"
     || !credentialStore || typeof credentialStore.set !== "function"
-    || typeof credentialStore.delete !== "function") {
+    || typeof credentialStore.delete !== "function"
+    || typeof createTransactionId !== "function"
+    || !Number.isSafeInteger(processId) || processId < 1
+    || typeof isProcessAlive !== "function") {
     throw migrationError("MIGRATION_INPUT_INVALID");
   }
   const fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...overrides };
   const legacyConfigPath = paths.legacyConfigPath ?? join(paths.globalHome, "config.json");
   const runtimeConfigPath = paths.runtimeConfigPath
     ?? join(paths.globalHome, "node", "proxy-config.json");
+  resumeInvalidRegistryQuarantine({
+    registryPath: paths.registryPath,
+    fileOperations,
+    createId: createLockId,
+    isProcessAlive
+  });
+  const transactionId = createTransactionId();
+  if (typeof transactionId !== "string"
+    || !/^[A-Za-z0-9_.:-]{1,128}$/.test(transactionId)) {
+    throw migrationError("MIGRATION_INPUT_INVALID");
+  }
   const lockPath = `${paths.registryPath}.migration.lock`;
   const lock = createLock({
     lockPath,
     fileOperations,
-    createId: createLockId
+    createId: createLockId,
+    token: transactionLockToken(processId, transactionId, "migration")
   });
   const registryLockPath = `${paths.registryPath}.crp.lock`;
   let registryLock;
@@ -891,7 +1370,8 @@ export async function migrateLegacyConfiguration({
     registryLock = createLock({
       lockPath: registryLockPath,
       fileOperations,
-      createId: createLockId
+      createId: createLockId,
+      token: transactionLockToken(processId, transactionId, "registry")
     });
   } catch (error) {
     const migrationLockReleased = releaseLock({
@@ -921,9 +1401,44 @@ export async function migrateLegacyConfiguration({
   const scrubbedSources = [];
   let failure;
   let rollbackDegraded = false;
+  let quarantinePending = null;
 
   try {
     const registryInspection = inspectCurrentRegistry(paths.registryPath, fileOperations);
+    if (registryInspection.kind === "invalid-registry") {
+      const recovery = quarantineInvalidRegistry({
+        path: paths.registryPath,
+        source: registryInspection.source,
+        reason: registryInspection.reason,
+        fileOperations,
+        createBackupId,
+        createId: createLockId,
+        pid: processId,
+        lock,
+        registryLock
+      });
+      quarantinePending = recovery.pending;
+      completed = true;
+      if (activityStore) {
+        try {
+          await activityStore.append({
+            category: "migration",
+            action: "provider-registry-recovery",
+            providerId: null,
+            result: "success",
+            errorCode: null,
+            details: {
+              reason: registryInspection.reason,
+              backupCreated: true,
+              markerRetained: true
+            }
+          });
+        } catch {
+          // Registry recovery is complete; Activity is intentionally best-effort.
+        }
+      }
+      return { migrated: false, reason: "invalid-registry-requires-setup" };
+    }
     if (registryInspection.kind === "current") {
       completed = true;
       return { migrated: false, reason: "already-current" };
@@ -1150,6 +1665,11 @@ export async function migrateLegacyConfiguration({
       ? { migrated: true, providerId: profiles[0].id }
       : { migrated: true, providerIds };
   } catch (error) {
+    if (error?.[REGISTRY_QUARANTINE_COMMITTED]) {
+      completed = error.details?.committed === true;
+      rollbackDegraded = true;
+      throw error;
+    }
     if (completed && isCommittedError(error)) throw error;
     failure = error;
     let rollbackFailed = error?.code === "MIGRATION_ROLLBACK_DEGRADED"
@@ -1252,6 +1772,19 @@ export async function migrateLegacyConfiguration({
         createId: createLockId
       });
       const released = registryReleased && migrationReleased;
+      if (released && quarantinePending !== null
+        && !claimOwnedPath(
+          quarantinePending.path,
+          quarantinePending.identity,
+          fileOperations,
+          createLockId
+        )) {
+        throw migrationError("MIGRATION_COMMITTED_DEGRADED", null, {
+          committed: true,
+          degraded: true,
+          reason: "registry-recovery-pending-cleanup-failed"
+        });
+      }
       if (!released && completed) {
         throw migrationError("MIGRATION_COMMITTED_LOCK_DEGRADED", null, {
           committed: true,
