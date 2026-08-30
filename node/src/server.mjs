@@ -1505,6 +1505,8 @@ function buildRequestContext({
   providerId,
   providerName,
   route,
+  routeReason,
+  providerSelectionReason,
   startedAt,
   captureHandle,
   protectedValues
@@ -1540,10 +1542,12 @@ function buildRequestContext({
       new URL(req.url, `http://${settings.server.host}:${settings.server.port}`).href,
       protectedValues
     ),
-    targetUrl: redactProtectedUrl(targetUrl.href, protectedValues),
+    targetUrl: targetUrl === null ? null : redactProtectedUrl(targetUrl.href, protectedValues),
     providerId,
     providerName,
     route,
+    routeReason,
+    providerSelectionReason,
     detailsCaptured: captureHandle?.detailsEnabled === true,
     requestHeaders: captureHeaders,
     requestBody,
@@ -1569,6 +1573,8 @@ function saveCaptureRecord(captureContext, fields) {
     providerId: captureContext.providerId,
     providerName: captureContext.providerName,
     route: captureContext.route,
+    routeReason: captureContext.routeReason,
+    providerSelectionReason: captureContext.providerSelectionReason,
     requestedModel: fields.requestedModel ?? null,
     forwardedModel: fields.forwardedModel ?? null,
     requestHeaders: captureContext.requestHeaders,
@@ -1666,10 +1672,34 @@ export function createServer(settings, {
     const providerPriorityRules = Array.isArray(baseRequestSettings.routing?.providerPriorityRules)
       ? baseRequestSettings.routing.providerPriorityRules
       : [];
-    let customCandidates = providerScheduler.ordered(configuredCustomProviders, {
+    const initialCustomPlan = providerScheduler.plan(configuredCustomProviders, {
       priorityRules: providerPriorityRules
     });
-    if (customCandidates.length === 0) {
+    let customCandidates = initialCustomPlan.providers;
+    let customSelectionReason = initialCustomPlan.primaryReason;
+    let customCandidateIndex = 0;
+    let currentCustomProvider = customCandidates[customCandidateIndex] ?? null;
+    let accountState = baseRequestSettings.routing?.account ?? null;
+    try {
+      accountState = accountStateSource?.current().state ?? accountState;
+    } catch {
+      // A missing live state falls back to the validated Worker configuration snapshot.
+    }
+    const accountRawHeaders = accessAuthorization.source === "authorization"
+      ? withoutAuthorizationRawHeaders(req.rawHeaders)
+      : req.rawHeaders;
+    const decideRouteForModel = (model = null) => decideUpstreamRoute({
+      mode: baseRequestSettings.routing?.mode ?? "custom_only",
+      method: req.method,
+      requestUrl: req.url,
+      rawHeaders: accountRawHeaders,
+      accountState,
+      model,
+      localBlockedUntilMs: routingState.accountBlockedUntilMs,
+      nowMs: routingNow()
+    });
+    const routeDecision = decideRouteForModel();
+    if (routeDecision.route === "custom" && currentCustomProvider === null) {
       writeJson(res, 503, {
         error: {
           code: "PROVIDER_POOL_UNAVAILABLE",
@@ -1678,32 +1708,19 @@ export function createServer(settings, {
       });
       return;
     }
-    let customCandidateIndex = 0;
-    let currentCustomProvider = customCandidates[customCandidateIndex];
-    let requestSettings = settingsForProvider(baseRequestSettings, currentCustomProvider);
+    let requestSettings = routeDecision.route === "account"
+      ? baseRequestSettings
+      : settingsForProvider(baseRequestSettings, currentCustomProvider);
     const requestProtectedValues = protectedRequestValues(req, baseRequestSettings);
     const requestDebugEnabled = requestSettings.server.logLevel.toLowerCase() === "debug";
-    const rawRequestId = req.headers[requestSettings.proxy.requestIdHeader] || req.headers["x-request-id"] || "-";
+    const rawRequestId = req.headers[requestSettings.proxy.requestIdHeader]
+      || req.headers["x-request-id"] || "-";
     const requestId = redactRecoverableProtectedText(String(rawRequestId), requestProtectedValues);
-    let customTargetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
-    let accountState = requestSettings.routing?.account ?? null;
-    try {
-      accountState = accountStateSource?.current().state ?? accountState;
-    } catch {
-      // A missing live state falls back to the validated Worker configuration snapshot.
-    }
-    const routeDecision = decideUpstreamRoute({
-      mode: requestSettings.routing?.mode ?? "custom_only",
-      method: req.method,
-      requestUrl: req.url,
-      rawHeaders: accessAuthorization.source === "authorization"
-        ? withoutAuthorizationRawHeaders(req.rawHeaders)
-        : req.rawHeaders,
-      accountState,
-      localBlockedUntilMs: routingState.accountBlockedUntilMs,
-      nowMs: routingNow()
-    });
+    let customTargetUrl = currentCustomProvider === null
+      ? null
+      : buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
     let metricRoute = routeDecision.route;
+    let routeReason = routeDecision.reason;
     let targetUrl = routeDecision.target
       ? resolveAccountTarget(new URL(routeDecision.target.href))
       : customTargetUrl;
@@ -1790,9 +1807,15 @@ export function createServer(settings, {
         requestId,
         requestHeaders: forwardedHeaders,
         requestBody: Buffer.alloc(0),
-        providerId: metricRoute === "account" ? "chatgpt-account" : currentCustomProvider.id,
-        providerName: metricRoute === "account" ? "ChatGPT" : currentCustomProvider.name,
+        providerId: metricRoute === "account"
+          ? "chatgpt-account"
+          : currentCustomProvider?.id ?? null,
+        providerName: metricRoute === "account"
+          ? "ChatGPT"
+          : currentCustomProvider?.name ?? null,
         route: metricRoute,
+        routeReason,
+        providerSelectionReason: metricRoute === "custom" ? customSelectionReason : null,
         startedAt,
         captureHandle,
         protectedValues: requestProtectedValues
@@ -1845,10 +1868,11 @@ export function createServer(settings, {
       if (metricSaved) return;
       metricSaved = true;
       if (!Number.isSafeInteger(active.generation) || active.generation <= 0) return;
+      if (metricRoute === "custom" && currentCustomProvider === null) return;
       const observation = {
         generation: active.generation,
         route: metricRoute,
-        providerId: metricRoute === "custom" ? currentCustomProvider.id : null,
+        providerId: metricRoute === "custom" ? currentCustomProvider?.id ?? null : null,
         result,
         model: requestEnded ? finishRequestInspection() : requestModel,
         inputTokens: result === "success" ? (usage?.inputTokens ?? null) : null,
@@ -1870,12 +1894,29 @@ export function createServer(settings, {
     }
 
     function selectCustomCandidatesForModel(model) {
-      const candidates = providerScheduler.ordered(configuredCustomProviders, {
+      const plan = providerScheduler.plan(configuredCustomProviders, {
         model,
         priorityRules: providerPriorityRules
       });
-      if (candidates.length === 0) return false;
-      customCandidates = candidates;
+      if (plan.providers.length === 0) {
+        metricRoute = "custom";
+        currentCustomProvider = null;
+        customCandidates = [];
+        customSelectionReason = null;
+        targetUrl = null;
+        safeTargetUrl = null;
+        if (captureContext) {
+          captureContext.targetUrl = null;
+          captureContext.providerId = null;
+          captureContext.providerName = null;
+          captureContext.route = "custom";
+          captureContext.routeReason = routeReason;
+          captureContext.providerSelectionReason = null;
+        }
+        return false;
+      }
+      customCandidates = plan.providers;
+      customSelectionReason = plan.primaryReason;
       customCandidateIndex = 0;
       return switchToCustomRoute(0);
     }
@@ -1893,6 +1934,7 @@ export function createServer(settings, {
       const candidate = customCandidates[candidateIndex];
       if (!candidate) return false;
       customCandidateIndex = candidateIndex;
+      if (candidateIndex > 0) customSelectionReason = "retry_after_provider_failure";
       currentCustomProvider = candidate;
       requestSettings = settingsForProvider(baseRequestSettings, candidate);
       customTargetUrl = buildTargetUrl(requestSettings.upstream.baseUrl, req.url);
@@ -1922,6 +1964,8 @@ export function createServer(settings, {
         captureContext.providerId = currentCustomProvider.id;
         captureContext.providerName = currentCustomProvider.name;
         captureContext.route = "custom";
+        captureContext.routeReason = routeReason;
+        captureContext.providerSelectionReason = customSelectionReason;
         captureContext.requestHeaders = captureContext.detailsCaptured === true
           ? sanitizeHeadersForCapture(
               forwardedHeaders,
@@ -2191,6 +2235,9 @@ export function createServer(settings, {
         request_id: requestId,
         method: safeMethod,
         path: safeRequestPath,
+        route: metricRoute,
+        route_reason: routeReason,
+        provider_selection_reason: metricRoute === "custom" ? customSelectionReason : null,
         status: responseStarted ? (responseState?.statusCode ?? statusCode) : statusCode,
         duration_ms: Date.now() - startedAt,
         error: JSON.stringify(message)
@@ -2292,6 +2339,9 @@ export function createServer(settings, {
         request_id: requestId,
         method: safeMethod,
         path: safeRequestPath,
+        route: metricRoute,
+        route_reason: routeReason,
+        provider_selection_reason: metricRoute === "custom" ? customSelectionReason : null,
         status: responseState.statusCode,
         stream: inspected.stream,
         duration_ms: Date.now() - startedAt
@@ -2315,6 +2365,10 @@ export function createServer(settings, {
         }
         if (incoming.statusCode === 429 && Buffer.isBuffer(replayBody)) {
           routingState.accountBlockedUntilMs = account429Cooldown(incoming.headers, routingNow()).untilMs;
+          routeReason = observedQuota?.status === "exhausted"
+            ? "account_quota_exhausted"
+            : "account_cooldown";
+          if (captureContext) captureContext.routeReason = routeReason;
           incoming.destroy();
           startCustomFallback();
           return;
@@ -2432,6 +2486,7 @@ export function createServer(settings, {
         upstreamRequest = createdRequest;
       } catch (error) {
         if (metricRoute === "custom"
+          && responsesRequest
           && Buffer.isBuffer(replayBody)
           && customCandidateIndex + 1 < customCandidates.length
           && providerScheduler.markTransportFailure(currentCustomProvider.id, error)) {
@@ -2474,6 +2529,7 @@ export function createServer(settings, {
         const retryable = metricRoute === "custom"
           && providerScheduler.markTransportFailure(currentCustomProvider.id, error);
         if (retryable
+          && responsesRequest
           && !upstreamConnected
           && Buffer.isBuffer(replayBody)
           && customCandidateIndex + 1 < customCandidates.length) {
@@ -2510,8 +2566,9 @@ export function createServer(settings, {
       ));
     const customFailoverReplay = !initialAccountRoute
       && responsesRequest
-      && (customCandidates.length > 1 || modelAwareRouting);
-    if (initialAccountRoute || customFailoverReplay) {
+      && customCandidates.length > 1;
+    const customModelPreflight = !initialAccountRoute && modelAwareRouting;
+    if (initialAccountRoute || customFailoverReplay || customModelPreflight) {
       const accountChunks = [];
       let accountBytes = 0;
       let outgoing = null;
@@ -2580,13 +2637,20 @@ export function createServer(settings, {
         }
         replayBody = Buffer.concat(accountChunks, accountBytes);
         requestedRoutingModel = boundedRequestModel(replayBody, requestEncoding);
-        if (!initialAccountRoute
-          && !selectCustomCandidatesForModel(requestedRoutingModel)) {
+        let customBodyRoute = !initialAccountRoute;
+        if (initialAccountRoute) {
+          const refinedRoute = decideRouteForModel(requestedRoutingModel);
+          if (refinedRoute.route === "custom") {
+            routeReason = refinedRoute.reason;
+            customBodyRoute = true;
+          }
+        }
+        if (customBodyRoute && !selectCustomCandidatesForModel(requestedRoutingModel)) {
           failUnsupportedCustomModel();
           return;
         }
         logRequestBody(replayBody.subarray(0, 4096));
-        const forwardedBody = !initialAccountRoute && modelTransformRequired
+        const forwardedBody = customBodyRoute && modelTransformRequired
           ? prepareCustomModelBody(replayBody)
           : replayBody;
         if (!forwardedBody || terminal) return;
@@ -2696,7 +2760,7 @@ export function createApp(settings = loadConfig(), {
     accessKeyStore?.close();
   });
 
-  const previewRoute = (model) => {
+  const previewRoute = (model, operation = "responses") => {
     const active = settingsSource
       ? settingsSource.current()
       : { generation: 0, settings };
@@ -2714,7 +2778,8 @@ export function createApp(settings = loadConfig(), {
       providerScheduler,
       localBlockedUntilMs: routingState.accountBlockedUntilMs,
       nowMs: routingNow(),
-      model
+      model,
+      operation
     });
   };
 

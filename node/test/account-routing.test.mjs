@@ -3,12 +3,15 @@ import assert from "node:assert/strict";
 
 import {
   ACCOUNT_429_FALLBACK_COOLDOWN_MS,
+  accountSupportsModel,
+  accountSupportsOperation,
   account429Cooldown,
   buildChatGptResponsesTarget,
   decideUpstreamRoute,
   isValidAccountRoutingState,
   parseCodexQuotaHeaders,
-  projectAccountRoutingState
+  projectAccountRoutingState,
+  requestOperation
 } from "../src/routing/account-routing.mjs";
 
 const NOW_MS = Date.parse("2026-08-20T00:00:00.000Z");
@@ -72,6 +75,34 @@ test("routes account-first requests only with an eligible method, path, and uniq
       nowMs: NOW_MS
     }).route, "custom");
   }
+});
+
+test("classifies operations separately from models and exposes account capability limits", () => {
+  assert.equal(requestOperation("/v1/responses?stream=true"), "responses");
+  assert.equal(requestOperation("/chat/completions"), "chat/completions");
+  assert.equal(requestOperation("/v1/images/generations"), "images/generations");
+  assert.equal(requestOperation("/images/edits"), null);
+  assert.equal(accountSupportsOperation("responses"), true);
+  assert.equal(accountSupportsOperation("images/generations"), false);
+  assert.equal(accountSupportsModel("responses", "gpt-5.6"), true);
+  assert.equal(accountSupportsModel("responses", "gpt-image-2"), false);
+
+  const decide = (requestUrl, model) => decideUpstreamRoute({
+    mode: "account_first",
+    method: "POST",
+    requestUrl,
+    rawHeaders: ACCOUNT_HEADERS,
+    accountState: UNKNOWN_STATE,
+    model,
+    nowMs: NOW_MS
+  });
+  assert.equal(decide("/images/generations", "gpt-image-2").reason,
+    "unsupported_operation");
+  assert.equal(decide("/chat/completions", "gpt-5.6").reason,
+    "unsupported_operation");
+  assert.equal(decide("/responses", "gpt-image-2").reason,
+    "unsupported_account_model");
+  assert.equal(decide("/responses", "gpt-5.6").reason, "account_eligible");
 });
 
 test("honors authoritative auth and fresh quota state while allowing stale probes", () => {

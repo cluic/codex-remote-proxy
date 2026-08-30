@@ -94,10 +94,25 @@ export type RoutePreviewReason =
   | "account_eligible"
   | "account_cooldown"
   | "account_quota_exhausted"
+  | "unsupported_operation"
+  | "unsupported_account_model"
   | "custom_only"
   | "not_chatgpt_auth"
   | "provider_pool_unavailable"
   | "custom_model_unavailable";
+
+export type RouteOperation =
+  | "responses"
+  | "chat/completions"
+  | "images/generations";
+
+export type ProviderSelectionReason =
+  | "sole_eligible"
+  | "model_priority"
+  | "weight"
+  | "runtime_order"
+  | "cooldown_fallback"
+  | "retry_after_provider_failure";
 
 export interface RoutePreviewCandidate {
   providerId: string;
@@ -115,15 +130,18 @@ export interface RoutePreview {
   source: "live" | "configured";
   generation: number;
   evaluatedAt: string | null;
+  operation: RouteOperation;
   route: "account" | "custom" | "unavailable";
   reason: RoutePreviewReason;
   account: {
     enabled: boolean;
     selected: boolean;
     reason: Exclude<RoutePreviewReason, "provider_pool_unavailable" | "custom_model_unavailable">;
+    operationSupported: boolean;
     fallbackAvailable: boolean;
   };
   matchedPriorityRule: boolean;
+  customSelectionReason: Exclude<ProviderSelectionReason, "retry_after_provider_failure"> | null;
   customPrimaryProviderId: string | null;
   routingRule: {
     groupId: string;
@@ -306,6 +324,19 @@ export interface ForwardingRecord {
   providerId: string | null;
   providerName: string | null;
   route: "account" | "custom" | "unknown";
+  routeReason:
+    | "account_eligible"
+    | "account_cooldown"
+    | "account_quota_exhausted"
+    | "account_headers_missing"
+    | "not_chatgpt_auth"
+    | "unsupported_method"
+    | "unsupported_path"
+    | "unsupported_operation"
+    | "unsupported_account_model"
+    | "custom_only"
+    | null;
+  providerSelectionReason: ProviderSelectionReason | null;
   requestedModel: string | null;
   forwardedModel: string | null;
   detailsAvailable: boolean;

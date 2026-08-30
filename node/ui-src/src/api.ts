@@ -23,6 +23,7 @@ import type {
   RoutingRuleGroup,
   RoutingRuleGroupInput,
   RoutePreview,
+  RouteOperation,
   SafeErrorDetails,
   Settings,
   StatusResponse,
@@ -244,8 +245,12 @@ export class CrpApi {
     return payload.routingRuleGroups;
   }
 
-  async getRoutePreview(model: string, signal?: AbortSignal): Promise<RoutePreview> {
-    const parameters = new URLSearchParams({ model });
+  async getRoutePreview(
+    model: string,
+    operation: RouteOperation,
+    signal?: AbortSignal
+  ): Promise<RoutePreview> {
+    const parameters = new URLSearchParams({ model, operation });
     const payload = await this.get<{ routePreview: RoutePreview }>(
       `/api/v1/routing-preview?${parameters.toString()}`,
       signal

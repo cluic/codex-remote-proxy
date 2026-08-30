@@ -1,4 +1,9 @@
-import { decideUpstreamRoute } from "./account-routing.mjs";
+import {
+  accountSupportsOperation,
+  decideUpstreamRoute,
+  isRouteOperation,
+  operationRequestUrl
+} from "./account-routing.mjs";
 
 const MAX_MODEL_CODE_POINTS = 256;
 const MAX_MODEL_BYTES = 512;
@@ -13,6 +18,8 @@ const REASONS = new Set([
   "account_eligible",
   "account_cooldown",
   "account_quota_exhausted",
+  "unsupported_operation",
+  "unsupported_account_model",
   "custom_only",
   "not_chatgpt_auth",
   "provider_pool_unavailable",
@@ -22,12 +29,16 @@ const ACCOUNT_REASONS = new Set([
   "account_eligible",
   "account_cooldown",
   "account_quota_exhausted",
+  "unsupported_operation",
+  "unsupported_account_model",
   "custom_only",
   "not_chatgpt_auth"
 ]);
 const CUSTOM_REASONS = new Set([
   "account_cooldown",
   "account_quota_exhausted",
+  "unsupported_operation",
+  "unsupported_account_model",
   "custom_only",
   "not_chatgpt_auth"
 ]);
@@ -35,20 +46,35 @@ const UNAVAILABLE_REASONS = new Set([
   "provider_pool_unavailable",
   "custom_model_unavailable"
 ]);
+const PROVIDER_SELECTION_REASONS = new Set([
+  "sole_eligible",
+  "model_priority",
+  "weight",
+  "runtime_order",
+  "cooldown_fallback"
+]);
 const TRANSFORMATIONS = new Set(["passthrough", "mapping", "override"]);
 const AVAILABILITIES = new Set(["ready", "cooling", "disabled", "not_listed"]);
 const PREVIEW_FIELDS = new Set([
   "source",
   "generation",
   "evaluatedAt",
+  "operation",
   "route",
   "reason",
   "account",
   "matchedPriorityRule",
+  "customSelectionReason",
   "customPrimaryProviderId",
   "candidates"
 ]);
-const ACCOUNT_FIELDS = new Set(["enabled", "selected", "reason", "fallbackAvailable"]);
+const ACCOUNT_FIELDS = new Set([
+  "enabled",
+  "selected",
+  "reason",
+  "operationSupported",
+  "fallbackAvailable"
+]);
 const CANDIDATE_FIELDS = new Set([
   "providerId",
   "providerName",
@@ -123,7 +149,8 @@ export function buildRoutePreview({
   providerScheduler,
   localBlockedUntilMs = null,
   nowMs = Date.now(),
-  model
+  model,
+  operation = "responses"
 }) {
   if (!SOURCES.has(source)
     || !Number.isSafeInteger(generation)
@@ -131,7 +158,8 @@ export function buildRoutePreview({
     || !isPlainObject(settings)
     || !providerScheduler
     || typeof providerScheduler.explain !== "function"
-    || !isModel(model)) {
+    || !isModel(model)
+    || !isRouteOperation(operation)) {
     throw new TypeError("Route preview input is invalid.");
   }
   const evaluatedMs = Number.isFinite(nowMs)
@@ -146,12 +174,13 @@ export function buildRoutePreview({
   const routeDecision = decideUpstreamRoute({
     mode: settings.routing?.mode ?? "custom_only",
     method: "POST",
-    requestUrl: "/responses",
+    requestUrl: operationRequestUrl(operation),
     rawHeaders: [
       "authorization", "Bearer route-preview",
       "chatgpt-account-id", "route-preview"
     ],
     accountState,
+    model,
     localBlockedUntilMs,
     nowMs: evaluatedMs
   });
@@ -181,15 +210,18 @@ export function buildRoutePreview({
     source,
     generation,
     evaluatedAt: new Date(evaluatedMs).toISOString(),
+    operation,
     route,
     reason,
     account: {
       enabled: settings.routing?.mode === "account_first",
       selected: route === "account",
       reason: ACCOUNT_REASONS.has(routeDecision.reason) ? routeDecision.reason : "custom_only",
+      operationSupported: accountSupportsOperation(operation),
       fallbackAvailable: customPrimary !== null
     },
     matchedPriorityRule: explanation.matchedPriorityRule,
+    customSelectionReason: customPrimary === null ? null : explanation.primaryReason,
     customPrimaryProviderId: customPrimary?.providerId ?? null,
     candidates
   };
@@ -206,6 +238,7 @@ export function isValidRoutePreview(value) {
     || (value.source === "live" && value.generation === 0)
     || (value.source === "configured" && value.generation !== 0)
     || safeIso(value.evaluatedAt) === null
+    || !isRouteOperation(value.operation)
     || !ROUTES.has(value.route)
     || !REASONS.has(value.reason)
     || !isPlainObject(value.account)
@@ -213,8 +246,11 @@ export function isValidRoutePreview(value) {
     || typeof value.account.enabled !== "boolean"
     || typeof value.account.selected !== "boolean"
     || !ACCOUNT_REASONS.has(value.account.reason)
+    || typeof value.account.operationSupported !== "boolean"
     || typeof value.account.fallbackAvailable !== "boolean"
     || typeof value.matchedPriorityRule !== "boolean"
+    || (value.customSelectionReason !== null
+      && !PROVIDER_SELECTION_REASONS.has(value.customSelectionReason))
     || !Array.isArray(value.candidates)
     || value.candidates.length > MAX_CANDIDATES) {
     return false;
@@ -264,6 +300,9 @@ export function isValidRoutePreview(value) {
     || (value.route === "unavailable" && customPrimary !== null)
     || value.account.enabled !== (value.account.reason !== "custom_only")
     || value.account.selected !== (value.route === "account")
+    || value.account.operationSupported !== accountSupportsOperation(value.operation)
+    || value.account.selected && !value.account.operationSupported
+    || (customPrimary === null) !== (value.customSelectionReason === null)
     || value.account.fallbackAvailable !== (customPrimary !== null)) {
     return false;
   }

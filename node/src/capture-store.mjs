@@ -13,6 +13,26 @@ const REDACTED_VALUE = "[REDACTED]";
 const MAX_CAPTURE_TOKENS = 100_000_000;
 const MAX_CAPTURE_MODEL_CODE_POINTS = 256;
 const MODEL_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
+const ROUTE_REASONS = new Set([
+  "account_eligible",
+  "account_cooldown",
+  "account_quota_exhausted",
+  "account_headers_missing",
+  "not_chatgpt_auth",
+  "unsupported_method",
+  "unsupported_path",
+  "unsupported_operation",
+  "unsupported_account_model",
+  "custom_only"
+]);
+const PROVIDER_SELECTION_REASONS = new Set([
+  "sole_eligible",
+  "model_priority",
+  "weight",
+  "runtime_order",
+  "cooldown_fallback",
+  "retry_after_provider_failure"
+]);
 const USAGE_OBSERVATION_STATUSES = new Set([
   "observed",
   "upstream_unreported",
@@ -223,6 +243,8 @@ function createInsertStatement(db) {
       provider_id,
       provider_name,
       route,
+      route_reason,
+      provider_selection_reason,
       requested_model,
       forwarded_model,
       request_headers_json,
@@ -256,6 +278,8 @@ function createInsertStatement(db) {
       @provider_id,
       @provider_name,
       @route,
+      @route_reason,
+      @provider_selection_reason,
       @requested_model,
       @forwarded_model,
       @request_headers_json,
@@ -298,6 +322,8 @@ function initializeDatabase(db) {
       provider_id TEXT,
       provider_name TEXT,
       route TEXT,
+      route_reason TEXT,
+      provider_selection_reason TEXT,
       requested_model TEXT,
       forwarded_model TEXT,
       request_headers_json TEXT NOT NULL,
@@ -327,6 +353,8 @@ function initializeDatabase(db) {
     ["provider_id", "TEXT"],
     ["provider_name", "TEXT"],
     ["route", "TEXT"],
+    ["route_reason", "TEXT"],
+    ["provider_selection_reason", "TEXT"],
     ["requested_model", "TEXT"],
     ["forwarded_model", "TEXT"],
     ["input_tokens", "INTEGER"],
@@ -346,7 +374,7 @@ function initializeDatabase(db) {
       ON http_transactions (thread_id);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_response_status
       ON http_transactions (response_status);
-    PRAGMA user_version = 5;
+    PRAGMA user_version = 6;
   `);
 }
 
@@ -654,6 +682,10 @@ export class CaptureManager {
         provider_id: record.providerId ?? null,
         provider_name: record.providerName ?? null,
         route: record.route ?? null,
+        route_reason: ROUTE_REASONS.has(record.routeReason) ? record.routeReason : null,
+        provider_selection_reason: PROVIDER_SELECTION_REASONS.has(record.providerSelectionReason)
+          ? record.providerSelectionReason
+          : null,
         requested_model: normalizeCapturedModel(record.requestedModel),
         forwarded_model: normalizeCapturedModel(record.forwardedModel),
         request_headers_json: JSON.stringify(redactHeaders(requestHeaders)),

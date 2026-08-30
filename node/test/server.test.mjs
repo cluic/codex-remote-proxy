@@ -640,6 +640,259 @@ test("account-first sends eligible Responses traffic to the fixed Codex route", 
   assert.equal(metrics[0].model, "client-account-model");
 });
 
+test("account-first sends direct image operations and models through model-aware custom routing", async (t) => {
+  let accountRequests = 0;
+  const account = http.createServer((req, res) => {
+    accountRequests += 1;
+    req.resume();
+    res.statusCode = 500;
+    res.end();
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  let copyRequests = 0;
+  const copy = http.createServer((req, res) => {
+    copyRequests += 1;
+    req.resume();
+    res.statusCode = 500;
+    res.end();
+  });
+  const copyPort = await listen(copy);
+  t.after(() => closeServer(copy));
+  const customObserved = [];
+  const custom = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      customObserved.push({
+        path: req.url,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      });
+      res.setHeader("content-type", "application/json");
+      res.end(req.url.includes("/images/generations")
+        ? JSON.stringify({ created: 1, data: [{ b64_json: "image" }] })
+        : JSON.stringify(completedResponse()));
+    });
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+
+  const providers = [
+    providerCandidate({
+      id: "cl-copy",
+      name: "CL Copy",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${copyPort}/v1`,
+      apiKey: "copy-secret",
+      supportedModels: ["gpt-image-2"]
+    }),
+    providerCandidate({
+      id: "cl",
+      name: "CL",
+      weight: 100,
+      baseUrl: `http://127.0.0.1:${customPort}/v1`,
+      apiKey: "custom-secret",
+      supportedModels: ["vendor/image-2"],
+      modelMappings: [{ sourceModel: "gpt-image-2", targetModel: "vendor/image-2" }]
+    })
+  ];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    providerPriorityRules: [{ model: "gpt-image-2", providerIds: ["cl", "cl-copy"] }],
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 20, settings });
+  const captureManager = createMemoryCaptureManager();
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const headers = {
+    "content-type": "application/json",
+    authorization: "Bearer account-token-sentinel",
+    "chatgpt-account-id": "account-id-sentinel"
+  };
+
+  const imageResponse = await fetch(
+    `http://127.0.0.1:${proxyPort}/images/generations`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "gpt-image-2", prompt: "draw" })
+    }
+  );
+  assert.equal(imageResponse.status, 200);
+  await imageResponse.arrayBuffer();
+  const responseModel = await fetch(`http://127.0.0.1:${proxyPort}/responses`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: "gpt-image-2", input: "draw" })
+  });
+  assert.equal(responseModel.status, 200);
+  await responseModel.arrayBuffer();
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(accountRequests, 0);
+  assert.equal(copyRequests, 0);
+  assert.deepEqual(customObserved, [
+    {
+      path: "/v1/images/generations",
+      body: { model: "vendor/image-2", prompt: "draw" }
+    },
+    {
+      path: "/v1/responses",
+      body: { model: "vendor/image-2", input: "draw" }
+    }
+  ]);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    providerId: record.providerId,
+    providerSelectionReason: record.providerSelectionReason,
+    requestedModel: record.requestedModel,
+    forwardedModel: record.forwardedModel
+  })), [
+    {
+      route: "custom",
+      routeReason: "unsupported_operation",
+      providerId: "cl",
+      providerSelectionReason: "model_priority",
+      requestedModel: "gpt-image-2",
+      forwardedModel: "vendor/image-2"
+    },
+    {
+      route: "custom",
+      routeReason: "unsupported_account_model",
+      providerId: "cl",
+      providerSelectionReason: "model_priority",
+      requestedModel: "gpt-image-2",
+      forwardedModel: "vendor/image-2"
+    }
+  ]);
+});
+
+test("model preflight records no provider when every custom candidate is ineligible", async (t) => {
+  let upstreamRequests = 0;
+  const upstream = http.createServer((req, res) => {
+    upstreamRequests += 1;
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => closeServer(upstream));
+  let accountRequests = 0;
+  const account = http.createServer((req, res) => {
+    accountRequests += 1;
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  const providers = [providerCandidate({
+    id: "text-only",
+    name: "Text only",
+    weight: 100,
+    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    apiKey: "text-only-secret",
+    supportedModels: ["gpt-5.6"]
+  })];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    providerPriorityRules: [{ model: "gpt-image-2", providerIds: ["text-only"] }],
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 22, settings });
+  const captureManager = createMemoryCaptureManager();
+  const metrics = [];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      return local;
+    },
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const headers = {
+    "content-type": "application/json",
+    authorization: "Bearer account-token-sentinel",
+    "chatgpt-account-id": "account-id-sentinel"
+  };
+  for (const requestPath of ["/images/generations", "/responses"]) {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}${requestPath}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "gpt-image-2", prompt: "draw" })
+    });
+    assert.equal(response.status, 503);
+    await response.arrayBuffer();
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(upstreamRequests, 0);
+  assert.equal(accountRequests, 0);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    providerId: record.providerId,
+    providerName: record.providerName,
+    providerSelectionReason: record.providerSelectionReason,
+    targetUrl: record.targetUrl
+  })), [
+    {
+      route: "custom",
+      routeReason: "unsupported_operation",
+      providerId: null,
+      providerName: null,
+      providerSelectionReason: null,
+      targetUrl: null
+    },
+    {
+      route: "custom",
+      routeReason: "unsupported_account_model",
+      providerId: null,
+      providerName: null,
+      providerSelectionReason: null,
+      targetUrl: null
+    }
+  ]);
+  assert.deepEqual(metrics, []);
+});
+
 test("account 429 replays once to custom API, rewrites its model, and activates cooldown", async (t) => {
   let accountRequests = 0;
   const accountBodies = [];
@@ -698,9 +951,10 @@ test("account 429 replays once to custom API, rewrites its model, and activates 
   const source = new RuntimeSettingsSource();
   source.apply({ generation: 2, settings });
   const metrics = [];
+  const captureManager = createMemoryCaptureManager();
   const proxy = createServer(settings, {
     settingsSource: source,
-    captureManager: createInactiveCaptureManager(),
+    captureManager,
     logFn() {},
     routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
     resolveAccountTarget(target) {
@@ -753,6 +1007,22 @@ test("account 429 replays once to custom API, rewrites its model, and activates 
   assert.deepEqual(metrics.map(({ route, model }) => ({ route, model })), [
     { route: "custom", model: "custom-provider-model" },
     { route: "custom", model: "custom-provider-model" }
+  ]);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    providerSelectionReason: record.providerSelectionReason
+  })), [
+    {
+      route: "custom",
+      routeReason: "account_quota_exhausted",
+      providerSelectionReason: "sole_eligible"
+    },
+    {
+      route: "custom",
+      routeReason: "account_cooldown",
+      providerSelectionReason: "sole_eligible"
+    }
   ]);
 });
 
@@ -1450,7 +1720,12 @@ test("custom routing does not replay non-Responses requests or non-retryable rej
     providerCandidate({ id: "primary", name: "Primary", weight: 200, baseUrl: `http://127.0.0.1:${primaryPort}`, apiKey: "a" }),
     providerCandidate({ id: "fallback", name: "Fallback", weight: 100, baseUrl: `http://127.0.0.1:${fallbackPort}`, apiKey: "b" })
   ];
-  const settings = makeSettings({ baseUrl: providers[0].upstream.baseUrl, providers, captureEnabled: false });
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    providerPriorityRules: [{ model: "chat-model", providerIds: ["primary", "fallback"] }],
+    captureEnabled: false
+  });
   const proxy = createServer(settings, {
     captureManager: createInactiveCaptureManager(),
     logFn() {}
@@ -1461,7 +1736,7 @@ test("custom routing does not replay non-Responses requests or non-retryable rej
   const rejected = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: "{}"
+    body: JSON.stringify({ model: "chat-model", messages: [] })
   });
   assert.equal(rejected.status, 401);
   await rejected.arrayBuffer();
@@ -1573,6 +1848,8 @@ test("server writes proxied request and response to sqlite", async () => {
   assert.equal(rows[0].provider_id, "standalone");
   assert.equal(rows[0].provider_name, "Standalone");
   assert.equal(rows[0].route, "custom");
+  assert.equal(rows[0].route_reason, "custom_only");
+  assert.equal(rows[0].provider_selection_reason, "sole_eligible");
   assert.equal(rows[0].requested_model, null);
   assert.equal(rows[0].forwarded_model, null);
   assert.match(rows[0].request_headers_json, /REDACTED/);

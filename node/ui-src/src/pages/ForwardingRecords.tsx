@@ -66,6 +66,30 @@ function outcomeTone(
   if (outcome === "aborted") return "neutral";
   return "danger";
 }
+function routeReasonLabel(record: ForwardingRecord, t: Translator): string {
+  if (record.routeReason === "account_eligible") return t("forwarding.reason.accountEligible");
+  if (record.routeReason === "account_cooldown") return t("forwarding.reason.accountCooldown");
+  if (record.routeReason === "account_quota_exhausted") return t("forwarding.reason.accountQuotaExhausted");
+  if (record.routeReason === "account_headers_missing") return t("forwarding.reason.accountHeadersMissing");
+  if (record.routeReason === "not_chatgpt_auth") return t("forwarding.reason.notChatgptAuth");
+  if (record.routeReason === "unsupported_operation") return t("forwarding.reason.unsupportedOperation");
+  if (record.routeReason === "unsupported_account_model") return t("forwarding.reason.unsupportedAccountModel");
+  if (record.routeReason === "unsupported_method") return t("forwarding.reason.unsupportedMethod");
+  if (record.routeReason === "unsupported_path") return t("forwarding.reason.unsupportedPath");
+  if (record.routeReason === "custom_only") return t("forwarding.reason.customOnly");
+  return t("forwarding.reason.legacy");
+}
+function selectionReasonLabel(record: ForwardingRecord, t: Translator): string | null {
+  if (record.providerSelectionReason === "model_priority") return t("forwarding.selection.modelPriority");
+  if (record.providerSelectionReason === "weight") return t("forwarding.selection.weight");
+  if (record.providerSelectionReason === "runtime_order") return t("forwarding.selection.runtimeOrder");
+  if (record.providerSelectionReason === "cooldown_fallback") return t("forwarding.selection.cooldownFallback");
+  if (record.providerSelectionReason === "retry_after_provider_failure") {
+    return t("forwarding.selection.retryAfterFailure");
+  }
+  if (record.providerSelectionReason === "sole_eligible") return t("forwarding.selection.soleEligible");
+  return null;
+}
 function byteLabel(locale: Locale, bytes: number): string {
   if (bytes < 1_024) return `${formatNumber(locale, bytes)} B`;
   if (bytes < 1_048_576)
@@ -297,6 +321,7 @@ function RecordDetails({
   onClose: () => void;
 }) {
   const models = modelValues(record);
+  const providerSelection = selectionReasonLabel(record, t);
   const available = detailError
     ? false
     : detail?.detailsAvailable ?? record.detailsAvailable;
@@ -348,7 +373,23 @@ function RecordDetails({
         </span>
         <span>
           <b>{t("forwarding.provider")}</b>
-          {record.providerName ?? t("common.unknown")}
+          <span className="record-provider-detail">
+            {record.providerName ?? t("common.unknown")}
+            {providerSelection ? (
+              <small>{providerSelection}</small>
+            ) : null}
+          </span>
+        </span>
+        <span>
+          <b>{t("forwarding.routeDecision")}</b>
+          <span className="record-provider-detail">
+            {t(record.route === "account"
+              ? "forwarding.route.account"
+              : record.route === "custom"
+                ? "forwarding.route.custom"
+                : "forwarding.route.unknown")}
+            <small>{routeReasonLabel(record, t)}</small>
+          </span>
         </span>
         <span>
           <b>{t("forwarding.duration")}</b>
@@ -758,6 +799,7 @@ export function ForwardingRecordsPage({
                 <tr>
                   <th>{t("forwarding.time")}</th>
                   <th>{t("forwarding.request")}</th>
+                  <th>{t("forwarding.routeDecision")}</th>
                   <th>{t("forwarding.result")}</th>
                   <th>{t("forwarding.model")}</th>
                   <th>{t("forwarding.sessionId")}</th>
@@ -769,6 +811,7 @@ export function ForwardingRecordsPage({
               <tbody>
                 {records.map((record) => {
                   const models = modelValues(record);
+                  const providerSelection = selectionReasonLabel(record, t);
                   const startedAt = recordTimeParts(locale, record.startedAt);
                   return (
                     <tr
@@ -799,6 +842,22 @@ export function ForwardingRecordsPage({
                         <span className="record-open">
                           <strong>{record.method ?? "-"}</strong>
                           <code>{displayPath(record)}</code>
+                        </span>
+                      </td>
+                      <td>
+                        <span className="record-route-decision">
+                          <span className="record-provider">
+                            <i
+                              className={cx("route-dot", `route-dot-${record.route}`)}
+                              aria-hidden="true"
+                            />
+                            {t(record.route === "account"
+                              ? "forwarding.route.account"
+                              : record.route === "custom"
+                                ? "forwarding.route.custom"
+                                : "forwarding.route.unknown")}
+                          </span>
+                          <small>{routeReasonLabel(record, t)}</small>
                         </span>
                       </td>
                       <td>
@@ -840,15 +899,13 @@ export function ForwardingRecordsPage({
                         </code>
                       </td>
                       <td>
-                        <span className="record-provider">
-                          <i
-                            className={cx(
-                              "route-dot",
-                              `route-dot-${record.route}`
-                            )}
-                            aria-hidden="true"
-                          />
-                          {record.providerName ?? t("common.unknown")}
+                        <span className="record-provider-cell">
+                          <span className="record-provider">
+                            {record.providerName ?? t("common.unknown")}
+                          </span>
+                          {providerSelection ? (
+                            <small>{providerSelection}</small>
+                          ) : null}
                         </span>
                       </td>
                       <td>

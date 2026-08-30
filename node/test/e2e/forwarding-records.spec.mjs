@@ -23,14 +23,16 @@ test("scans, filters, loads details on demand, and toggles forwarding capture", 
   await expect(page.getByRole("heading", { name: "Forwarding Records", level: 1 })).toBeVisible();
   await expect(page.locator(".forwarding-summary")).toContainText("4");
   await expect(page.locator(".records-table tbody tr")).toHaveCount(4);
-  await expect(page.locator(".records-table thead th")).toHaveCount(8);
+  await expect(page.locator(".records-table thead th")).toHaveCount(9);
   expect(await page.locator(".records-table thead th").allTextContents()).toEqual([
-    "Time", "Request", "Result", "Model", "Session ID", "Provider", "Tokens", "Duration"
+    "Time", "Request", "Route decision", "Result", "Model", "Session ID", "Provider", "Tokens", "Duration"
   ]);
   await expect(page.locator(".records-table")).toContainText("ChatGPT");
   await expect(page.locator(".records-table")).toContainText("Fallback API");
   await expect(page.locator(".records-table")).toContainText("64");
   await expect(page.locator(".records-table")).toContainText("vendor/gpt-5.6-sol");
+  await expect(page.locator(".records-table")).toContainText("Account eligible");
+  await expect(page.locator(".records-table")).toContainText("Exact model priority");
   await expect(page.locator(".records-table")).not.toContainText("127.0.0.1:15100");
   await expect(page.locator(".records-table")).not.toContainText("/models");
 
@@ -46,6 +48,8 @@ test("scans, filters, loads details on demand, and toggles forwarding capture", 
   const detail = page.getByTestId("forwarding-record-details");
   await expect(detail).toBeVisible();
   await expect(detail).toContainText("http://127.0.0.1:15100");
+  await expect(detail).toContainText("Account cooldown");
+  await expect(detail).toContainText("Exact model priority");
   await expect(page.getByTestId("forwarding-request-data")).toBeVisible();
   await expect(page.getByTestId("forwarding-response-data")).toBeVisible();
   await expect(page.getByTestId("forwarding-request-data")).toContainText("POST");

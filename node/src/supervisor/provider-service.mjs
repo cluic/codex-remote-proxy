@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
-import { isValidAccountRoutingState } from "../routing/account-routing.mjs";
+import {
+  isRouteOperation,
+  isValidAccountRoutingState
+} from "../routing/account-routing.mjs";
 import { ProviderScheduler } from "../routing/provider-scheduler.mjs";
 import {
   buildRoutePreview,
@@ -287,8 +290,8 @@ function serviceError(code, { status = 500, cause, details = {} } = {}) {
       "Stop CRP and repair the residual provider-registry state before restarting."
     ],
     ROUTE_PREVIEW_INPUT_INVALID: [
-      "The route preview model is invalid.",
-      "Enter one bounded model name and try again."
+      "The route preview request is invalid.",
+      "Choose one supported operation and enter one bounded model name."
     ],
     ROUTE_PREVIEW_UNAVAILABLE: [
       "The live route preview is unavailable.",
@@ -422,8 +425,8 @@ export class ProviderService {
     }));
   }
 
-  async previewRoute(model) {
-    if (!isRoutePreviewModel(model)) {
+  async previewRoute(model, operation = "responses") {
+    if (!isRoutePreviewModel(model) || !isRouteOperation(operation)) {
       throw serviceError("ROUTE_PREVIEW_INPUT_INVALID", { status: 400 });
     }
     return await this.#runExclusive(async () => {
@@ -431,14 +434,14 @@ export class ProviderService {
       let preview = null;
       if (workerState?.phase === "running" && typeof this.workerManager.previewRoute === "function") {
         try {
-          preview = await this.workerManager.previewRoute(model);
+          preview = await this.workerManager.previewRoute(model, operation);
         } catch (error) {
           if (!["WORKER_NOT_RUNNING", "WORKER_IPC_SEND_FAILED", "WORKER_ACK_TIMEOUT"].includes(error?.code)) {
             throw serviceError("ROUTE_PREVIEW_UNAVAILABLE", { status: 503, cause: error });
           }
         }
       }
-      preview ??= await this.#buildConfiguredRoutePreview(model);
+      preview ??= await this.#buildConfiguredRoutePreview(model, operation);
       return this.#decorateRoutePreview(preview, model);
     });
   }
@@ -2056,7 +2059,7 @@ export class ProviderService {
     return toPublicProvider(profile, configured);
   }
 
-  async #buildConfiguredRoutePreview(model) {
+  async #buildConfiguredRoutePreview(model, operation) {
     const document = this.registry.getDocument();
     const activeProviderId = document.activeProviderId;
     const eligible = document.providers
@@ -2125,7 +2128,8 @@ export class ProviderService {
         now: () => Number.isFinite(nowMs) ? nowMs : Date.now()
       }),
       nowMs: Number.isFinite(nowMs) ? nowMs : Date.now(),
-      model
+      model,
+      operation
     });
   }
 

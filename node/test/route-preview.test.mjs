@@ -65,15 +65,18 @@ test("builds a live account-first preview with an exact custom fallback chain", 
     source: "live",
     generation: 12,
     evaluatedAt: "2030-01-01T00:00:00.000Z",
+    operation: "responses",
     route: "account",
     reason: "account_eligible",
     account: {
       enabled: true,
       selected: true,
       reason: "account_eligible",
+      operationSupported: true,
       fallbackAvailable: true
     },
     matchedPriorityRule: true,
+    customSelectionReason: "sole_eligible",
     customPrimaryProviderId: "provider-a",
     candidates: [
       {
@@ -98,6 +101,47 @@ test("builds a live account-first preview with an exact custom fallback chain", 
       }
     ]
   });
+});
+
+test("uses the real operation and model capability gates for image previews", () => {
+  const scheduler = new ProviderScheduler({ now: () => NOW });
+  const imageEndpoint = buildRoutePreview({
+    source: "live",
+    generation: 2,
+    settings: settings(),
+    accountState,
+    providerScheduler: scheduler,
+    nowMs: NOW,
+    model: "model-a",
+    operation: "images/generations"
+  });
+  assert.equal(imageEndpoint.operation, "images/generations");
+  assert.equal(imageEndpoint.route, "custom");
+  assert.equal(imageEndpoint.reason, "unsupported_operation");
+  assert.equal(imageEndpoint.account.reason, "unsupported_operation");
+  assert.equal(imageEndpoint.account.operationSupported, false);
+  assert.equal(imageEndpoint.customPrimaryProviderId, "provider-b");
+
+  const directImageModel = buildRoutePreview({
+    source: "live",
+    generation: 2,
+    settings: {
+      ...settings(),
+      providers: settings().providers.map((provider) => ({
+        ...provider,
+        supportedModels: null
+      }))
+    },
+    accountState,
+    providerScheduler: scheduler,
+    nowMs: NOW,
+    model: "gpt-image-2",
+    operation: "responses"
+  });
+  assert.equal(directImageModel.route, "custom");
+  assert.equal(directImageModel.reason, "unsupported_account_model");
+  assert.equal(directImageModel.account.operationSupported, true);
+  assert.equal(isValidRoutePreview(directImageModel), true);
 });
 
 test("reports configured custom routing and an unavailable exact model", () => {
@@ -168,6 +212,7 @@ test("route preview validation rejects unbounded models and malformed public out
   });
   assert.equal(isValidRoutePreview({ ...preview, unexpected: true }), false);
   assert.equal(isValidRoutePreview({ ...preview, generation: 1 }), false);
+  assert.equal(isValidRoutePreview({ ...preview, operation: "images/edits" }), false);
   assert.equal(isValidRoutePreview({ ...preview, reason: "account_eligible" }), false);
   assert.equal(isValidRoutePreview({
     ...preview,

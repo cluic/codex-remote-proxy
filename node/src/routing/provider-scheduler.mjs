@@ -115,13 +115,29 @@ export class ProviderScheduler {
     const plan = this.#plan(providers, { model, priorityRules });
     return {
       matchedPriorityRule: plan.matchedPriorityRule,
+      primaryReason: plan.primaryReason,
+      candidates: plan.candidates
+    };
+  }
+
+  plan(providers, { model = null, priorityRules = [] } = {}) {
+    const plan = this.#plan(providers, { model, priorityRules });
+    return {
+      providers: plan.orderedProviders,
+      matchedPriorityRule: plan.matchedPriorityRule,
+      primaryReason: plan.primaryReason,
       candidates: plan.candidates
     };
   }
 
   #plan(providers, { model = null, priorityRules = [] } = {}) {
     if (!Array.isArray(providers) || providers.length === 0) {
-      return { orderedProviders: [], matchedPriorityRule: false, candidates: [] };
+      return {
+        orderedProviders: [],
+        matchedPriorityRule: false,
+        primaryReason: null,
+        candidates: []
+      };
     }
     const nowMs = safeNow(this.#now);
     const ranks = priorityRanks(priorityRules, model);
@@ -151,6 +167,24 @@ export class ProviderScheduler {
       }
       return left.index - right.index;
     });
+    let primaryReason = null;
+    if (ordered.length > 0) {
+      if (healthy.length === 0) {
+        primaryReason = "cooldown_fallback";
+      } else if (ordered.length === 1) {
+        primaryReason = "sole_eligible";
+      } else if (Number.isFinite(ordered[0].priority)
+        && ordered.slice(1).some((candidate) => candidate.priority !== ordered[0].priority)) {
+        primaryReason = "model_priority";
+      } else if (ordered.slice(1).every((candidate) => (
+        candidate.priority !== ordered[0].priority
+        || candidate.provider.weight < ordered[0].provider.weight
+      ))) {
+        primaryReason = "weight";
+      } else {
+        primaryReason = "runtime_order";
+      }
+    }
     const positions = new Map(ordered.map((candidate, index) => [candidate.provider.id, index + 1]));
     const summaries = indexed.map((candidate) => ({
       providerId: candidate.provider.id,
@@ -172,6 +206,7 @@ export class ProviderScheduler {
       matchedPriorityRule: typeof model === "string"
         && Array.isArray(priorityRules)
         && priorityRules.some((rule) => rule?.model === model),
+      primaryReason,
       candidates: summaries
     };
   }

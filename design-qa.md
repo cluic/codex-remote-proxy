@@ -156,12 +156,25 @@ final result: passed
 - Verified on 2026-08-28; this section supersedes the earlier metadata-only Forwarding Model Attribution surface.
 - Desktop evidence: `output/playwright/task11/forwarding-records-scans-f-b6c2f--toggles-forwarding-capture-chromium/forwarding-ledger-desktop.png`
 - Chinese phone evidence: `output/playwright/task11/forwarding-records-keeps-t-200ce--usable-in-Chinese-at-390px-chromium/forwarding-ledger-phone-zh.png`
-- The ledger presents exactly eight scan columns in order: time, request, result, model, session ID, Provider, three Token values, and duration. All four default-visible outcomes fit without desktop horizontal overflow; the 390 px table uses an intentional contained scroller while the page itself stays within the viewport.
+- The ledger presents exactly nine scan columns in order: time, request, route decision, result, model, session ID, Provider, three Token values, and duration. All four default-visible outcomes fit without desktop horizontal overflow; the 390 px table uses an intentional contained scroller while the page itself stays within the viewport.
 - Metadata Capture and detailed request Capture are separate controls. Details default off, are disabled while metadata Capture is off, and do not silently reactivate when metadata Capture is re-enabled.
 - Row click, Enter, and Space issue the dedicated detail GET only after selection. Switching rows clears the previous payload immediately; loading renders no stale panes, unavailable rows show an explicit not-captured state, and failures render an isolated retryable error state.
 - Request and response details use separate responsive panes with complete endpoint metadata, encoding/byte/truncation labels, pure `pre` body rendering, safe JSON formatting, and native collapsed `details` elements for headers. Sensitive headers remain redacted, and the copy accurately distinguishes explicitly captured privacy-screened details from list metadata.
 - Backend verification covers per-request capture-mode snapshots, fail-closed protected-value handling, legacy schema behavior, cached-input Token projection, nested `request.body`/`response.body` contracts, authentication, `no-store`, bounded fields, 404, and strict methods/queries.
 - Final verification: UI typecheck, source lint, generated-build verification, runtime dependency audit, 615/615 unit tests, 64/64 integration tests, and 59/59 Chromium E2E scenarios passed. The full `npm test` reached the fixed-port core-chain gate, which exited with `EADDRINUSE` because the user's CRP service owns `127.0.0.1:15100` and `127.0.0.1:15101`; that service remained untouched.
+
+## Operation-aware Account Routing QA
+
+- Verified: 2026-08-30.
+- The live route preview now requires an explicit UI operation selection while preserving `responses` as the API default. `responses`, `chat/completions`, and `images/generations` travel through the same core route-decision function as proxy traffic.
+- Official OpenAI documentation establishes direct `gpt-image-2` generation as an API-key-authenticated Image API operation; CRP therefore does not invent a ChatGPT subscription-account image endpoint. `images/generations`, Chat Completions, and direct `gpt-image-*` models display an explicit custom-pool explanation.
+- The image preview at 1440 × 900 keeps the operation and model controls on one line, presents the unsupported-account capability as a high-contrast warning, and shows the exact model rule, mapping, selected provider, and scheduler order without overlap.
+- Forwarding Records use the route-decision column to show route reason and Provider selection reason beneath the primary labels. The nine-column desktop ledger remains readable, while 390 px keeps an intentional contained table scroller with no document overflow.
+- Retained visual evidence:
+  - `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-image-custom-1440x900.png`
+  - `output/playwright/task11/forwarding-records-scans-f-b6c2f--toggles-forwarding-capture-chromium/forwarding-ledger-desktop.png`
+  - `output/playwright/task11/forwarding-records-keeps-t-200ce--usable-in-Chinese-at-390px-chromium/forwarding-ledger-phone-zh.png`
+- Final verification: source lint, UI typecheck/build verification, patch Changeset validation, package dry-run, runtime dependency audit, 651/651 unit tests, 66/66 integration tests, and 59/59 Chromium E2E scenarios passed. Full `npm test` reached the fixed-port core-chain gate and exited with `EADDRINUSE` because the user's existing CRP owns `127.0.0.1:15100` and `127.0.0.1:15101`; both processes remained untouched.
 
 ## Legacy Migration Recovery QA
 
