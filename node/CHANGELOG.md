@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.17
+
+### Patch Changes
+
+- 1cce39c: Add ChatGPT account passthrough for multipart Image Edits requests, including bounded non-file model inspection, transparent account forwarding, no post-delivery replay, and model-only custom-route rewriting.
+
 ## 0.4.16
 
 ### Patch Changes
