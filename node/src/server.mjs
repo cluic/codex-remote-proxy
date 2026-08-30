@@ -1062,7 +1062,9 @@ export function buildAccountUpstreamHeaders(
       || ACCESS_HEADERS.has(loweredKey)
       || HOP_BY_HOP_HEADERS.has(loweredKey)
       || connectionHeaders.has(loweredKey)
-      || (customAuthHeader !== "authorization" && loweredKey === customAuthHeader)
+      || (customAuthHeader !== "authorization"
+        && customAuthHeader !== "chatgpt-account-id"
+        && loweredKey === customAuthHeader)
       || (stripContentHeaders && CONTENT_HEADERS.has(loweredKey))) {
       continue;
     }
@@ -1688,13 +1690,14 @@ export function createServer(settings, {
     const accountRawHeaders = accessAuthorization.source === "authorization"
       ? withoutAuthorizationRawHeaders(req.rawHeaders)
       : req.rawHeaders;
-    const decideRouteForModel = (model = null) => decideUpstreamRoute({
+    const decideRouteForModel = (model = null, modelKnown = false) => decideUpstreamRoute({
       mode: baseRequestSettings.routing?.mode ?? "custom_only",
       method: req.method,
       requestUrl: req.url,
       rawHeaders: accountRawHeaders,
       accountState,
       model,
+      modelKnown,
       localBlockedUntilMs: routingState.accountBlockedUntilMs,
       nowMs: routingNow()
     });
@@ -2588,15 +2591,13 @@ export function createServer(settings, {
           accountBytes += chunk.length;
           return;
         }
-        if (modelTransformRequired) {
-          logRequestBody();
-          finishProxyFailure({
-            statusCode: 413,
-            errorType: "proxy_request_too_large",
-            result: "upstreamError",
-            error: new Error("model transformation request exceeds the bounded limit")
-          });
-          return;
+        if (initialAccountRoute) {
+          routeReason = "account_body_too_large";
+          metricRoute = "custom";
+          currentCustomProvider = null;
+          customSelectionReason = null;
+          targetUrl = null;
+          safeTargetUrl = null;
         }
         streamingCustom = true;
         replayBody = null;
@@ -2614,6 +2615,16 @@ export function createServer(settings, {
         requestedRoutingModel = typeof inspectedModel === "string" ? inspectedModel : null;
         if (!selectCustomCandidatesForModel(requestedRoutingModel)) {
           failUnsupportedCustomModel();
+          return;
+        }
+        if (modelTransformRequired) {
+          logRequestBody();
+          finishProxyFailure({
+            statusCode: 413,
+            errorType: "proxy_request_too_large",
+            result: "upstreamError",
+            error: new Error("model transformation request exceeds the bounded limit")
+          });
           return;
         }
         outgoing = createUpstreamRequest();
@@ -2639,7 +2650,7 @@ export function createServer(settings, {
         requestedRoutingModel = boundedRequestModel(replayBody, requestEncoding);
         let customBodyRoute = !initialAccountRoute;
         if (initialAccountRoute) {
-          const refinedRoute = decideRouteForModel(requestedRoutingModel);
+          const refinedRoute = decideRouteForModel(requestedRoutingModel, true);
           if (refinedRoute.route === "custom") {
             routeReason = refinedRoute.reason;
             customBodyRoute = true;

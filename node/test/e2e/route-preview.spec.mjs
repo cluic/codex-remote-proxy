@@ -130,15 +130,16 @@ test("traces the live model route and its conditional account fallback", async (
 
   await page.getByLabel("API operation").selectOption("images/generations");
   await page.getByLabel("Inspect model").fill("gpt-image-2");
-  await expect(board.getByText("Custom route")).toBeVisible();
-  await expect(board.getByText("This request uses the custom provider pool")).toBeVisible();
-  await expect(board).toContainText("Operation is not supported by the ChatGPT account route");
-  await expect(board.locator(".route-preview-primary-lane")).toContainText("Provider Beta");
-  await expect(board.locator(".route-preview-primary-lane")).toContainText("vendor/gpt-image-2");
-  const imageScreenshot = testInfo.outputPath("route-preview-image-custom-1440x900.png");
+  await expect(board.getByText("ChatGPT route")).toBeVisible();
+  await expect(board.getByText("This request uses the custom provider pool")).toHaveCount(0);
+  await expect(board.locator(".route-preview-primary-lane")).toContainText("ChatGPT account");
+  await expect(board.locator(".route-preview-primary-lane")).toContainText("gpt-image-2");
+  await expect(fallbackToggle).toContainText("Provider Beta");
+  await expect(fallbackToggle).toContainText("vendor/gpt-image-2");
+  const imageScreenshot = testInfo.outputPath("route-preview-image-account-1440x900.png");
   crp.registerAttachment(imageScreenshot);
   await board.screenshot({ path: imageScreenshot, animations: "disabled" });
-  await testInfo.attach("route-preview-image-custom-1440x900", {
+  await testInfo.attach("route-preview-image-account-1440x900", {
     path: imageScreenshot,
     contentType: "image/png"
   });

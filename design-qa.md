@@ -167,14 +167,15 @@ final result: passed
 
 - Verified: 2026-08-30.
 - The live route preview now requires an explicit UI operation selection while preserving `responses` as the API default. `responses`, `chat/completions`, and `images/generations` travel through the same core route-decision function as proxy traffic.
-- Official OpenAI documentation establishes direct `gpt-image-2` generation as an API-key-authenticated Image API operation; CRP therefore does not invent a ChatGPT subscription-account image endpoint. `images/generations`, Chat Completions, and direct `gpt-image-*` models display an explicit custom-pool explanation.
-- The image preview at 1440 × 900 keeps the operation and model controls on one line, presents the unsupported-account capability as a high-contrast warning, and shows the exact model rule, mapping, selected provider, and scheduler order without overlap.
+- The ChatGPT Codex account route now models the official client account base plus canonical operation paths. Eligible `gpt-image-*` requests preserve the Image API path, query, body, account authorization, response headers, and response bytes without translating them into Responses tool calls.
+- Missing, invalid, or non-image models never reach the account image path. Explicit account 429 responses fall back once to the model-aware custom pool; connection failures and timeouts do not replay; account preflight bodies beyond 8 MiB switch to custom with the explicit `account_body_too_large` reason.
+- The image preview at 1440 × 900 keeps the operation and model controls on one line, selects the ChatGPT account as the primary outlet, and retains the exact model-aware custom fallback without overlap.
 - Forwarding Records use the route-decision column to show route reason and Provider selection reason beneath the primary labels. The nine-column desktop ledger remains readable, while 390 px keeps an intentional contained table scroller with no document overflow.
 - Retained visual evidence:
-  - `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-image-custom-1440x900.png`
+  - `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-image-account-1440x900.png`
   - `output/playwright/task11/forwarding-records-scans-f-b6c2f--toggles-forwarding-capture-chromium/forwarding-ledger-desktop.png`
   - `output/playwright/task11/forwarding-records-keeps-t-200ce--usable-in-Chinese-at-390px-chromium/forwarding-ledger-phone-zh.png`
-- Final verification: source lint, UI typecheck/build verification, patch Changeset validation, package dry-run, runtime dependency audit, 651/651 unit tests, 66/66 integration tests, and 59/59 Chromium E2E scenarios passed. Full `npm test` reached the fixed-port core-chain gate and exited with `EADDRINUSE` because the user's existing CRP owns `127.0.0.1:15100` and `127.0.0.1:15101`; both processes remained untouched.
+- Final verification: source lint, UI typecheck/build verification, patch Changeset validation, package dry-run, runtime dependency audit, 658/658 unit tests, 66/66 integration tests, and 59/59 Chromium E2E scenarios passed. Full `npm test` reached the fixed-port core-chain gate and exited with `EADDRINUSE` because the user's existing CRP owns `127.0.0.1:15100` and `127.0.0.1:15101`; both processes remained untouched.
 
 ## Legacy Migration Recovery QA
 

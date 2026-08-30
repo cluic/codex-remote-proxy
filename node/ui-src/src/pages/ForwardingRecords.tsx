@@ -71,6 +71,7 @@ function routeReasonLabel(record: ForwardingRecord, t: Translator): string {
   if (record.routeReason === "account_cooldown") return t("forwarding.reason.accountCooldown");
   if (record.routeReason === "account_quota_exhausted") return t("forwarding.reason.accountQuotaExhausted");
   if (record.routeReason === "account_headers_missing") return t("forwarding.reason.accountHeadersMissing");
+  if (record.routeReason === "account_body_too_large") return t("forwarding.reason.accountBodyTooLarge");
   if (record.routeReason === "not_chatgpt_auth") return t("forwarding.reason.notChatgptAuth");
   if (record.routeReason === "unsupported_operation") return t("forwarding.reason.unsupportedOperation");
   if (record.routeReason === "unsupported_account_model") return t("forwarding.reason.unsupportedAccountModel");

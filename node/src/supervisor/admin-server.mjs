@@ -135,6 +135,7 @@ const FORWARDING_ROUTE_REASONS = new Set([
   "account_cooldown",
   "account_quota_exhausted",
   "account_headers_missing",
+  "account_body_too_large",
   "not_chatgpt_auth",
   "unsupported_method",
   "unsupported_path",

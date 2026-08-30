@@ -108,19 +108,25 @@ test("uses the real operation and model capability gates for image previews", ()
   const imageEndpoint = buildRoutePreview({
     source: "live",
     generation: 2,
-    settings: settings(),
+    settings: {
+      ...settings(),
+      providers: settings().providers.map((provider) => ({
+        ...provider,
+        supportedModels: null
+      }))
+    },
     accountState,
     providerScheduler: scheduler,
     nowMs: NOW,
-    model: "model-a",
+    model: "gpt-image-2",
     operation: "images/generations"
   });
   assert.equal(imageEndpoint.operation, "images/generations");
-  assert.equal(imageEndpoint.route, "custom");
-  assert.equal(imageEndpoint.reason, "unsupported_operation");
-  assert.equal(imageEndpoint.account.reason, "unsupported_operation");
-  assert.equal(imageEndpoint.account.operationSupported, false);
-  assert.equal(imageEndpoint.customPrimaryProviderId, "provider-b");
+  assert.equal(imageEndpoint.route, "account");
+  assert.equal(imageEndpoint.reason, "account_eligible");
+  assert.equal(imageEndpoint.account.reason, "account_eligible");
+  assert.equal(imageEndpoint.account.operationSupported, true);
+  assert.equal(imageEndpoint.customPrimaryProviderId, "provider-a");
 
   const directImageModel = buildRoutePreview({
     source: "live",
