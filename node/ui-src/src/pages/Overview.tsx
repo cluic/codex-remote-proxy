@@ -41,6 +41,7 @@ import type {
   Route,
   RoutePreview,
   RouteOperation,
+  RouteRequestFormat,
   RoutingRuleGroup,
   Settings,
   StatusResponse,
@@ -67,6 +68,7 @@ type OverviewProps = {
   onRoutePreview: (
     model: string,
     operation: RouteOperation,
+    requestFormat: RouteRequestFormat,
     signal: AbortSignal
   ) => Promise<RoutePreview>;
   onStart: () => void;

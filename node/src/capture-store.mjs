@@ -24,6 +24,9 @@ const ROUTE_REASONS = new Set([
   "unsupported_path",
   "unsupported_operation",
   "unsupported_account_model",
+  "unsupported_request_format",
+  "model_not_detected",
+  "invalid_multipart",
   "custom_only"
 ]);
 const PROVIDER_SELECTION_REASONS = new Set([

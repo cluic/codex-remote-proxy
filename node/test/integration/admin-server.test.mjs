@@ -133,13 +133,14 @@ function createServices() {
       calls.push(["listRoutingRuleGroups"]);
       return structuredClone(routingRuleGroups);
     },
-    async previewRoute(model, operation = "responses") {
-      calls.push(["previewRoute", model, operation]);
+    async previewRoute(model, operation = "responses", requestFormat = "json") {
+      calls.push(["previewRoute", model, operation, requestFormat]);
       return {
         source: "live",
         generation: 4,
         evaluatedAt: "2026-07-13T00:00:00.000Z",
         operation,
+        requestFormat,
         route: "custom",
         reason: "custom_only",
         account: {
@@ -1761,6 +1762,7 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
       generation: 4,
       evaluatedAt: "2026-07-13T00:00:00.000Z",
       operation: "responses",
+      requestFormat: "json",
       route: "custom",
       reason: "custom_only",
       account: {
@@ -1797,7 +1799,8 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
   assert.deepEqual(harness.calls.find((call) => call[0] === "previewRoute"), [
     "previewRoute",
     "model-a",
-    "responses"
+    "responses",
+    "json"
   ]);
 
   const imagePreview = await harness.request(
@@ -1809,11 +1812,12 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
   assert.equal(imagePreview.json.routePreview.account.operationSupported, true);
 
   const imageEditPreview = await harness.request(
-    "/api/v1/routing-preview?model=gpt-image-2&operation=images%2Fedits",
+    "/api/v1/routing-preview?model=gpt-image-2&operation=images%2Fedits&requestFormat=multipart",
     { headers: bearer(harness) }
   );
   assert.equal(imageEditPreview.response.status, 200, imageEditPreview.text);
   assert.equal(imageEditPreview.json.routePreview.operation, "images/edits");
+  assert.equal(imageEditPreview.json.routePreview.requestFormat, "multipart");
   assert.equal(imageEditPreview.json.routePreview.account.operationSupported, true);
 
   for (const path of [
@@ -1823,6 +1827,8 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
     "/api/v1/routing-preview?model=model-a&model=model-b",
     "/api/v1/routing-preview?model=model-a&unknown=1",
     "/api/v1/routing-preview?model=model-a&operation=images%2Fvariations",
+    "/api/v1/routing-preview?model=model-a&requestFormat=binary",
+    "/api/v1/routing-preview?model=model-a&requestFormat=json&requestFormat=multipart",
     "/api/v1/routing-preview?model=model-a&operation=responses&operation=responses",
     `/api/v1/routing-preview?model=${"m".repeat(257)}`,
     `/api/v1/routing-preview?model=${encodeURIComponent("模".repeat(171))}`

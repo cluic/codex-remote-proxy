@@ -145,14 +145,40 @@ test("traces the live model route and its conditional account fallback", async (
   });
 
   await page.getByLabel("API operation").selectOption("images/edits");
+  await expect(page.getByLabel("Request format")).toHaveValue("json");
   await expect.poll(() => crp.calls.some((call) => (
     call.operation === "previewRoute"
       && call.model === "gpt-image-2"
       && call.routeOperation === "images/edits"
+      && call.requestFormat === "json"
   ))).toBe(true);
   await expect(board.getByText("ChatGPT route")).toBeVisible();
   await expect(board.locator(".route-preview-primary-lane")).toContainText("ChatGPT account");
   await expect(board.locator(".route-preview-primary-lane")).toContainText("gpt-image-2");
+  await page.getByLabel("Request format").selectOption("multipart");
+  await expect.poll(() => crp.calls.some((call) => (
+    call.operation === "previewRoute"
+      && call.routeOperation === "images/edits"
+      && call.requestFormat === "multipart"
+  ))).toBe(true);
+  await expect(board.getByText("ChatGPT route")).toBeVisible();
+  await page.getByLabel("Request format").selectOption("unsupported");
+  await expect(board.locator(".route-preview-title-line").getByText("No route")).toBeVisible();
+  await expect(board.getByText("This request will be rejected before forwarding")).toBeVisible();
+  await expect(board.getByText(/returns 415 before any upstream delivery/)).toBeVisible();
+  await expect(board.getByText("Rejected before upstream")).toBeVisible();
+  await expect(board.getByText("No account or custom provider receives this request.")).toBeVisible();
+  const unsupportedFormatScreenshot = testInfo.outputPath(
+    "route-preview-image-edits-unsupported-format-1440x900.png"
+  );
+  crp.registerAttachment(unsupportedFormatScreenshot);
+  await board.screenshot({ path: unsupportedFormatScreenshot, animations: "disabled" });
+  await testInfo.attach("route-preview-image-edits-unsupported-format-1440x900", {
+    path: unsupportedFormatScreenshot,
+    contentType: "image/png"
+  });
+  await page.getByLabel("Request format").selectOption("json");
+  await expect(board.getByText("ChatGPT route")).toBeVisible();
   const imageEditsScreenshot = testInfo.outputPath("route-preview-image-edits-account-1440x900.png");
   crp.registerAttachment(imageEditsScreenshot);
   await board.screenshot({ path: imageEditsScreenshot, animations: "disabled" });

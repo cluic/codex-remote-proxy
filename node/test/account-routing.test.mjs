@@ -5,6 +5,7 @@ import {
   ACCOUNT_429_FALLBACK_COOLDOWN_MS,
   accountSupportsModel,
   accountSupportsOperation,
+  accountSupportsRequestFormat,
   account429Cooldown,
   buildChatGptAccountTarget,
   buildChatGptResponsesTarget,
@@ -12,6 +13,7 @@ import {
   isValidAccountRoutingState,
   parseCodexQuotaHeaders,
   projectAccountRoutingState,
+  requestFormatFromContentType,
   requestOperation
 } from "../src/routing/account-routing.mjs";
 
@@ -114,6 +116,15 @@ test("classifies operations separately from models and exposes account capabilit
   assert.equal(accountSupportsModel("images/generations", null, { allowUnknown: true }), true);
   assert.equal(accountSupportsModel("images/edits", "gpt-image-2"), true);
   assert.equal(accountSupportsModel("images/edits", "gpt-5.6"), false);
+  assert.equal(requestFormatFromContentType("images/edits", "application/json"), "json");
+  assert.equal(requestFormatFromContentType(
+    "images/edits",
+    "multipart/form-data; boundary=crp"
+  ), "multipart");
+  assert.equal(requestFormatFromContentType("images/edits", "application/octet-stream"), "unsupported");
+  assert.equal(accountSupportsRequestFormat("images/edits", "json"), true);
+  assert.equal(accountSupportsRequestFormat("images/edits", "multipart"), true);
+  assert.equal(accountSupportsRequestFormat("images/edits", "unsupported"), false);
 
   const decide = (requestUrl, model) => decideUpstreamRoute({
     mode: "account_first",
@@ -128,6 +139,16 @@ test("classifies operations separately from models and exposes account capabilit
     "account_eligible");
   assert.equal(decide("/images/edits", "gpt-image-2").reason,
     "account_eligible");
+  assert.equal(decideUpstreamRoute({
+    mode: "account_first",
+    method: "POST",
+    requestUrl: "/images/edits",
+    rawHeaders: ACCOUNT_HEADERS,
+    accountState: UNKNOWN_STATE,
+    model: "gpt-image-2",
+    requestFormat: "unsupported",
+    nowMs: NOW_MS
+  }).reason, "unsupported_request_format");
   assert.equal(decide("/chat/completions", "gpt-5.6").reason,
     "unsupported_operation");
   assert.equal(decide("/responses", "gpt-image-2").reason,

@@ -28,6 +28,7 @@ import type {
   MetricsOverview,
   ModelMappingGroup,
   RouteOperation,
+  RouteRequestFormat,
   RoutePreview,
   RoutePreviewCandidate,
   RoutingRuleGroup
@@ -44,6 +45,7 @@ type RoutePreviewBoardProps = {
   onPreview: (
     model: string,
     operation: RouteOperation,
+    requestFormat: RouteRequestFormat,
     signal: AbortSignal
   ) => Promise<RoutePreview>;
 };
@@ -91,6 +93,7 @@ function accountReason(reason: RoutePreview["account"]["reason"], t: Translator)
   if (reason === "account_quota_exhausted") return t("routePreview.accountQuotaExhausted");
   if (reason === "unsupported_operation") return t("routePreview.accountOperationUnsupported");
   if (reason === "unsupported_account_model") return t("routePreview.accountModelUnsupported");
+  if (reason === "unsupported_request_format") return t("routePreview.accountFormatUnsupported");
   if (reason === "not_chatgpt_auth") return t("routePreview.accountUnavailable");
   return t("routePreview.customOnly");
 }
@@ -100,6 +103,12 @@ function operationLabel(operation: RouteOperation, t: Translator): string {
   if (operation === "images/generations") return t("routePreview.operationImageGenerations");
   if (operation === "images/edits") return t("routePreview.operationImageEdits");
   return t("routePreview.operationResponses");
+}
+
+function requestFormatLabel(requestFormat: RouteRequestFormat, t: Translator): string {
+  if (requestFormat === "multipart") return t("routePreview.formatMultipart");
+  if (requestFormat === "unsupported") return t("routePreview.formatUnsupported");
+  return t("routePreview.formatJson");
 }
 
 function selectionReason(preview: RoutePreview, t: Translator): string {
@@ -233,9 +242,14 @@ export function RoutePreviewBoard({
   }, [metrics, modelMappingGroups, routingRuleGroups]);
   const [model, setModel] = useState(() => suggestedModels[0] ?? "");
   const [operation, setOperation] = useState<RouteOperation>("responses");
+  const [requestFormat, setRequestFormat] = useState<RouteRequestFormat>("json");
+  const effectiveRequestFormat: RouteRequestFormat = operation === "images/edits"
+    ? requestFormat
+    : "json";
   const [result, setResult] = useState<{
     model: string;
     operation: RouteOperation;
+    requestFormat: RouteRequestFormat;
     preview: RoutePreview;
   } | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -253,7 +267,7 @@ export function RoutePreviewBoard({
 
   useEffect(() => {
     setFallbackExpanded(false);
-  }, [model, operation, routeRevision]);
+  }, [effectiveRequestFormat, model, operation, routeRevision]);
 
   useEffect(() => {
     const sequence = ++sequenceRef.current;
@@ -265,9 +279,9 @@ export function RoutePreviewBoard({
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       setLoading(true);
-      void onPreview(model, operation, controller.signal).then((preview) => {
+      void onPreview(model, operation, effectiveRequestFormat, controller.signal).then((preview) => {
         if (controller.signal.aborted || sequence !== sequenceRef.current) return;
-        setResult({ model, operation, preview });
+        setResult({ model, operation, requestFormat: effectiveRequestFormat, preview });
         setError(null);
       }).catch((caught) => {
         if (controller.signal.aborted || sequence !== sequenceRef.current) return;
@@ -280,7 +294,7 @@ export function RoutePreviewBoard({
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [model, onPreview, operation, refreshGeneration, routeRevision]);
+  }, [effectiveRequestFormat, model, onPreview, operation, refreshGeneration, routeRevision]);
 
   useEffect(() => {
     if (!isPreviewableModel(model)) return undefined;
@@ -295,9 +309,11 @@ export function RoutePreviewBoard({
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [model, operation]);
+  }, [effectiveRequestFormat, model, operation]);
 
-  const preview = result?.model === model && result.operation === operation
+  const preview = result?.model === model
+    && result.operation === operation
+    && result.requestFormat === effectiveRequestFormat
     ? result.preview
     : null;
   const primary = preview?.candidates.find(({ order }) => order === 1) ?? null;
@@ -341,7 +357,10 @@ export function RoutePreviewBoard({
             </div>
           </div>
         </div>
-        <div className="route-preview-controls">
+        <div className={cx(
+          "route-preview-controls",
+          operation === "images/edits" && "has-format"
+        )}>
           <label className="route-preview-operation-field">
             <span>{t("routePreview.inspectOperation")}</span>
             <select
@@ -354,6 +373,19 @@ export function RoutePreviewBoard({
               <option value="images/edits">{t("routePreview.operationImageEdits")}</option>
             </select>
           </label>
+          {operation === "images/edits" ? (
+            <label className="route-preview-format-field">
+              <span>{t("routePreview.inspectFormat")}</span>
+              <select
+                value={requestFormat}
+                onChange={(event) => setRequestFormat(event.target.value as RouteRequestFormat)}
+              >
+                <option value="json">{t("routePreview.formatJson")}</option>
+                <option value="multipart">{t("routePreview.formatMultipart")}</option>
+                <option value="unsupported">{t("routePreview.formatUnsupported")}</option>
+              </select>
+            </label>
+          ) : null}
           <label className="route-preview-model-field">
             <span>{t("routePreview.inspectModel")}</span>
             <span className="route-preview-input-shell">
@@ -416,15 +448,20 @@ export function RoutePreviewBoard({
           </div>
         ) : (
           <>
-            {["unsupported_operation", "unsupported_account_model"].includes(
+            {["unsupported_operation", "unsupported_account_model", "unsupported_request_format"].includes(
               preview.account.reason
             ) ? (
-              <Notice title={t("routePreview.operationUnsupportedTitle")} tone="warning">
+              <Notice title={t(preview.account.reason === "unsupported_request_format"
+                ? "routePreview.requestFormatUnsupportedTitle"
+                : "routePreview.operationUnsupportedTitle")} tone="warning">
                 <p>{t(preview.account.reason === "unsupported_account_model"
                   ? "routePreview.accountModelUnsupportedHelp"
-                  : "routePreview.operationUnsupportedHelp", {
+                  : preview.account.reason === "unsupported_request_format"
+                    ? "routePreview.requestFormatUnsupportedHelp"
+                    : "routePreview.operationUnsupportedHelp", {
                     operation: operationLabel(preview.operation, t),
-                    model
+                    model,
+                    format: requestFormatLabel(preview.requestFormat, t)
                   })}</p>
               </Notice>
             ) : null}
@@ -445,7 +482,9 @@ export function RoutePreviewBoard({
                     icon={<Bot />}
                     eyebrow={t("routePreview.request")}
                     title={model}
-                    detail={operationLabel(preview.operation, t)}
+                    detail={preview.operation === "images/edits"
+                      ? `${operationLabel(preview.operation, t)} · ${requestFormatLabel(preview.requestFormat, t)}`
+                      : operationLabel(preview.operation, t)}
                     tone="active"
                   />
                   <PathConnector />
@@ -476,10 +515,14 @@ export function RoutePreviewBoard({
                       <PathNode
                         icon={<CircleAlert />}
                         eyebrow={t("routePreview.noRoute")}
-                        title={t("routePreview.noEligibleProvider")}
-                        detail={t(preview.reason === "provider_pool_unavailable"
-                          ? "routePreview.providerPoolUnavailable"
-                          : "routePreview.modelUnavailable")}
+                        title={t(preview.reason === "unsupported_request_format"
+                          ? "routePreview.requestRejected"
+                          : "routePreview.noEligibleProvider")}
+                        detail={t(preview.reason === "unsupported_request_format"
+                          ? "routePreview.requestRejectedBeforeUpstream"
+                          : preview.reason === "provider_pool_unavailable"
+                            ? "routePreview.providerPoolUnavailable"
+                            : "routePreview.modelUnavailable")}
                         tone="danger"
                       />
                     </>

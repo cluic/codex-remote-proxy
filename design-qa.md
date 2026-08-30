@@ -165,21 +165,23 @@ final result: passed
 
 ## Operation-aware Account Routing QA
 
-- Verified: 2026-08-30.
+- Verified: 2026-08-31.
 - The live route preview now requires an explicit UI operation selection while preserving `responses` as the API default. `responses`, `chat/completions`, `images/generations`, and `images/edits` travel through the same core route-decision function as proxy traffic.
 - The ChatGPT Codex account route now models the official client account base plus canonical operation paths. Eligible `gpt-image-*` requests preserve the Image API path, query, body, account authorization, response headers, and response bytes without translating them into Responses tool calls; `POST /images/edits` and `/v1/images/edits` map to `/backend-api/codex/images/edits`.
-- Image Edits account eligibility requires one strictly parsed, non-file `multipart/form-data` `model` field whose value is `gpt-image-*`; `filename`, extended filename parameters, and binary Content-Type values are rejected for that field. The bounded 8 MiB preflight never decodes or re-encodes binary parts.
+- Image Edits preflight derives its parser from Content-Type. Codex `application/json` payloads read only the top-level `model` and preserve image URLs/Base64 plus the complete encoded body; standard `multipart/form-data` still requires one strictly parsed, non-file textual model field and never decodes binary parts.
+- Unsupported edits formats return 415 with `unsupported_request_format`; missing models and malformed multipart return distinct 400 reasons. All three paths record no Provider and deliver zero bytes to account or custom upstreams.
 - Image Edits are never replayed after account delivery. An explicit account 429 is returned and starts cooldown; only a later request can enter the custom pool, where a mapping or override rewrites only the multipart `model` field. Connection failures and timeouts also do not replay.
 - Account Image Edits requests larger than 8 MiB switch to an unrestricted custom route before account delivery with the explicit `account_body_too_large` reason. If exact-model Provider selection or a mapping/override would be required, the request returns 413 without any upstream delivery because uniqueness cannot be proven beyond the bounded prefix.
-- The image preview at 1440 × 900 keeps the operation and model controls on one line, selects the ChatGPT account as the primary outlet, and retains the exact model-aware custom fallback without overlap.
+- The image preview at 1440 × 900 keeps operation, request format, and model controls on one line. JSON and multipart select ChatGPT; the unsupported diagnostic shows the same zero-delivery 415 decision as live routing.
 - Forwarding Records use the route-decision column to show route reason and Provider selection reason beneath the primary labels. The nine-column desktop ledger remains readable, while 390 px keeps an intentional contained table scroller with no document overflow.
 - Retained visual evidence:
   - `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-image-edits-account-1440x900.png`
+  - `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-image-edits-unsupported-format-1440x900.png`
   - `output/playwright/task11/route-preview-traces-the-l-142cd-onditional-account-fallback-chromium/route-preview-image-account-1440x900.png`
   - `output/playwright/task11/forwarding-records-scans-f-b6c2f--toggles-forwarding-capture-chromium/forwarding-ledger-desktop.png`
   - `output/playwright/task11/forwarding-records-keeps-t-200ce--usable-in-Chinese-at-390px-chromium/forwarding-ledger-phone-zh.png`
-- Evidence scope is limited to the official Codex client account-base/path contract and deterministic local loopback fixtures; this record makes no claim of external validation against a live ChatGPT upstream.
-- Final verification: source lint, UI typecheck/build verification, patch Changeset validation, package dry-run, runtime dependency audit, 668/668 unit tests, 66/66 integration tests, and 59/59 Chromium E2E scenarios passed. Full `npm test` reached the fixed-port core-chain gate and exited with `EADDRINUSE` because the user's existing CRP owns `127.0.0.1:15100` and `127.0.0.1:15101`; both processes remained untouched.
+- Evidence scope combines the public OpenAI multipart Image Edits documentation, the locally installed official Codex binary's JSON edit markers (`image_url`, `model`, `images/edits`), and deterministic loopback fixtures; this record makes no claim of external validation against a live ChatGPT upstream.
+- Final verification: source lint, UI typecheck/build verification, patch Changeset validation, package dry-run, runtime dependency audit, 673/673 unit tests, 66/66 integration tests, and 59/59 Chromium E2E scenarios passed. Full `npm test` reached the fixed-port core-chain gate and exited with `EADDRINUSE` because the user's existing CRP owns `127.0.0.1:15100` and `127.0.0.1:15101`; both processes remained untouched.
 
 ## Legacy Migration Recovery QA
 

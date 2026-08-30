@@ -753,7 +753,7 @@ function createServices({ upstream }) {
     return state.providers.find((provider) => provider.id === state.activeProviderId) ?? null;
   }
 
-  function buildFixtureRoutePreview(model, operation = "responses") {
+  function buildFixtureRoutePreview(model, operation = "responses", requestFormat = "json") {
     const eligible = state.providers
       .filter((provider) => provider.lastTestStatus === "passed" && credentials.has(provider.id))
       .sort((left, right) => {
@@ -805,7 +805,8 @@ function createServices({ upstream }) {
       providerScheduler: new ProviderScheduler({ now: () => Date.parse(STARTED_AT) }),
       nowMs: Date.parse(STARTED_AT),
       model,
-      operation
+      operation,
+      requestFormat
     });
     const matchedRule = activeGroup?.rules.find((rule) => rule.models.includes(model)) ?? null;
     const profiles = new Map(state.providers.map((provider) => [provider.id, provider]));
@@ -896,9 +897,9 @@ function createServices({ upstream }) {
       calls.push({ operation: "listRoutingRuleGroups" });
       return structuredClone(state.routingRuleGroups);
     },
-    async previewRoute(model, routeOperation = "responses") {
-      calls.push({ operation: "previewRoute", model, routeOperation });
-      return buildFixtureRoutePreview(model, routeOperation);
+    async previewRoute(model, routeOperation = "responses", requestFormat = "json") {
+      calls.push({ operation: "previewRoute", model, routeOperation, requestFormat });
+      return buildFixtureRoutePreview(model, routeOperation, requestFormat);
     },
     async createRoutingRuleGroup(input) {
       rejectNextMutation("createRoutingRuleGroup");

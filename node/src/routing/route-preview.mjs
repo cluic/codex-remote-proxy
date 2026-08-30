@@ -1,6 +1,7 @@
 import {
   accountSupportsOperation,
   decideUpstreamRoute,
+  isRouteRequestFormat,
   isRouteOperation,
   operationRequestUrl
 } from "./account-routing.mjs";
@@ -20,6 +21,7 @@ const REASONS = new Set([
   "account_quota_exhausted",
   "unsupported_operation",
   "unsupported_account_model",
+  "unsupported_request_format",
   "custom_only",
   "not_chatgpt_auth",
   "provider_pool_unavailable",
@@ -31,6 +33,7 @@ const ACCOUNT_REASONS = new Set([
   "account_quota_exhausted",
   "unsupported_operation",
   "unsupported_account_model",
+  "unsupported_request_format",
   "custom_only",
   "not_chatgpt_auth"
 ]);
@@ -44,7 +47,8 @@ const CUSTOM_REASONS = new Set([
 ]);
 const UNAVAILABLE_REASONS = new Set([
   "provider_pool_unavailable",
-  "custom_model_unavailable"
+  "custom_model_unavailable",
+  "unsupported_request_format"
 ]);
 const PROVIDER_SELECTION_REASONS = new Set([
   "sole_eligible",
@@ -60,6 +64,7 @@ const PREVIEW_FIELDS = new Set([
   "generation",
   "evaluatedAt",
   "operation",
+  "requestFormat",
   "route",
   "reason",
   "account",
@@ -150,7 +155,8 @@ export function buildRoutePreview({
   localBlockedUntilMs = null,
   nowMs = Date.now(),
   model,
-  operation = "responses"
+  operation = "responses",
+  requestFormat = "json"
 }) {
   if (!SOURCES.has(source)
     || !Number.isSafeInteger(generation)
@@ -159,7 +165,8 @@ export function buildRoutePreview({
     || !providerScheduler
     || typeof providerScheduler.explain !== "function"
     || !isModel(model)
-    || !isRouteOperation(operation)) {
+    || !isRouteOperation(operation)
+    || !isRouteRequestFormat(requestFormat)) {
     throw new TypeError("Route preview input is invalid.");
   }
   const evaluatedMs = Number.isFinite(nowMs)
@@ -181,19 +188,24 @@ export function buildRoutePreview({
     ],
     accountState,
     model,
+    requestFormat,
     localBlockedUntilMs,
     nowMs: evaluatedMs
   });
   let route = routeDecision.route;
   let reason = routeDecision.reason;
-  if (route === "custom" && providers.length === 0) {
+  const formatRejected = routeDecision.reason === "unsupported_request_format";
+  if (formatRejected) {
+    route = "unavailable";
+    reason = "unsupported_request_format";
+  } else if (route === "custom" && providers.length === 0) {
     route = "unavailable";
     reason = "provider_pool_unavailable";
   } else if (route === "custom" && customPrimary === null) {
     route = "unavailable";
     reason = "custom_model_unavailable";
   }
-  const candidates = explanation.candidates.map((candidate) => {
+  const candidates = (formatRejected ? [] : explanation.candidates).map((candidate) => {
     const availability = candidateAvailability(candidate);
     return {
       providerId: candidate.providerId,
@@ -211,6 +223,7 @@ export function buildRoutePreview({
     generation,
     evaluatedAt: new Date(evaluatedMs).toISOString(),
     operation,
+    requestFormat,
     route,
     reason,
     account: {
@@ -218,11 +231,11 @@ export function buildRoutePreview({
       selected: route === "account",
       reason: ACCOUNT_REASONS.has(routeDecision.reason) ? routeDecision.reason : "custom_only",
       operationSupported: accountSupportsOperation(operation),
-      fallbackAvailable: customPrimary !== null
+      fallbackAvailable: !formatRejected && customPrimary !== null
     },
     matchedPriorityRule: explanation.matchedPriorityRule,
-    customSelectionReason: customPrimary === null ? null : explanation.primaryReason,
-    customPrimaryProviderId: customPrimary?.providerId ?? null,
+    customSelectionReason: formatRejected || customPrimary === null ? null : explanation.primaryReason,
+    customPrimaryProviderId: formatRejected ? null : customPrimary?.providerId ?? null,
     candidates
   };
   if (!isValidRoutePreview(preview)) throw new TypeError("Route preview output is invalid.");
@@ -239,6 +252,7 @@ export function isValidRoutePreview(value) {
     || (value.source === "configured" && value.generation !== 0)
     || safeIso(value.evaluatedAt) === null
     || !isRouteOperation(value.operation)
+    || !isRouteRequestFormat(value.requestFormat)
     || !ROUTES.has(value.route)
     || !REASONS.has(value.reason)
     || !isPlainObject(value.account)

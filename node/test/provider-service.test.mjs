@@ -175,8 +175,8 @@ class FakeWorkerManager {
     return this.getPublicState();
   }
 
-  async previewRoute(model, operation = "responses") {
-    this.calls.push(["previewRoute", model, operation]);
+  async previewRoute(model, operation = "responses", requestFormat = "json") {
+    this.calls.push(["previewRoute", model, operation, requestFormat]);
     if (this.preview) return structuredClone(this.preview);
     const error = new Error("not running");
     error.code = "WORKER_NOT_RUNNING";
@@ -609,6 +609,7 @@ test("route previews explain configured and live routing with group metadata", a
   assert.equal(imageOperation.operation, "images/generations");
   const imageEditOperation = await service.previewRoute("model-a", "images/edits");
   assert.equal(imageEditOperation.operation, "images/edits");
+  assert.equal(imageEditOperation.requestFormat, "json");
 
   workerManager.phase = "running";
   workerManager.generation = 7;
@@ -617,6 +618,7 @@ test("route previews explain configured and live routing with group metadata", a
     generation: 7,
     evaluatedAt: "2030-01-01T00:00:00.000Z",
     operation: "responses",
+    requestFormat: "json",
     route: "custom",
     reason: "custom_only",
     account: {
@@ -645,7 +647,7 @@ test("route previews explain configured and live routing with group metadata", a
   assert.equal(live.generation, 7);
   assert.equal(live.routingRule.groupName, "Interactive traffic");
   assert.equal(live.candidates[0].mappingGroup.name, "Provider B aliases");
-  assert.deepEqual(workerManager.calls.at(-1), ["previewRoute", "model-a", "responses"]);
+  assert.deepEqual(workerManager.calls.at(-1), ["previewRoute", "model-a", "responses", "json"]);
 
   const sentinel = "route-preview-secret-sentinel";
   await assert.rejects(
@@ -657,6 +659,10 @@ test("route previews explain configured and live routing with group metadata", a
   );
   await assert.rejects(
     service.previewRoute("model-a", "images/variations"),
+    (error) => error?.code === "ROUTE_PREVIEW_INPUT_INVALID" && error.status === 400
+  );
+  await assert.rejects(
+    service.previewRoute("model-a", "images/edits", "binary"),
     (error) => error?.code === "ROUTE_PREVIEW_INPUT_INVALID" && error.status === 400
   );
 });

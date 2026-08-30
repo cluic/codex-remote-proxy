@@ -101,12 +101,14 @@ const ROUTE_PREVIEW_OPERATIONS = new Set([
   "images/generations",
   "images/edits"
 ]);
+const ROUTE_PREVIEW_REQUEST_FORMATS = new Set(["json", "multipart", "unsupported"]);
 const ROUTE_PREVIEW_REASONS = new Set([
   "account_eligible",
   "account_cooldown",
   "account_quota_exhausted",
   "unsupported_operation",
   "unsupported_account_model",
+  "unsupported_request_format",
   "custom_only",
   "not_chatgpt_auth",
   "provider_pool_unavailable",
@@ -118,6 +120,7 @@ const ROUTE_PREVIEW_ACCOUNT_REASONS = new Set([
   "account_quota_exhausted",
   "unsupported_operation",
   "unsupported_account_model",
+  "unsupported_request_format",
   "custom_only",
   "not_chatgpt_auth"
 ]);
@@ -142,6 +145,9 @@ const FORWARDING_ROUTE_REASONS = new Set([
   "unsupported_path",
   "unsupported_operation",
   "unsupported_account_model",
+  "unsupported_request_format",
+  "model_not_detected",
+  "invalid_multipart",
   "custom_only"
 ]);
 const PUBLIC_TEXT_PATTERN = /^[^\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]{1,128}$/u;
@@ -427,6 +433,9 @@ function projectRoutePreview(preview) {
     operation: ROUTE_PREVIEW_OPERATIONS.has(preview?.operation)
       ? preview.operation
       : "responses",
+    requestFormat: ROUTE_PREVIEW_REQUEST_FORMATS.has(preview?.requestFormat)
+      ? preview.requestFormat
+      : "json",
     route: ROUTE_PREVIEW_ROUTES.has(preview?.route) ? preview.route : "unavailable",
     reason: ROUTE_PREVIEW_REASONS.has(preview?.reason)
       ? preview.reason
@@ -1631,18 +1640,24 @@ export function createAdminServer({
     }
     if (url.pathname === `${API_PREFIX}/routing-preview` && request.method === "GET") {
       for (const key of url.searchParams.keys()) {
-        if (key !== "model" && key !== "operation") throw bodyError("API_BODY_INVALID");
+        if (key !== "model" && key !== "operation" && key !== "requestFormat") {
+          throw bodyError("API_BODY_INVALID");
+        }
       }
       const values = url.searchParams.getAll("model");
       const model = values.length === 1 ? values[0] : null;
       const operationValues = url.searchParams.getAll("operation");
       const operation = operationValues.length === 0 ? "responses" : operationValues[0];
+      const requestFormatValues = url.searchParams.getAll("requestFormat");
+      const requestFormat = requestFormatValues.length === 0 ? "json" : requestFormatValues[0];
       if (projectRoutePreviewModel(model) === null
         || operationValues.length > 1
-        || !ROUTE_PREVIEW_OPERATIONS.has(operation)) {
+        || !ROUTE_PREVIEW_OPERATIONS.has(operation)
+        || requestFormatValues.length > 1
+        || !ROUTE_PREVIEW_REQUEST_FORMATS.has(requestFormat)) {
         throw bodyError("API_BODY_INVALID");
       }
-      const routePreview = await providerService.previewRoute(model, operation);
+      const routePreview = await providerService.previewRoute(model, operation, requestFormat);
       sendJson(response, 200, { routePreview: projectRoutePreview(routePreview) });
       return;
     }
