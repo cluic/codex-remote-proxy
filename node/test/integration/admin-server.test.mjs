@@ -146,7 +146,7 @@ function createServices() {
           enabled: false,
           selected: false,
           reason: "custom_only",
-          operationSupported: operation === "responses",
+          operationSupported: operation === "responses" || operation === "images/generations",
           fallbackAvailable: true
         },
         matchedPriorityRule: true,
@@ -1804,7 +1804,7 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
   );
   assert.equal(imagePreview.response.status, 200, imagePreview.text);
   assert.equal(imagePreview.json.routePreview.operation, "images/generations");
-  assert.equal(imagePreview.json.routePreview.account.operationSupported, false);
+  assert.equal(imagePreview.json.routePreview.account.operationSupported, true);
 
   for (const path of [
     "/api/v1/routing-preview",

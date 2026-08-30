@@ -6,6 +6,7 @@ import {
   accountSupportsModel,
   accountSupportsOperation,
   account429Cooldown,
+  buildChatGptAccountTarget,
   buildChatGptResponsesTarget,
   decideUpstreamRoute,
   isValidAccountRoutingState,
@@ -41,6 +42,18 @@ test("maps only canonical Responses request targets to the ChatGPT Codex endpoin
   ]) {
     assert.equal(buildChatGptResponsesTarget(target), null);
   }
+});
+
+test("maps canonical Image API request targets to the ChatGPT Codex account base", () => {
+  assert.equal(
+    buildChatGptAccountTarget("/images/generations?output_format=png").href,
+    "https://chatgpt.com/backend-api/codex/images/generations?output_format=png"
+  );
+  assert.equal(
+    buildChatGptAccountTarget("/v1/images/generations").pathname,
+    "/backend-api/codex/images/generations"
+  );
+  assert.equal(buildChatGptAccountTarget("/chat/completions"), null);
 });
 
 test("routes account-first requests only with an eligible method, path, and unique account auth", () => {
@@ -83,9 +96,13 @@ test("classifies operations separately from models and exposes account capabilit
   assert.equal(requestOperation("/v1/images/generations"), "images/generations");
   assert.equal(requestOperation("/images/edits"), null);
   assert.equal(accountSupportsOperation("responses"), true);
-  assert.equal(accountSupportsOperation("images/generations"), false);
+  assert.equal(accountSupportsOperation("images/generations"), true);
   assert.equal(accountSupportsModel("responses", "gpt-5.6"), true);
   assert.equal(accountSupportsModel("responses", "gpt-image-2"), false);
+  assert.equal(accountSupportsModel("images/generations", "gpt-image-2"), true);
+  assert.equal(accountSupportsModel("images/generations", "gpt-5.6"), false);
+  assert.equal(accountSupportsModel("images/generations", null), false);
+  assert.equal(accountSupportsModel("images/generations", null, { allowUnknown: true }), true);
 
   const decide = (requestUrl, model) => decideUpstreamRoute({
     mode: "account_first",
@@ -97,12 +114,22 @@ test("classifies operations separately from models and exposes account capabilit
     nowMs: NOW_MS
   });
   assert.equal(decide("/images/generations", "gpt-image-2").reason,
-    "unsupported_operation");
+    "account_eligible");
   assert.equal(decide("/chat/completions", "gpt-5.6").reason,
     "unsupported_operation");
   assert.equal(decide("/responses", "gpt-image-2").reason,
     "unsupported_account_model");
   assert.equal(decide("/responses", "gpt-5.6").reason, "account_eligible");
+  assert.equal(decideUpstreamRoute({
+    mode: "account_first",
+    method: "POST",
+    requestUrl: "/images/generations",
+    rawHeaders: ACCOUNT_HEADERS,
+    accountState: UNKNOWN_STATE,
+    model: null,
+    modelKnown: true,
+    nowMs: NOW_MS
+  }).reason, "unsupported_account_model");
 });
 
 test("honors authoritative auth and fresh quota state while allowing stale probes", () => {

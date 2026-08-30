@@ -1,4 +1,8 @@
-export const CHATGPT_CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+export const CHATGPT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex/";
+export const CHATGPT_CODEX_RESPONSES_URL = new URL(
+  "responses",
+  CHATGPT_CODEX_BASE_URL
+).href;
 export const CHATGPT_METRICS_PROVIDER_ID = "crp-chatgpt-account";
 export const ACCOUNT_REQUEST_REPLAY_MAX_BYTES = 8 * 1024 * 1024;
 export const ACCOUNT_STATE_MAX_AGE_MS = 10 * 60 * 1_000;
@@ -100,20 +104,29 @@ export function operationRequestUrl(operation) {
 }
 
 export function accountSupportsOperation(operation) {
-  return operation === "responses";
+  return operation === "responses" || operation === "images/generations";
 }
 
-export function accountSupportsModel(operation, model) {
+export function accountSupportsModel(operation, model, { allowUnknown = false } = {}) {
   if (!accountSupportsOperation(operation)) return false;
-  return typeof model !== "string" || !/^gpt-image(?:-|$)/i.test(model);
+  if (typeof model !== "string") return allowUnknown;
+  const imageModel = /^gpt-image(?:-|$)/i.test(model);
+  return operation === "images/generations" ? imageModel : !imageModel;
+}
+
+export function buildChatGptAccountTarget(requestUrl) {
+  const operation = requestOperation(requestUrl);
+  if (!accountSupportsOperation(operation)) return null;
+  const incoming = new URL(requestUrl, "http://127.0.0.1");
+  const target = new URL(operation, CHATGPT_CODEX_BASE_URL);
+  target.search = incoming.search;
+  return target;
 }
 
 export function buildChatGptResponsesTarget(requestUrl) {
-  if (requestOperation(requestUrl) !== "responses") return null;
-  const incoming = new URL(requestUrl, "http://127.0.0.1");
-  const target = new URL(CHATGPT_CODEX_RESPONSES_URL);
-  target.search = incoming.search;
-  return target;
+  return requestOperation(requestUrl) === "responses"
+    ? buildChatGptAccountTarget(requestUrl)
+    : null;
 }
 
 export function projectAccountRoutingState(monitorState) {
@@ -167,6 +180,7 @@ export function decideUpstreamRoute({
   rawHeaders,
   accountState,
   model = null,
+  modelKnown = model !== null,
   localBlockedUntilMs = null,
   nowMs = Date.now()
 }) {
@@ -183,7 +197,7 @@ export function decideUpstreamRoute({
   if (!accountSupportsOperation(operation)) {
     return { route: "custom", reason: "unsupported_operation", target: null };
   }
-  const target = buildChatGptResponsesTarget(requestUrl);
+  const target = buildChatGptAccountTarget(requestUrl);
   if (!target) return { route: "custom", reason: "unsupported_path", target: null };
   if (!singleSafeHeader(rawHeaders, "authorization")
     || !singleSafeHeader(rawHeaders, "chatgpt-account-id")) {
@@ -206,7 +220,7 @@ export function decideUpstreamRoute({
   if (fresh && accountState?.quotaStatus === "exhausted") {
     return { route: "custom", reason: "account_quota_exhausted", target: null };
   }
-  if (!accountSupportsModel(operation, model)) {
+  if (!accountSupportsModel(operation, model, { allowUnknown: !modelKnown })) {
     return { route: "custom", reason: "unsupported_account_model", target: null };
   }
   return { route: "account", reason: "account_eligible", target };
