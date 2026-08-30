@@ -607,6 +607,8 @@ test("route previews explain configured and live routing with group metadata", a
   assert.equal(configured.candidates[0].targetModel, "vendor/model-a");
   const imageOperation = await service.previewRoute("model-a", "images/generations");
   assert.equal(imageOperation.operation, "images/generations");
+  const imageEditOperation = await service.previewRoute("model-a", "images/edits");
+  assert.equal(imageEditOperation.operation, "images/edits");
 
   workerManager.phase = "running";
   workerManager.generation = 7;
@@ -654,7 +656,7 @@ test("route previews explain configured and live routing with group metadata", a
     }
   );
   await assert.rejects(
-    service.previewRoute("model-a", "images/edits"),
+    service.previewRoute("model-a", "images/variations"),
     (error) => error?.code === "ROUTE_PREVIEW_INPUT_INVALID" && error.status === 400
   );
 });

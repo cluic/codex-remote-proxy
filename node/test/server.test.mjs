@@ -77,6 +77,43 @@ function withDeadline(promise, message, timeoutMs = 2000) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+function makeImageEditMultipart({
+  boundary = "crp-image-edit-boundary",
+  model = "gpt-image-2",
+  image = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]),
+  modelFirst = false,
+  modelDispositionSuffix = "",
+  modelContentType = null
+} = {}) {
+  const modelPart = model === null ? [] : [Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="model"${modelDispositionSuffix}\r\n${modelContentType ? `Content-Type: ${modelContentType}\r\n` : ""}\r\n${model}\r\n`,
+    "utf8"
+  )];
+  const imagePart = [
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="image[]"; filename="source.png"\r\nContent-Type: image/png\r\n\r\n`,
+      "utf8"
+    ),
+    image,
+    Buffer.from("\r\n", "ascii")
+  ];
+  const promptPart = [Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nrepair the image\r\n`,
+    "utf8"
+  )];
+  return {
+    boundary,
+    contentType: `multipart/form-data; boundary="${boundary}"`,
+    body: Buffer.concat([
+      ...(modelFirst ? modelPart : imagePart),
+      ...promptPart,
+      ...(modelFirst ? imagePart : modelPart),
+      Buffer.from(`--${boundary}--\r\n`, "ascii")
+    ]),
+    image
+  };
+}
+
 function makeSettings({
   baseUrl,
   apiKey = "test-api-key",
@@ -831,6 +868,324 @@ test("account-first forwards Image API bytes to ChatGPT and keeps image models o
   ]);
 });
 
+test("account-first forwards Image Edits multipart bytes to the canonical ChatGPT target", async (t) => {
+  const accountObserved = [];
+  const responseBody = Buffer.from('{"created":4,"data":[{"b64_json":"edited"}]}');
+  const account = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      accountObserved.push({
+        path: req.url,
+        body: Buffer.concat(chunks),
+        contentType: req.headers["content-type"],
+        authorization: req.headers.authorization,
+        accountId: req.headers["chatgpt-account-id"],
+        customAuthorization: req.headers["x-provider-auth"]
+      });
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("x-image-upstream", "account-edits");
+      res.end(responseBody);
+    });
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  let customRequests = 0;
+  const custom = http.createServer((req, res) => {
+    customRequests += 1;
+    req.resume();
+    res.statusCode = 500;
+    res.end();
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}/v1`,
+    authHeader: "x-provider-auth",
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 28, settings });
+  const captureManager = createMemoryCaptureManager();
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      local.search = target.search;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const multipart = makeImageEditMultipart();
+
+  const response = await fetch(
+    `http://127.0.0.1:${proxyPort}/v1/images/edits?quality=high`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": multipart.contentType,
+        authorization: "Bearer edits-account-token",
+        "chatgpt-account-id": "edits-account-id",
+        "x-provider-auth": "must-not-reach-account"
+      },
+      body: multipart.body
+    }
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-image-upstream"), "account-edits");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), responseBody);
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(customRequests, 0);
+  assert.equal(accountObserved.length, 1);
+  assert.equal(accountObserved[0].path, "/backend-api/codex/images/edits?quality=high");
+  assert.deepEqual(accountObserved[0].body, multipart.body);
+  assert.equal(accountObserved[0].contentType, multipart.contentType);
+  assert.equal(accountObserved[0].authorization, "Bearer edits-account-token");
+  assert.equal(accountObserved[0].accountId, "edits-account-id");
+  assert.equal(accountObserved[0].customAuthorization, undefined);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    providerId: record.providerId,
+    requestedModel: record.requestedModel,
+    forwardedModel: record.forwardedModel,
+    responseStatus: record.responseStatus
+  })), [{
+    route: "account",
+    routeReason: "account_eligible",
+    providerId: "chatgpt-account",
+    requestedModel: "gpt-image-2",
+    forwardedModel: "gpt-image-2",
+    responseStatus: 200
+  }]);
+});
+
+test("Image Edits 429 is not replayed and cooldown routes only the next multipart request to custom", async (t) => {
+  const accountBodies = [];
+  const account = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      accountBodies.push(Buffer.concat(chunks));
+      res.statusCode = 429;
+      res.setHeader("retry-after", "1");
+      res.end('{"error":{"type":"rate_limit"}}');
+    });
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  const customObserved = [];
+  const custom = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      customObserved.push({
+        path: req.url,
+        body: Buffer.concat(chunks),
+        contentType: req.headers["content-type"],
+        accountAuthorization: req.headers.authorization,
+        accountId: req.headers["chatgpt-account-id"],
+        providerAuthorization: req.headers["x-provider-auth"]
+      });
+      res.setHeader("content-type", "application/json");
+      res.end('{"created":5,"data":[{"b64_json":"fallback-edit"}]}');
+    });
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}/v1`,
+    apiKey: "edits-custom-secret",
+    authHeader: "x-provider-auth",
+    modelMappings: [{ sourceModel: "gpt-image-2", targetModel: "vendor/image-edit" }],
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 29, settings });
+  const captureManager = createMemoryCaptureManager();
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      local.search = target.search;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const multipart = makeImageEditMultipart({
+    image: Buffer.from([0x00, 0xff, 0x80, 0x42, 0x89, 0x50, 0x4e, 0x47])
+  });
+
+  const accountResponse = await fetch(`http://127.0.0.1:${proxyPort}/images/edits`, {
+    method: "POST",
+    headers: {
+      "content-type": multipart.contentType,
+      authorization: "Bearer edits-account-token",
+      "chatgpt-account-id": "edits-account-id"
+    },
+    body: multipart.body
+  });
+  assert.equal(accountResponse.status, 429);
+  await accountResponse.arrayBuffer();
+  assert.equal(customObserved.length, 0);
+
+  const cooldownResponse = await fetch(`http://127.0.0.1:${proxyPort}/images/edits`, {
+    method: "POST",
+    headers: {
+      "content-type": multipart.contentType,
+      authorization: "Bearer edits-account-token",
+      "chatgpt-account-id": "edits-account-id"
+    },
+    body: multipart.body
+  });
+  assert.equal(cooldownResponse.status, 200);
+  await cooldownResponse.arrayBuffer();
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.deepEqual(accountBodies, [multipart.body]);
+  assert.equal(customObserved.length, 1);
+  assert.equal(customObserved[0].path, "/v1/images/edits");
+  assert.equal(customObserved[0].contentType, multipart.contentType);
+  assert.equal(customObserved[0].accountAuthorization, undefined);
+  assert.equal(customObserved[0].accountId, undefined);
+  assert.equal(customObserved[0].providerAuthorization, "Bearer edits-custom-secret");
+  assert.notEqual(customObserved[0].body.indexOf(multipart.image), -1);
+  assert.notEqual(customObserved[0].body.indexOf(Buffer.from("vendor/image-edit")), -1);
+  assert.equal(customObserved[0].body.indexOf(Buffer.from("gpt-image-2")), -1);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    providerSelectionReason: record.providerSelectionReason,
+    requestedModel: record.requestedModel,
+    forwardedModel: record.forwardedModel,
+    responseStatus: record.responseStatus
+  })), [
+    {
+      route: "account",
+      routeReason: "account_eligible",
+      providerSelectionReason: null,
+      requestedModel: "gpt-image-2",
+      forwardedModel: "gpt-image-2",
+      responseStatus: 429
+    },
+    {
+      route: "custom",
+      routeReason: "account_cooldown",
+      providerSelectionReason: "sole_eligible",
+      requestedModel: "gpt-image-2",
+      forwardedModel: "vendor/image-edit",
+      responseStatus: 200
+    }
+  ]);
+});
+
+test("Image Edits without a valid multipart model never reach the account upstream", async (t) => {
+  let accountRequests = 0;
+  const account = http.createServer((req, res) => {
+    accountRequests += 1;
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  const customBodies = [];
+  const custom = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      customBodies.push(Buffer.concat(chunks));
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      res.end('{"error":{"type":"invalid_request"}}');
+    });
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}/v1`,
+    routingMode: "account_first"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 30, settings });
+  const captureManager = createMemoryCaptureManager();
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const missing = makeImageEditMultipart({ model: null });
+  const invalid = makeImageEditMultipart({ model: " gpt-image-2" });
+  const extendedFilename = makeImageEditMultipart({
+    modelDispositionSuffix: "; filename*=UTF-8''model.bin"
+  });
+  const binaryModel = makeImageEditMultipart({ modelContentType: "application/octet-stream" });
+
+  for (const multipart of [missing, invalid, extendedFilename, binaryModel]) {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/images/edits`, {
+      method: "POST",
+      headers: {
+        "content-type": multipart.contentType,
+        authorization: "Bearer account-token",
+        "chatgpt-account-id": "account-id"
+      },
+      body: multipart.body
+    });
+    assert.equal(response.status, 400);
+    await response.arrayBuffer();
+  }
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(accountRequests, 0);
+  assert.deepEqual(customBodies, [
+    missing.body,
+    invalid.body,
+    extendedFilename.body,
+    binaryModel.body
+  ]);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    requestedModel: record.requestedModel
+  })), [
+    { route: "custom", routeReason: "unsupported_account_model", requestedModel: null },
+    { route: "custom", routeReason: "unsupported_account_model", requestedModel: null },
+    { route: "custom", routeReason: "unsupported_account_model", requestedModel: null },
+    { route: "custom", routeReason: "unsupported_account_model", requestedModel: null }
+  ]);
+});
+
 test("Image API requests without a valid image model never reach the account upstream", async (t) => {
   let accountRequests = 0;
   const account = http.createServer((req, res) => {
@@ -1365,6 +1720,54 @@ test("account Image API network failures do not switch to the custom API", async
   assert.equal(customRequests, 0);
 });
 
+test("account Image Edits network failures do not replay multipart bytes to custom", async (t) => {
+  const unavailable = http.createServer();
+  const unavailablePort = await listen(unavailable);
+  await closeServer(unavailable);
+  let customRequests = 0;
+  const custom = http.createServer((req, res) => {
+    customRequests += 1;
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}`,
+    captureEnabled: false,
+    routingMode: "account_first"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 32, settings });
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager: createInactiveCaptureManager(),
+    logFn() {},
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${unavailablePort}`);
+      local.pathname = target.pathname;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const multipart = makeImageEditMultipart();
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/images/edits`, {
+    method: "POST",
+    headers: {
+      "content-type": multipart.contentType,
+      authorization: "Bearer account-token",
+      "chatgpt-account-id": "account-id"
+    },
+    body: multipart.body
+  });
+  assert.equal(response.status, 502);
+  await response.arrayBuffer();
+  assert.equal(customRequests, 0);
+});
+
 test("account Image API timeout returns 504 without custom fallback", async (t) => {
   let accountRequests = 0;
   const account = http.createServer((req) => {
@@ -1499,6 +1902,160 @@ test("oversized account Image API preflight switches to custom with an explicit 
     routeReason: "account_body_too_large",
     providerId: "provider-primary",
     providerSelectionReason: "sole_eligible"
+  }]);
+});
+
+test("oversized model-aware Image Edits fail before any account or custom delivery", async (t) => {
+  let accountRequests = 0;
+  const account = http.createServer((req, res) => {
+    accountRequests += 1;
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  let customRequests = 0;
+  const custom = http.createServer((req, res) => {
+    customRequests += 1;
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const providers = [providerCandidate({
+    id: "edits-custom",
+    name: "Edits custom",
+    weight: 100,
+    baseUrl: `http://127.0.0.1:${customPort}/v1`,
+    apiKey: "edits-secret",
+    supportedModels: ["gpt-image-2"]
+  })];
+  const settings = makeSettings({
+    baseUrl: providers[0].upstream.baseUrl,
+    providers,
+    routingMode: "account_first"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 31, settings });
+  const captureManager = createMemoryCaptureManager();
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const multipart = makeImageEditMultipart({
+    modelFirst: true,
+    image: Buffer.alloc(8 * 1024 * 1024 + 1024, 0xa5)
+  });
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/images/edits`, {
+    method: "POST",
+    headers: {
+      "content-type": multipart.contentType,
+      authorization: "Bearer account-token",
+      "chatgpt-account-id": "account-id"
+    },
+    body: multipart.body
+  });
+  assert.equal(response.status, 413);
+  await response.arrayBuffer();
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(accountRequests, 0);
+  assert.equal(customRequests, 0);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    providerId: record.providerId,
+    providerSelectionReason: record.providerSelectionReason,
+    requestedModel: record.requestedModel
+  })), [{
+    route: "custom",
+    routeReason: "account_body_too_large",
+    providerId: null,
+    providerSelectionReason: null,
+    requestedModel: null
+  }]);
+});
+
+test("oversized Image Edits can stream byte-exact to an unrestricted custom provider", async (t) => {
+  let accountRequests = 0;
+  const account = http.createServer((req, res) => {
+    accountRequests += 1;
+    req.resume();
+    res.statusCode = 200;
+    res.end();
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+  let customBytes = 0;
+  const custom = http.createServer((req, res) => {
+    req.on("data", (chunk) => { customBytes += chunk.length; });
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      res.end('{"created":6,"data":[{"b64_json":"large-edit"}]}');
+    });
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}/v1`,
+    routingMode: "account_first"
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 33, settings });
+  const captureManager = createMemoryCaptureManager();
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      return local;
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+  const multipart = makeImageEditMultipart({
+    modelFirst: true,
+    image: Buffer.alloc(8 * 1024 * 1024 + 1024, 0xa5)
+  });
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/images/edits`, {
+    method: "POST",
+    headers: {
+      "content-type": multipart.contentType,
+      authorization: "Bearer account-token",
+      "chatgpt-account-id": "account-id"
+    },
+    body: multipart.body
+  });
+  assert.equal(response.status, 200);
+  await response.arrayBuffer();
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+
+  assert.equal(accountRequests, 0);
+  assert.equal(customBytes, multipart.body.length);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    route: record.route,
+    routeReason: record.routeReason,
+    providerId: record.providerId,
+    requestedModel: record.requestedModel
+  })), [{
+    route: "custom",
+    routeReason: "account_body_too_large",
+    providerId: "provider-primary",
+    requestedModel: null
   }]);
 });
 

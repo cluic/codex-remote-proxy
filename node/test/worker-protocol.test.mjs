@@ -143,6 +143,13 @@ test("parent protocol accepts exact configure, account state, route preview, dra
       model: "model-a",
       operation: "responses"
     },
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-edits-1",
+      model: "gpt-image-2",
+      operation: "images/edits"
+    },
     { version: 1, type: "drain", requestId: "drain-1" },
     { version: 1, type: "shutdown", requestId: "shutdown-1" },
     { version: 1, type: "status", requestId: "status-1" }
@@ -175,7 +182,7 @@ test("parent protocol rejects unknown, malformed, and secret-bearing non-configu
       type: "route-preview",
       requestId: "route-preview-1",
       model: "model-a",
-      operation: "images/edits"
+      operation: "images/variations"
     },
     {
       version: 1,

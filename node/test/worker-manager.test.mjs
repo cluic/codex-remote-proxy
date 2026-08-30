@@ -579,6 +579,18 @@ test("route previews use a bounded read-only IPC request without changing lifecy
   );
   assert.equal(harness.manager.getPublicState().phase, "running");
 
+  await settle(harness.manager.previewRoute("gpt-image-2", "images/edits"), harness.clock);
+  assert.deepEqual(
+    harness.children[0].sent.findLast((message) => message.type === "route-preview"),
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-3",
+      model: "gpt-image-2",
+      operation: "images/edits"
+    }
+  );
+
   const sentinel = "route-preview-secret-sentinel";
   await assert.rejects(
     harness.manager.previewRoute(` ${sentinel}`),
@@ -588,7 +600,7 @@ test("route previews use a bounded read-only IPC request without changing lifecy
     }
   );
   await assert.rejects(
-    harness.manager.previewRoute("model-a", "images/edits"),
+    harness.manager.previewRoute("model-a", "images/variations"),
     (error) => error?.code === "WORKER_PROTOCOL_INVALID"
   );
 });

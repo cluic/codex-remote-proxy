@@ -100,6 +100,7 @@
 - Detached child commands must resolve from an explicitly constructed runtime path instead of assuming an interactive-shell PATH.
 - Route previews must carry the selected operation through Admin, IPC, and the same decision function used by live traffic.
 - Account routing must model the official client base URL plus canonical operation paths instead of hard-coding a single endpoint.
+- Multipart routes must parse bounded fields by boundary and must never decode binary parts as text.
 - Non-Responses model preflight may buffer before first delivery but must never enable request replay.
 - Provider-selection explanations must be derived from the scheduler plan that selected the recorded provider.
 - Persisted filesystem identities must use canonical strings derived from BigInt stats; JavaScript number identities are prohibited.

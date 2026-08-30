@@ -53,6 +53,14 @@ test("maps canonical Image API request targets to the ChatGPT Codex account base
     buildChatGptAccountTarget("/v1/images/generations").pathname,
     "/backend-api/codex/images/generations"
   );
+  assert.equal(
+    buildChatGptAccountTarget("/images/edits?quality=high").href,
+    "https://chatgpt.com/backend-api/codex/images/edits?quality=high"
+  );
+  assert.equal(
+    buildChatGptAccountTarget("/v1/images/edits").pathname,
+    "/backend-api/codex/images/edits"
+  );
   assert.equal(buildChatGptAccountTarget("/chat/completions"), null);
 });
 
@@ -94,15 +102,18 @@ test("classifies operations separately from models and exposes account capabilit
   assert.equal(requestOperation("/v1/responses?stream=true"), "responses");
   assert.equal(requestOperation("/chat/completions"), "chat/completions");
   assert.equal(requestOperation("/v1/images/generations"), "images/generations");
-  assert.equal(requestOperation("/images/edits"), null);
+  assert.equal(requestOperation("/images/edits"), "images/edits");
   assert.equal(accountSupportsOperation("responses"), true);
   assert.equal(accountSupportsOperation("images/generations"), true);
+  assert.equal(accountSupportsOperation("images/edits"), true);
   assert.equal(accountSupportsModel("responses", "gpt-5.6"), true);
   assert.equal(accountSupportsModel("responses", "gpt-image-2"), false);
   assert.equal(accountSupportsModel("images/generations", "gpt-image-2"), true);
   assert.equal(accountSupportsModel("images/generations", "gpt-5.6"), false);
   assert.equal(accountSupportsModel("images/generations", null), false);
   assert.equal(accountSupportsModel("images/generations", null, { allowUnknown: true }), true);
+  assert.equal(accountSupportsModel("images/edits", "gpt-image-2"), true);
+  assert.equal(accountSupportsModel("images/edits", "gpt-5.6"), false);
 
   const decide = (requestUrl, model) => decideUpstreamRoute({
     mode: "account_first",
@@ -114,6 +125,8 @@ test("classifies operations separately from models and exposes account capabilit
     nowMs: NOW_MS
   });
   assert.equal(decide("/images/generations", "gpt-image-2").reason,
+    "account_eligible");
+  assert.equal(decide("/images/edits", "gpt-image-2").reason,
     "account_eligible");
   assert.equal(decide("/chat/completions", "gpt-5.6").reason,
     "unsupported_operation");

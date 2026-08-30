@@ -146,7 +146,9 @@ function createServices() {
           enabled: false,
           selected: false,
           reason: "custom_only",
-          operationSupported: operation === "responses" || operation === "images/generations",
+          operationSupported: operation === "responses"
+            || operation === "images/generations"
+            || operation === "images/edits",
           fallbackAvailable: true
         },
         matchedPriorityRule: true,
@@ -1806,13 +1808,21 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
   assert.equal(imagePreview.json.routePreview.operation, "images/generations");
   assert.equal(imagePreview.json.routePreview.account.operationSupported, true);
 
+  const imageEditPreview = await harness.request(
+    "/api/v1/routing-preview?model=gpt-image-2&operation=images%2Fedits",
+    { headers: bearer(harness) }
+  );
+  assert.equal(imageEditPreview.response.status, 200, imageEditPreview.text);
+  assert.equal(imageEditPreview.json.routePreview.operation, "images/edits");
+  assert.equal(imageEditPreview.json.routePreview.account.operationSupported, true);
+
   for (const path of [
     "/api/v1/routing-preview",
     "/api/v1/routing-preview?model=",
     "/api/v1/routing-preview?model=%20model-a",
     "/api/v1/routing-preview?model=model-a&model=model-b",
     "/api/v1/routing-preview?model=model-a&unknown=1",
-    "/api/v1/routing-preview?model=model-a&operation=images%2Fedits",
+    "/api/v1/routing-preview?model=model-a&operation=images%2Fvariations",
     "/api/v1/routing-preview?model=model-a&operation=responses&operation=responses",
     `/api/v1/routing-preview?model=${"m".repeat(257)}`,
     `/api/v1/routing-preview?model=${encodeURIComponent("模".repeat(171))}`

@@ -10,7 +10,8 @@ export const ACCOUNT_429_FALLBACK_COOLDOWN_MS = 5_000;
 export const ROUTE_OPERATIONS = Object.freeze([
   "responses",
   "chat/completions",
-  "images/generations"
+  "images/generations",
+  "images/edits"
 ]);
 
 const MAX_HEADER_VALUE_BYTES = 64 * 1024;
@@ -92,6 +93,10 @@ export function requestOperation(requestUrl) {
     || incoming.pathname === "/v1/images/generations") {
     return "images/generations";
   }
+  if (incoming.pathname === "/images/edits"
+    || incoming.pathname === "/v1/images/edits") {
+    return "images/edits";
+  }
   return null;
 }
 
@@ -104,14 +109,18 @@ export function operationRequestUrl(operation) {
 }
 
 export function accountSupportsOperation(operation) {
-  return operation === "responses" || operation === "images/generations";
+  return operation === "responses"
+    || operation === "images/generations"
+    || operation === "images/edits";
 }
 
 export function accountSupportsModel(operation, model, { allowUnknown = false } = {}) {
   if (!accountSupportsOperation(operation)) return false;
   if (typeof model !== "string") return allowUnknown;
   const imageModel = /^gpt-image(?:-|$)/i.test(model);
-  return operation === "images/generations" ? imageModel : !imageModel;
+  return operation === "images/generations" || operation === "images/edits"
+    ? imageModel
+    : !imageModel;
 }
 
 export function buildChatGptAccountTarget(requestUrl) {

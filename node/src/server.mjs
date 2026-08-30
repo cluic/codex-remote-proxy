@@ -24,8 +24,13 @@ import {
   ACCOUNT_REQUEST_REPLAY_MAX_BYTES,
   account429Cooldown,
   decideUpstreamRoute,
-  parseCodexQuotaHeaders
+  parseCodexQuotaHeaders,
+  requestOperation
 } from "./routing/account-routing.mjs";
+import {
+  inspectMultipartModel,
+  rewriteMultipartModel
+} from "./http/multipart-model.mjs";
 import {
   ProviderScheduler
 } from "./routing/provider-scheduler.mjs";
@@ -907,13 +912,17 @@ function configuredProviderCandidates(settings) {
       }];
 }
 
-function boundedRequestModel(encodedBody, contentEncoding) {
+function boundedRequestModel(encodedBody, contentEncoding, contentType, operation) {
   const decoded = decodeBoundedBody(
     encodedBody,
     contentEncoding,
     METRIC_BODY_INSPECTION_MAX_BYTES
   );
   if (!decoded) return null;
+  if (operation === "images/edits") {
+    const inspection = inspectMultipartModel(decoded, contentType);
+    return inspection.status === "valid" ? inspection.model : null;
+  }
   const payload = parseBoundedJson(decoded, METRIC_BODY_INSPECTION_MAX_BYTES);
   const model = payload?.model;
   return typeof model === "string"
@@ -1734,6 +1743,11 @@ export function createServer(settings, {
     const startedAt = Date.now();
     const metricStartedAt = metricNow();
     const responsesRequest = isResponsesRequest(req.url);
+    const requestOperationKind = requestOperation(req.url);
+    const multipartModelRequest = requestOperationKind === "images/edits";
+    const requestContentType = typeof req.headers["content-type"] === "string"
+      ? req.headers["content-type"]
+      : "";
     let overrideModel = requestSettings.proxy.modelMode === "override"
       && typeof requestSettings.proxy.modelOverride === "string"
       ? requestSettings.proxy.modelOverride
@@ -1753,10 +1767,13 @@ export function createServer(settings, {
       : null;
     const requestPreview = requestDebugEnabled ? createBoundedCollector(4096) : null;
     const initialAccountRoute = metricRoute === "account";
-    const requestModelInspector = (!modelTransformRequired || initialAccountRoute) && directRequestInspection
+    const requestModelInspector = (!modelTransformRequired || initialAccountRoute)
+      && directRequestInspection
+      && !multipartModelRequest
       ? createTopLevelJsonInspector({ stringKeys: ["model"] })
       : null;
-    const encodedRequestMetric = (!modelTransformRequired || initialAccountRoute) && !directRequestInspection
+    const encodedRequestMetric = (!modelTransformRequired || initialAccountRoute)
+      && (!directRequestInspection || multipartModelRequest)
       ? createBoundedCollector(METRIC_BODY_INSPECTION_MAX_BYTES)
       : null;
     const modelTransformCollector = modelTransformRequired && !initialAccountRoute
@@ -1849,20 +1866,14 @@ export function createServer(settings, {
           : null;
         requestedModel = requestModel;
       } else if (encodedRequestMetric && !encodedRequestMetric.truncated) {
-        const decoded = decodeBoundedBody(
+        const inspectedModel = boundedRequestModel(
           encodedRequestMetric.buffer(),
           requestEncoding,
-          METRIC_BODY_INSPECTION_MAX_BYTES
+          requestContentType,
+          requestOperationKind
         );
-        if (decoded) {
-          const inspector = createTopLevelJsonInspector({ stringKeys: ["model"] });
-          inspector.write(decoded);
-          const inspection = inspector.end();
-          requestModel = inspection.complete && !inspection.invalid
-            ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
-            : null;
-          requestedModel = requestModel;
-        }
+        requestModel = safeMetricModel(inspectedModel, requestSettings, requestProtectedValues);
+        requestedModel = requestModel;
       }
       return requestModel;
     }
@@ -2012,8 +2023,15 @@ export function createServer(settings, {
         });
         return null;
       }
-      const parsed = parseBoundedJson(decodedBody, MODEL_OVERRIDE_MAX_BYTES);
-      const sourceModel = typeof parsed?.model === "string" ? parsed.model : null;
+      const multipartInspection = multipartModelRequest
+        ? inspectMultipartModel(decodedBody, requestContentType)
+        : null;
+      const parsed = multipartModelRequest
+        ? null
+        : parseBoundedJson(decodedBody, MODEL_OVERRIDE_MAX_BYTES);
+      const sourceModel = multipartModelRequest
+        ? (multipartInspection?.status === "valid" ? multipartInspection.model : null)
+        : (typeof parsed?.model === "string" ? parsed.model : null);
       requestedModel = safeMetricModel(sourceModel, requestSettings, requestProtectedValues);
       let targetModel = overrideModel;
       if (targetModel === null) {
@@ -2022,14 +2040,21 @@ export function createServer(settings, {
           : modelMappings.find((rule) => rule.sourceModel === sourceModel)?.targetModel ?? null;
         if (targetModel === null) return prepareCustomPassthroughBody(encodedBody);
       }
-      const rewrite = rewriteTopLevelModel(decodedBody, targetModel);
+      const rewrite = multipartModelRequest
+        ? rewriteMultipartModel(
+            decodedBody,
+            requestContentType,
+            targetModel,
+            MODEL_OVERRIDE_MAX_BYTES
+          )
+        : rewriteTopLevelModel(decodedBody, targetModel);
       if (!rewrite) {
         logRequestBody();
         finishProxyFailure({
           statusCode: 400,
           errorType: "proxy_bad_request",
           result: "upstreamError",
-          error: new Error("model transformation request is not a valid JSON object")
+          error: new Error("model transformation request does not contain a valid model field")
         });
         return null;
       }
@@ -2081,23 +2106,14 @@ export function createServer(settings, {
         );
         requestCapture.append(encodedBody);
       }
-      const decoded = decodeBoundedBody(
+      const inspectedModel = boundedRequestModel(
         encodedBody,
         requestEncoding,
-        METRIC_BODY_INSPECTION_MAX_BYTES
+        requestContentType,
+        requestOperationKind
       );
-      if (decoded) {
-        const inspector = createTopLevelJsonInspector({ stringKeys: ["model"] });
-        inspector.write(decoded);
-        const inspection = inspector.end();
-        requestModel = inspection.complete && !inspection.invalid
-          ? safeMetricModel(inspection.strings.model, requestSettings, requestProtectedValues)
-          : null;
-        requestedModel = requestModel;
-      } else {
-        requestModel = null;
-        requestedModel = null;
-      }
+      requestModel = safeMetricModel(inspectedModel, requestSettings, requestProtectedValues);
+      requestedModel = requestModel;
       requestInspectionFinished = true;
       return encodedBody;
     }
@@ -2164,7 +2180,7 @@ export function createServer(settings, {
             : (statusCode === 413
                 ? "Request body is too large for model override"
                 : (statusCode === 400
-                    ? "Request body must be a valid JSON object for model override"
+                    ? "Request body must contain a valid model field for model override"
                     : (statusCode === 415
                         ? "Request content encoding is not supported for model override"
                         : "Failed to reach upstream service"))),
@@ -2366,15 +2382,18 @@ export function createServer(settings, {
           && observedQuota?.status === "available") {
           routingState.accountBlockedUntilMs = null;
         }
-        if (incoming.statusCode === 429 && Buffer.isBuffer(replayBody)) {
+        if (incoming.statusCode === 429) {
           routingState.accountBlockedUntilMs = account429Cooldown(incoming.headers, routingNow()).untilMs;
-          routeReason = observedQuota?.status === "exhausted"
+          const fallbackReason = observedQuota?.status === "exhausted"
             ? "account_quota_exhausted"
             : "account_cooldown";
-          if (captureContext) captureContext.routeReason = routeReason;
-          incoming.destroy();
-          startCustomFallback();
-          return;
+          if (!multipartModelRequest && Buffer.isBuffer(replayBody)) {
+            routeReason = fallbackReason;
+            if (captureContext) captureContext.routeReason = routeReason;
+            incoming.destroy();
+            startCustomFallback();
+            return;
+          }
         }
       }
       if (metricRoute === "custom") {
@@ -2601,7 +2620,17 @@ export function createServer(settings, {
         }
         streamingCustom = true;
         replayBody = null;
-        const inspectedModel = requestModelInspector?.snapshot()?.strings?.model;
+        let inspectedModel = requestModelInspector?.snapshot()?.strings?.model;
+        if (multipartModelRequest && directRequestInspection && encodedRequestMetric) {
+          const multipartInspection = inspectMultipartModel(
+            encodedRequestMetric.buffer(),
+            requestContentType,
+            { allowIncomplete: true }
+          );
+          inspectedModel = multipartInspection.status === "valid"
+            ? multipartInspection.model
+            : null;
+        }
         if (modelAwareRouting && typeof inspectedModel !== "string") {
           logRequestBody();
           finishProxyFailure({
@@ -2613,6 +2642,15 @@ export function createServer(settings, {
           return;
         }
         requestedRoutingModel = typeof inspectedModel === "string" ? inspectedModel : null;
+        if (requestedRoutingModel !== null) {
+          requestedModel = safeMetricModel(
+            requestedRoutingModel,
+            requestSettings,
+            requestProtectedValues
+          );
+          requestModel = requestedModel;
+          requestInspectionFinished = true;
+        }
         if (!selectCustomCandidatesForModel(requestedRoutingModel)) {
           failUnsupportedCustomModel();
           return;
@@ -2647,7 +2685,12 @@ export function createServer(settings, {
           return;
         }
         replayBody = Buffer.concat(accountChunks, accountBytes);
-        requestedRoutingModel = boundedRequestModel(replayBody, requestEncoding);
+        requestedRoutingModel = boundedRequestModel(
+          replayBody,
+          requestEncoding,
+          requestContentType,
+          requestOperationKind
+        );
         let customBodyRoute = !initialAccountRoute;
         if (initialAccountRoute) {
           const refinedRoute = decideRouteForModel(requestedRoutingModel, true);

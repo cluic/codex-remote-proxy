@@ -98,7 +98,8 @@ const ROUTE_PREVIEW_ROUTES = new Set(["account", "custom", "unavailable"]);
 const ROUTE_PREVIEW_OPERATIONS = new Set([
   "responses",
   "chat/completions",
-  "images/generations"
+  "images/generations",
+  "images/edits"
 ]);
 const ROUTE_PREVIEW_REASONS = new Set([
   "account_eligible",
