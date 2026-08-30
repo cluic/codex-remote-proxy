@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.16
+
+### Patch Changes
+
+- bdf23c2: Forward eligible GPT Image generation requests byte-for-byte through the ChatGPT Codex account route while preserving model-aware custom fallback on explicit quota exhaustion.
+
 ## 0.4.15
 
 ### Patch Changes
