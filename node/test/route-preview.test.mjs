@@ -128,6 +128,28 @@ test("uses the real operation and model capability gates for image previews", ()
   assert.equal(imageEndpoint.account.operationSupported, true);
   assert.equal(imageEndpoint.customPrimaryProviderId, "provider-a");
 
+  const editEndpoint = buildRoutePreview({
+    source: "live",
+    generation: 2,
+    settings: {
+      ...settings(),
+      providers: settings().providers.map((provider) => ({
+        ...provider,
+        supportedModels: null
+      }))
+    },
+    accountState,
+    providerScheduler: scheduler,
+    nowMs: NOW,
+    model: "gpt-image-2",
+    operation: "images/edits"
+  });
+  assert.equal(editEndpoint.operation, "images/edits");
+  assert.equal(editEndpoint.route, "account");
+  assert.equal(editEndpoint.reason, "account_eligible");
+  assert.equal(editEndpoint.account.operationSupported, true);
+  assert.equal(isValidRoutePreview(editEndpoint), true);
+
   const directImageModel = buildRoutePreview({
     source: "live",
     generation: 2,
@@ -218,7 +240,7 @@ test("route preview validation rejects unbounded models and malformed public out
   });
   assert.equal(isValidRoutePreview({ ...preview, unexpected: true }), false);
   assert.equal(isValidRoutePreview({ ...preview, generation: 1 }), false);
-  assert.equal(isValidRoutePreview({ ...preview, operation: "images/edits" }), false);
+  assert.equal(isValidRoutePreview({ ...preview, operation: "images/variations" }), false);
   assert.equal(isValidRoutePreview({ ...preview, reason: "account_eligible" }), false);
   assert.equal(isValidRoutePreview({
     ...preview,

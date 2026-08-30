@@ -98,6 +98,7 @@ function accountReason(reason: RoutePreview["account"]["reason"], t: Translator)
 function operationLabel(operation: RouteOperation, t: Translator): string {
   if (operation === "chat/completions") return t("routePreview.operationChatCompletions");
   if (operation === "images/generations") return t("routePreview.operationImageGenerations");
+  if (operation === "images/edits") return t("routePreview.operationImageEdits");
   return t("routePreview.operationResponses");
 }
 
@@ -350,6 +351,7 @@ export function RoutePreviewBoard({
               <option value="responses">{t("routePreview.operationResponses")}</option>
               <option value="chat/completions">{t("routePreview.operationChatCompletions")}</option>
               <option value="images/generations">{t("routePreview.operationImageGenerations")}</option>
+              <option value="images/edits">{t("routePreview.operationImageEdits")}</option>
             </select>
           </label>
           <label className="route-preview-model-field">

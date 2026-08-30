@@ -104,7 +104,8 @@ export type RoutePreviewReason =
 export type RouteOperation =
   | "responses"
   | "chat/completions"
-  | "images/generations";
+  | "images/generations"
+  | "images/edits";
 
 export type ProviderSelectionReason =
   | "sole_eligible"

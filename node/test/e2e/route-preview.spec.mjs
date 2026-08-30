@@ -144,6 +144,23 @@ test("traces the live model route and its conditional account fallback", async (
     contentType: "image/png"
   });
 
+  await page.getByLabel("API operation").selectOption("images/edits");
+  await expect.poll(() => crp.calls.some((call) => (
+    call.operation === "previewRoute"
+      && call.model === "gpt-image-2"
+      && call.routeOperation === "images/edits"
+  ))).toBe(true);
+  await expect(board.getByText("ChatGPT route")).toBeVisible();
+  await expect(board.locator(".route-preview-primary-lane")).toContainText("ChatGPT account");
+  await expect(board.locator(".route-preview-primary-lane")).toContainText("gpt-image-2");
+  const imageEditsScreenshot = testInfo.outputPath("route-preview-image-edits-account-1440x900.png");
+  crp.registerAttachment(imageEditsScreenshot);
+  await board.screenshot({ path: imageEditsScreenshot, animations: "disabled" });
+  await testInfo.attach("route-preview-image-edits-account-1440x900", {
+    path: imageEditsScreenshot,
+    contentType: "image/png"
+  });
+
   await page.getByLabel("API operation").selectOption("responses");
   await page.getByLabel("Inspect model").fill("gpt-5.6-sol");
   await expect(board.getByText("ChatGPT route")).toBeVisible();
