@@ -87,15 +87,18 @@ function routePreview(generation = 1) {
     source: "live",
     generation,
     evaluatedAt: "2030-01-01T00:00:00.000Z",
+    operation: "responses",
     route: "custom",
     reason: "custom_only",
     account: {
       enabled: false,
       selected: false,
       reason: "custom_only",
+      operationSupported: true,
       fallbackAvailable: true
     },
     matchedPriorityRule: false,
+    customSelectionReason: "sole_eligible",
     customPrimaryProviderId: "provider-1",
     candidates: [{
       providerId: "provider-1",
@@ -570,7 +573,8 @@ test("route previews use a bounded read-only IPC request without changing lifecy
       version: 1,
       type: "route-preview",
       requestId: "route-preview-2",
-      model: "model-a"
+      model: "model-a",
+      operation: "responses"
     }
   );
   assert.equal(harness.manager.getPublicState().phase, "running");
@@ -582,6 +586,10 @@ test("route previews use a bounded read-only IPC request without changing lifecy
       assert.equal(String(error?.message).includes(sentinel), false);
       return error?.code === "WORKER_PROTOCOL_INVALID";
     }
+  );
+  await assert.rejects(
+    harness.manager.previewRoute("model-a", "images/edits"),
+    (error) => error?.code === "WORKER_PROTOCOL_INVALID"
   );
 });
 

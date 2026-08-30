@@ -605,6 +605,22 @@ function createServices({ upstream }) {
     ].map((record) => ({
       ...record,
       cachedInputTokens: record.id === 3 ? 64 : null,
+      routeReason: record.id === 3
+        ? "account_eligible"
+        : record.id === 4
+          ? "account_cooldown"
+          : record.id === 2
+            ? "account_quota_exhausted"
+            : "custom_only",
+      providerSelectionReason: record.id === 3
+        ? null
+        : record.id === 4
+          ? "model_priority"
+          : record.id === 2
+            ? "runtime_order"
+            : record.id === 1
+              ? "retry_after_provider_failure"
+              : "sole_eligible",
       detailsAvailable: record.id === 3 || record.id === 4
     })),
     forwardingRecordDetails: new Map([
@@ -737,7 +753,7 @@ function createServices({ upstream }) {
     return state.providers.find((provider) => provider.id === state.activeProviderId) ?? null;
   }
 
-  function buildFixtureRoutePreview(model) {
+  function buildFixtureRoutePreview(model, operation = "responses") {
     const eligible = state.providers
       .filter((provider) => provider.lastTestStatus === "passed" && credentials.has(provider.id))
       .sort((left, right) => {
@@ -788,7 +804,8 @@ function createServices({ upstream }) {
       accountState: projectAccountRoutingState(state.account),
       providerScheduler: new ProviderScheduler({ now: () => Date.parse(STARTED_AT) }),
       nowMs: Date.parse(STARTED_AT),
-      model
+      model,
+      operation
     });
     const matchedRule = activeGroup?.rules.find((rule) => rule.models.includes(model)) ?? null;
     const profiles = new Map(state.providers.map((provider) => [provider.id, provider]));
@@ -879,9 +896,9 @@ function createServices({ upstream }) {
       calls.push({ operation: "listRoutingRuleGroups" });
       return structuredClone(state.routingRuleGroups);
     },
-    async previewRoute(model) {
-      calls.push({ operation: "previewRoute", model });
-      return buildFixtureRoutePreview(model);
+    async previewRoute(model, routeOperation = "responses") {
+      calls.push({ operation: "previewRoute", model, routeOperation });
+      return buildFixtureRoutePreview(model, routeOperation);
     },
     async createRoutingRuleGroup(input) {
       rejectNextMutation("createRoutingRuleGroup");

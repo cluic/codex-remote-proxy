@@ -300,7 +300,8 @@ test("worker configures once, proxies traffic, reports public state, and shuts d
     version: 1,
     type: "route-preview",
     requestId: "route-preview-1",
-    model: "preview-model"
+    model: "preview-model",
+    operation: "responses"
   });
   const routePreview = await worker.waitForMessage(
     (message) => message?.type === "route-preview" && message.requestId === "route-preview-1",

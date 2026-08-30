@@ -133,21 +133,24 @@ function createServices() {
       calls.push(["listRoutingRuleGroups"]);
       return structuredClone(routingRuleGroups);
     },
-    async previewRoute(model) {
-      calls.push(["previewRoute", model]);
+    async previewRoute(model, operation = "responses") {
+      calls.push(["previewRoute", model, operation]);
       return {
         source: "live",
         generation: 4,
         evaluatedAt: "2026-07-13T00:00:00.000Z",
+        operation,
         route: "custom",
         reason: "custom_only",
         account: {
           enabled: false,
           selected: false,
           reason: "custom_only",
+          operationSupported: operation === "responses",
           fallbackAvailable: true
         },
         matchedPriorityRule: true,
+        customSelectionReason: "model_priority",
         customPrimaryProviderId: "provider-1",
         routingRule: {
           groupId: "routing-1",
@@ -603,6 +606,8 @@ function createServices() {
           providerId: "provider-1",
           providerName: "Primary",
           route: "custom",
+          routeReason: "custom_only",
+          providerSelectionReason: "model_priority",
           requestedModel: "model-a",
           forwardedModel: "vendor/model-a",
           requestBody: SECRET,
@@ -1753,15 +1758,18 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
       source: "live",
       generation: 4,
       evaluatedAt: "2026-07-13T00:00:00.000Z",
+      operation: "responses",
       route: "custom",
       reason: "custom_only",
       account: {
         enabled: false,
         selected: false,
         reason: "custom_only",
+        operationSupported: true,
         fallbackAvailable: true
       },
       matchedPriorityRule: true,
+      customSelectionReason: "model_priority",
       customPrimaryProviderId: "provider-1",
       routingRule: {
         groupId: "routing-1",
@@ -1786,8 +1794,17 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
   });
   assert.deepEqual(harness.calls.find((call) => call[0] === "previewRoute"), [
     "previewRoute",
-    "model-a"
+    "model-a",
+    "responses"
   ]);
+
+  const imagePreview = await harness.request(
+    "/api/v1/routing-preview?model=gpt-image-2&operation=images%2Fgenerations",
+    { headers: bearer(harness) }
+  );
+  assert.equal(imagePreview.response.status, 200, imagePreview.text);
+  assert.equal(imagePreview.json.routePreview.operation, "images/generations");
+  assert.equal(imagePreview.json.routePreview.account.operationSupported, false);
 
   for (const path of [
     "/api/v1/routing-preview",
@@ -1795,6 +1812,8 @@ test("routing preview is authenticated, query-bounded, and metadata-only", async
     "/api/v1/routing-preview?model=%20model-a",
     "/api/v1/routing-preview?model=model-a&model=model-b",
     "/api/v1/routing-preview?model=model-a&unknown=1",
+    "/api/v1/routing-preview?model=model-a&operation=images%2Fedits",
+    "/api/v1/routing-preview?model=model-a&operation=responses&operation=responses",
     `/api/v1/routing-preview?model=${"m".repeat(257)}`,
     `/api/v1/routing-preview?model=${encodeURIComponent("模".repeat(171))}`
   ]) {
@@ -1855,6 +1874,8 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
       providerId: "provider-1",
       providerName: "Primary",
       route: "custom",
+      routeReason: "custom_only",
+      providerSelectionReason: "model_priority",
       requestedModel: "model-a",
       forwardedModel: "vendor/model-a"
     }],

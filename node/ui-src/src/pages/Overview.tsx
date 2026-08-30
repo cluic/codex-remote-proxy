@@ -40,6 +40,7 @@ import type {
   Provider,
   Route,
   RoutePreview,
+  RouteOperation,
   RoutingRuleGroup,
   Settings,
   StatusResponse,
@@ -63,7 +64,11 @@ type OverviewProps = {
   pending: string | null;
   onNavigate: (route: Route) => void;
   onMetricsWindow: (window: MetricsWindow) => void;
-  onRoutePreview: (model: string, signal: AbortSignal) => Promise<RoutePreview>;
+  onRoutePreview: (
+    model: string,
+    operation: RouteOperation,
+    signal: AbortSignal
+  ) => Promise<RoutePreview>;
   onStart: () => void;
   onRestart: () => void;
   onPrepareCodex: () => void;

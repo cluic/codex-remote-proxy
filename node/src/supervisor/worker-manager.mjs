@@ -248,7 +248,7 @@ export class WorkerManager {
     return this.#trackOperation(this.#performApplyAccountState(message));
   }
 
-  previewRoute(model) {
+  previewRoute(model, operation = "responses") {
     if (this.#closed) {
       return Promise.reject(managerError("WORKER_MANAGER_CLOSED"));
     }
@@ -258,14 +258,15 @@ export class WorkerManager {
         version: PROTOCOL_VERSION,
         type: "route-preview",
         requestId: this.#nextRequestId("route-preview"),
-        model
+        model,
+        operation
       };
       validateParentMessage(message);
     } catch {
       return Promise.reject(managerError("WORKER_PROTOCOL_INVALID"));
     }
     if (this.#operation) {
-      return this.#operation.then(() => this.previewRoute(model));
+      return this.#operation.then(() => this.previewRoute(model, operation));
     }
     const child = this.#child;
     const epoch = this.#epoch;

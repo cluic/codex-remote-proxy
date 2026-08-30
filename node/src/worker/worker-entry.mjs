@@ -219,7 +219,7 @@ async function previewRoute(message) {
     version: PROTOCOL_VERSION,
     type: "route-preview",
     requestId: message.requestId,
-    preview: app.previewRoute(message.model)
+    preview: app.previewRoute(message.model, message.operation)
   });
 }
 

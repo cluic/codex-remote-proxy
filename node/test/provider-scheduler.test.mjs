@@ -19,6 +19,14 @@ test("orders healthy providers by weight while preserving snapshot tie order", (
     scheduler.ordered(providers).map(({ id }) => id),
     ["high", "preferred", "equal"]
   );
+  assert.equal(scheduler.explain(providers).primaryReason, "weight");
+
+  const tied = scheduler.plan([
+    { id: "first", weight: 100 },
+    { id: "second", weight: 100 }
+  ]);
+  assert.equal(tied.primaryReason, "runtime_order");
+  assert.deepEqual(tied.providers.map(({ id }) => id), ["first", "second"]);
 });
 
 test("cools retryable responses and restores a provider after the deadline", () => {
@@ -161,6 +169,7 @@ test("explains the exact ordered route without exposing provider configuration",
   assert.equal(serialized.includes("also-private"), false);
 
   assert.equal(explanation.matchedPriorityRule, true);
+  assert.equal(explanation.primaryReason, "sole_eligible");
   assert.deepEqual(explanation.candidates, [
     {
       providerId: "provider-a",

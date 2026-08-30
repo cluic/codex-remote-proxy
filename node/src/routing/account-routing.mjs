@@ -3,6 +3,11 @@ export const CHATGPT_METRICS_PROVIDER_ID = "crp-chatgpt-account";
 export const ACCOUNT_REQUEST_REPLAY_MAX_BYTES = 8 * 1024 * 1024;
 export const ACCOUNT_STATE_MAX_AGE_MS = 10 * 60 * 1_000;
 export const ACCOUNT_429_FALLBACK_COOLDOWN_MS = 5_000;
+export const ROUTE_OPERATIONS = Object.freeze([
+  "responses",
+  "chat/completions",
+  "images/generations"
+]);
 
 const MAX_HEADER_VALUE_BYTES = 64 * 1024;
 const MAX_RESET_AFTER_SECONDS = 31 * 24 * 60 * 60;
@@ -18,6 +23,7 @@ const CHATGPT_AUTH_MODES = new Set([
 const NON_CHATGPT_AUTH_MODES = new Set(["apikey", "headers", "bedrockApiKey"]);
 const ROUTING_MODES = new Set(["custom_only", "account_first"]);
 const QUOTA_STATUSES = new Set(["available", "exhausted", "unknown"]);
+const ROUTE_OPERATION_SET = new Set(ROUTE_OPERATIONS);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -63,7 +69,7 @@ function singleSafeHeader(rawHeaders, name) {
     : null;
 }
 
-export function buildChatGptResponsesTarget(requestUrl) {
+export function requestOperation(requestUrl) {
   if (typeof requestUrl !== "string" || !requestUrl.startsWith("/")) return null;
   let incoming;
   try {
@@ -71,7 +77,40 @@ export function buildChatGptResponsesTarget(requestUrl) {
   } catch {
     return null;
   }
-  if (incoming.pathname !== "/responses" && incoming.pathname !== "/v1/responses") return null;
+  if (incoming.pathname === "/responses" || incoming.pathname === "/v1/responses") {
+    return "responses";
+  }
+  if (incoming.pathname === "/chat/completions"
+    || incoming.pathname === "/v1/chat/completions") {
+    return "chat/completions";
+  }
+  if (incoming.pathname === "/images/generations"
+    || incoming.pathname === "/v1/images/generations") {
+    return "images/generations";
+  }
+  return null;
+}
+
+export function isRouteOperation(value) {
+  return ROUTE_OPERATION_SET.has(value);
+}
+
+export function operationRequestUrl(operation) {
+  return isRouteOperation(operation) ? `/${operation}` : null;
+}
+
+export function accountSupportsOperation(operation) {
+  return operation === "responses";
+}
+
+export function accountSupportsModel(operation, model) {
+  if (!accountSupportsOperation(operation)) return false;
+  return typeof model !== "string" || !/^gpt-image(?:-|$)/i.test(model);
+}
+
+export function buildChatGptResponsesTarget(requestUrl) {
+  if (requestOperation(requestUrl) !== "responses") return null;
+  const incoming = new URL(requestUrl, "http://127.0.0.1");
   const target = new URL(CHATGPT_CODEX_RESPONSES_URL);
   target.search = incoming.search;
   return target;
@@ -127,6 +166,7 @@ export function decideUpstreamRoute({
   requestUrl,
   rawHeaders,
   accountState,
+  model = null,
   localBlockedUntilMs = null,
   nowMs = Date.now()
 }) {
@@ -135,6 +175,13 @@ export function decideUpstreamRoute({
   }
   if (method !== "POST") {
     return { route: "custom", reason: "unsupported_method", target: null };
+  }
+  const operation = requestOperation(requestUrl);
+  if (operation === null) {
+    return { route: "custom", reason: "unsupported_path", target: null };
+  }
+  if (!accountSupportsOperation(operation)) {
+    return { route: "custom", reason: "unsupported_operation", target: null };
   }
   const target = buildChatGptResponsesTarget(requestUrl);
   if (!target) return { route: "custom", reason: "unsupported_path", target: null };
@@ -158,6 +205,9 @@ export function decideUpstreamRoute({
     && nowMs - updatedAtMs <= ACCOUNT_STATE_MAX_AGE_MS;
   if (fresh && accountState?.quotaStatus === "exhausted") {
     return { route: "custom", reason: "account_quota_exhausted", target: null };
+  }
+  if (!accountSupportsModel(operation, model)) {
+    return { route: "custom", reason: "unsupported_account_model", target: null };
   }
   return { route: "account", reason: "account_eligible", target };
 }

@@ -88,15 +88,18 @@ function makeRoutePreview() {
     source: "live",
     generation: 1,
     evaluatedAt: "2030-01-01T00:00:00.000Z",
+    operation: "responses",
     route: "custom",
     reason: "custom_only",
     account: {
       enabled: false,
       selected: false,
       reason: "custom_only",
+      operationSupported: true,
       fallbackAvailable: true
     },
     matchedPriorityRule: false,
+    customSelectionReason: "sole_eligible",
     customPrimaryProviderId: "provider-1",
     candidates: [{
       providerId: "provider-1",
@@ -133,7 +136,13 @@ test("parent protocol accepts exact configure, account state, route preview, dra
         updatedAt: "2026-08-20T00:00:00.000Z"
       }
     },
-    { version: 1, type: "route-preview", requestId: "route-preview-1", model: "model-a" },
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-1",
+      model: "model-a",
+      operation: "responses"
+    },
     { version: 1, type: "drain", requestId: "drain-1" },
     { version: 1, type: "shutdown", requestId: "shutdown-1" },
     { version: 1, type: "status", requestId: "status-1" }
@@ -154,8 +163,28 @@ test("parent protocol rejects unknown, malformed, and secret-bearing non-configu
     { version: 1, type: "status", requestId: "contains spaces" },
     { version: 1, type: "status", requestId: "status-1", extra: true },
     { version: 1, type: "drain", requestId: "drain-1", apiKey: "must-not-pass" },
-    { version: 1, type: "route-preview", requestId: "route-preview-1", model: " bad-model" },
-    { version: 1, type: "route-preview", requestId: "route-preview-1", model: "model-a", extra: true },
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-1",
+      model: " bad-model",
+      operation: "responses"
+    },
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-1",
+      model: "model-a",
+      operation: "images/edits"
+    },
+    {
+      version: 1,
+      type: "route-preview",
+      requestId: "route-preview-1",
+      model: "model-a",
+      operation: "responses",
+      extra: true
+    },
     { version: 1, type: "configure", requestId: "configure-1", generation: 0, settings: makeSettings() },
     { version: 1, type: "configure", requestId: "configure-1", generation: 1 },
     { version: 1, type: "configure", requestId: "configure-1", generation: 1, settings: [] }
@@ -572,7 +601,8 @@ test("sanitizeProtocolMessage never projects route preview models or candidate d
     version: 1,
     type: "route-preview",
     requestId: "route-preview-1",
-    model: "model-secret-sentinel"
+    model: "model-secret-sentinel",
+    operation: "responses"
   });
   const child = sanitizeProtocolMessage({
     version: 1,

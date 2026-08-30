@@ -25,6 +25,26 @@ const USAGE_OBSERVATION_STATUSES = new Set([
   "protocol_unrecognized",
   "not_applicable"
 ]);
+const ROUTE_REASONS = new Set([
+  "account_eligible",
+  "account_cooldown",
+  "account_quota_exhausted",
+  "account_headers_missing",
+  "not_chatgpt_auth",
+  "unsupported_method",
+  "unsupported_path",
+  "unsupported_operation",
+  "unsupported_account_model",
+  "custom_only"
+]);
+const PROVIDER_SELECTION_REASONS = new Set([
+  "sole_eligible",
+  "model_priority",
+  "weight",
+  "runtime_order",
+  "cooldown_fallback",
+  "retry_after_provider_failure"
+]);
 const MODEL_REQUEST_HIDDEN_SQL = `(
   incoming_url IS NULL OR (
     incoming_url NOT LIKE '%/models'
@@ -167,6 +187,10 @@ function projectRow(row, providers) {
     providerId: provider.id,
     providerName: provider.name,
     route: provider.route,
+    routeReason: ROUTE_REASONS.has(row.route_reason) ? row.route_reason : null,
+    providerSelectionReason: PROVIDER_SELECTION_REASONS.has(row.provider_selection_reason)
+      ? row.provider_selection_reason
+      : null,
     requestedModel: boundedText(row.requested_model, MAX_MODEL_CODE_POINTS),
     forwardedModel: boundedText(row.forwarded_model, MAX_MODEL_CODE_POINTS)
   };
@@ -262,7 +286,11 @@ function escapeLike(value) {
   return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
-function buildWhere(options, { providerColumns = false, modelColumns = false } = {}) {
+function buildWhere(options, {
+  providerColumns = false,
+  modelColumns = false,
+  reasonColumns = false
+} = {}) {
   const conditions = [];
   const parameters = {};
   if (!options.includeModels) conditions.push(MODEL_REQUEST_HIDDEN_SQL);
@@ -276,6 +304,7 @@ function buildWhere(options, { providerColumns = false, modelColumns = false } =
     const fields = ["request_id", "incoming_url", "target_url", "error_type", "error_message"];
     if (providerColumns) fields.push("provider_id", "provider_name", "route");
     if (modelColumns) fields.push("requested_model", "forwarded_model");
+    if (reasonColumns) fields.push("route_reason", "provider_selection_reason");
     conditions.push(`(${fields.map((field) => (
       `${field} LIKE @search ESCAPE '\\'`
     )).join(" OR ")})`);
@@ -347,9 +376,12 @@ export class ForwardingRecordsService {
       const hasUsageObservationStatus = columns.has("usage_observation_status");
       const hasModelColumns = ["requested_model", "forwarded_model"]
         .every((column) => columns.has(column));
+      const hasReasonColumns = ["route_reason", "provider_selection_reason"]
+        .every((column) => columns.has(column));
       const where = buildWhere(options, {
         providerColumns: hasProviderColumns,
-        modelColumns: hasModelColumns
+        modelColumns: hasModelColumns,
+        reasonColumns: hasReasonColumns
       });
       const providerColumns = hasProviderColumns
         ? "provider_id, provider_name, route,"
@@ -364,11 +396,14 @@ export class ForwardingRecordsService {
       const modelColumns = hasModelColumns
         ? "requested_model, forwarded_model,"
         : "NULL AS requested_model, NULL AS forwarded_model,";
+      const reasonColumns = hasReasonColumns
+        ? "route_reason, provider_selection_reason,"
+        : "NULL AS route_reason, NULL AS provider_selection_reason,";
       const rows = database.prepare(`
         SELECT
           id, started_at, completed_at, duration_ms,
           request_id, session_id, thread_id, method,
-          incoming_url, target_url, ${providerColumns} ${modelColumns} request_body_bytes,
+          incoming_url, target_url, ${providerColumns} ${reasonColumns} ${modelColumns} request_body_bytes,
           response_status, response_body_bytes, is_stream,
           upstream_request_id, ${tokenColumns} ${detailsColumn} ${usageObservationColumn} error_type, error_message
         FROM http_transactions

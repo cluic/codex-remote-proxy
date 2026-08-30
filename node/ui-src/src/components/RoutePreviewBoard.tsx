@@ -27,6 +27,7 @@ import type {
   Locale,
   MetricsOverview,
   ModelMappingGroup,
+  RouteOperation,
   RoutePreview,
   RoutePreviewCandidate,
   RoutingRuleGroup
@@ -40,7 +41,11 @@ type RoutePreviewBoardProps = {
   modelMappingGroups: ModelMappingGroup[];
   routingRuleGroups: RoutingRuleGroup[];
   routeRevision: string;
-  onPreview: (model: string, signal: AbortSignal) => Promise<RoutePreview>;
+  onPreview: (
+    model: string,
+    operation: RouteOperation,
+    signal: AbortSignal
+  ) => Promise<RoutePreview>;
 };
 
 type PathNodeProps = {
@@ -84,8 +89,32 @@ function accountReason(reason: RoutePreview["account"]["reason"], t: Translator)
   if (reason === "account_eligible") return t("routePreview.accountEligible");
   if (reason === "account_cooldown") return t("routePreview.accountCooldown");
   if (reason === "account_quota_exhausted") return t("routePreview.accountQuotaExhausted");
+  if (reason === "unsupported_operation") return t("routePreview.accountOperationUnsupported");
+  if (reason === "unsupported_account_model") return t("routePreview.accountModelUnsupported");
   if (reason === "not_chatgpt_auth") return t("routePreview.accountUnavailable");
   return t("routePreview.customOnly");
+}
+
+function operationLabel(operation: RouteOperation, t: Translator): string {
+  if (operation === "chat/completions") return t("routePreview.operationChatCompletions");
+  if (operation === "images/generations") return t("routePreview.operationImageGenerations");
+  return t("routePreview.operationResponses");
+}
+
+function selectionReason(preview: RoutePreview, t: Translator): string {
+  if (preview.customSelectionReason === "model_priority") {
+    return t("routePreview.selectionModelPriority");
+  }
+  if (preview.customSelectionReason === "weight") {
+    return t("routePreview.selectionWeight");
+  }
+  if (preview.customSelectionReason === "runtime_order") {
+    return t("routePreview.selectionRuntimeOrder");
+  }
+  if (preview.customSelectionReason === "cooldown_fallback") {
+    return t("routePreview.selectionCooldownFallback");
+  }
+  return t("routePreview.selectionSoleEligible");
 }
 
 function availabilityLabel(
@@ -129,9 +158,7 @@ function ruleTitle(preview: RoutePreview, t: Translator): string {
 }
 
 function ruleDetail(preview: RoutePreview, t: Translator): string {
-  return preview.routingRule
-    ? t("routePreview.exactRuleMatched")
-    : t("routePreview.weightOrder");
+  return selectionReason(preview, t);
 }
 
 function CustomRouteSteps({
@@ -204,7 +231,12 @@ export function RoutePreviewBoard({
     return models;
   }, [metrics, modelMappingGroups, routingRuleGroups]);
   const [model, setModel] = useState(() => suggestedModels[0] ?? "");
-  const [result, setResult] = useState<{ model: string; preview: RoutePreview } | null>(null);
+  const [operation, setOperation] = useState<RouteOperation>("responses");
+  const [result, setResult] = useState<{
+    model: string;
+    operation: RouteOperation;
+    preview: RoutePreview;
+  } | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(false);
   const [fallbackExpanded, setFallbackExpanded] = useState(false);
@@ -220,7 +252,7 @@ export function RoutePreviewBoard({
 
   useEffect(() => {
     setFallbackExpanded(false);
-  }, [model, routeRevision]);
+  }, [model, operation, routeRevision]);
 
   useEffect(() => {
     const sequence = ++sequenceRef.current;
@@ -232,9 +264,9 @@ export function RoutePreviewBoard({
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       setLoading(true);
-      void onPreview(model, controller.signal).then((preview) => {
+      void onPreview(model, operation, controller.signal).then((preview) => {
         if (controller.signal.aborted || sequence !== sequenceRef.current) return;
-        setResult({ model, preview });
+        setResult({ model, operation, preview });
         setError(null);
       }).catch((caught) => {
         if (controller.signal.aborted || sequence !== sequenceRef.current) return;
@@ -247,7 +279,7 @@ export function RoutePreviewBoard({
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [model, onPreview, refreshGeneration, routeRevision]);
+  }, [model, onPreview, operation, refreshGeneration, routeRevision]);
 
   useEffect(() => {
     if (!isPreviewableModel(model)) return undefined;
@@ -262,9 +294,11 @@ export function RoutePreviewBoard({
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [model]);
+  }, [model, operation]);
 
-  const preview = result?.model === model ? result.preview : null;
+  const preview = result?.model === model && result.operation === operation
+    ? result.preview
+    : null;
   const primary = preview?.candidates.find(({ order }) => order === 1) ?? null;
   const modelInvalid = model.length > 0 && !isPreviewableModel(model);
   const visibleCandidates = preview?.candidates.slice(0, 12) ?? [];
@@ -307,6 +341,17 @@ export function RoutePreviewBoard({
           </div>
         </div>
         <div className="route-preview-controls">
+          <label className="route-preview-operation-field">
+            <span>{t("routePreview.inspectOperation")}</span>
+            <select
+              value={operation}
+              onChange={(event) => setOperation(event.target.value as RouteOperation)}
+            >
+              <option value="responses">{t("routePreview.operationResponses")}</option>
+              <option value="chat/completions">{t("routePreview.operationChatCompletions")}</option>
+              <option value="images/generations">{t("routePreview.operationImageGenerations")}</option>
+            </select>
+          </label>
           <label className="route-preview-model-field">
             <span>{t("routePreview.inspectModel")}</span>
             <span className="route-preview-input-shell">
@@ -369,6 +414,18 @@ export function RoutePreviewBoard({
           </div>
         ) : (
           <>
+            {["unsupported_operation", "unsupported_account_model"].includes(
+              preview.account.reason
+            ) ? (
+              <Notice title={t("routePreview.operationUnsupportedTitle")} tone="warning">
+                <p>{t(preview.account.reason === "unsupported_account_model"
+                  ? "routePreview.accountModelUnsupportedHelp"
+                  : "routePreview.operationUnsupportedHelp", {
+                    operation: operationLabel(preview.operation, t),
+                    model
+                  })}</p>
+              </Notice>
+            ) : null}
             <div className="route-preview-lanes">
               <div className="route-preview-primary-lane">
                 <div className="route-preview-lane-label">
@@ -386,7 +443,7 @@ export function RoutePreviewBoard({
                     icon={<Bot />}
                     eyebrow={t("routePreview.request")}
                     title={model}
-                    detail={t("routePreview.incomingModel")}
+                    detail={operationLabel(preview.operation, t)}
                     tone="active"
                   />
                   <PathConnector />
@@ -535,7 +592,9 @@ export function RoutePreviewBoard({
               </summary>
               <div>
                 <p>{t("routePreview.candidateHelp")}</p>
-                <p>{t("routePreview.conditionalNote")}</p>
+                <p>{t("routePreview.operationDecisionNote", {
+                  operation: operationLabel(preview.operation, t)
+                })}</p>
               </div>
             </details>
             {error ? (

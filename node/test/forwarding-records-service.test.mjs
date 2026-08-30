@@ -181,6 +181,8 @@ test("lists bounded metadata with keyset paging, filtering, and provider project
     providerId: "fallback",
     providerName: "Fallback API",
     route: "custom",
+    routeReason: null,
+    providerSelectionReason: null,
     requestedModel: null,
     forwardedModel: null
   });
@@ -383,12 +385,16 @@ test("prefers persisted final provider attribution over the current provider cat
     ALTER TABLE http_transactions ADD COLUMN provider_id TEXT;
     ALTER TABLE http_transactions ADD COLUMN provider_name TEXT;
     ALTER TABLE http_transactions ADD COLUMN route TEXT;
+    ALTER TABLE http_transactions ADD COLUMN route_reason TEXT;
+    ALTER TABLE http_transactions ADD COLUMN provider_selection_reason TEXT;
     ALTER TABLE http_transactions ADD COLUMN requested_model TEXT;
     ALTER TABLE http_transactions ADD COLUMN forwarded_model TEXT;
     UPDATE http_transactions
       SET provider_id = 'deleted-provider',
           provider_name = 'Historical provider',
           route = 'custom',
+          route_reason = 'unsupported_operation',
+          provider_selection_reason = 'model_priority',
           requested_model = 'model-a',
           forwarded_model = 'vendor/model-a'
       WHERE id = 1;
@@ -405,6 +411,8 @@ test("prefers persisted final provider attribution over the current provider cat
   assert.equal(record.providerId, "deleted-provider");
   assert.equal(record.providerName, "Historical provider");
   assert.equal(record.route, "custom");
+  assert.equal(record.routeReason, "unsupported_operation");
+  assert.equal(record.providerSelectionReason, "model_priority");
   assert.equal(record.requestedModel, "model-a");
   assert.equal(record.forwardedModel, "vendor/model-a");
   assert.deepEqual(
@@ -413,6 +421,10 @@ test("prefers persisted final provider attribution over the current provider cat
   );
   assert.deepEqual(
     service.list({ search: "vendor/model-a" }).records.map(({ id }) => id),
+    [1]
+  );
+  assert.deepEqual(
+    service.list({ search: "unsupported_operation" }).records.map(({ id }) => id),
     [1]
   );
 });

@@ -22,8 +22,8 @@ test("traces the live model route and its conditional account fallback", async (
         weight: 100,
         modelMappingGroupId: "mapping-sol",
         supportedModelsMode: "custom",
-        supportedModels: ["vendor/gpt-5.6-sol"],
-        customModels: ["vendor/gpt-5.6-sol"]
+        supportedModels: ["vendor/gpt-5.6-sol", "vendor/gpt-image-2"],
+        customModels: ["vendor/gpt-5.6-sol", "vendor/gpt-image-2"]
       }
     ],
     activeProviderId: "provider-a",
@@ -32,14 +32,20 @@ test("traces the live model route and its conditional account fallback", async (
   crp.state.modelMappingGroups = [{
     id: "mapping-sol",
     name: "Provider Beta aliases",
-    rules: [{ sourceModel: "gpt-5.6-sol", targetModel: "vendor/gpt-5.6-sol" }],
+    rules: [
+      { sourceModel: "gpt-5.6-sol", targetModel: "vendor/gpt-5.6-sol" },
+      { sourceModel: "gpt-image-2", targetModel: "vendor/gpt-image-2" }
+    ],
     createdAt: "2026-07-13T08:00:00.000Z",
     updatedAt: "2026-07-13T08:00:00.000Z"
   }];
   crp.state.routingRuleGroups = [{
     id: "routing-interactive",
     name: "Interactive workloads",
-    rules: [{ models: ["gpt-5.6-sol"], providerIds: ["provider-b", "provider-a"] }],
+    rules: [{
+      models: ["gpt-5.6-sol", "gpt-image-2"],
+      providerIds: ["provider-b", "provider-a"]
+    }],
     active: true,
     createdAt: "2026-07-13T08:00:00.000Z",
     updatedAt: "2026-07-13T08:00:00.000Z"
@@ -121,6 +127,25 @@ test("traces the live model route and its conditional account fallback", async (
   await expect(fallbackToggle).toHaveAttribute("aria-expanded", "false");
   await expect(fallbackLane).not.toBeVisible();
   await assertLayoutIntegrity(page);
+
+  await page.getByLabel("API operation").selectOption("images/generations");
+  await page.getByLabel("Inspect model").fill("gpt-image-2");
+  await expect(board.getByText("Custom route")).toBeVisible();
+  await expect(board.getByText("This request uses the custom provider pool")).toBeVisible();
+  await expect(board).toContainText("Operation is not supported by the ChatGPT account route");
+  await expect(board.locator(".route-preview-primary-lane")).toContainText("Provider Beta");
+  await expect(board.locator(".route-preview-primary-lane")).toContainText("vendor/gpt-image-2");
+  const imageScreenshot = testInfo.outputPath("route-preview-image-custom-1440x900.png");
+  crp.registerAttachment(imageScreenshot);
+  await board.screenshot({ path: imageScreenshot, animations: "disabled" });
+  await testInfo.attach("route-preview-image-custom-1440x900", {
+    path: imageScreenshot,
+    contentType: "image/png"
+  });
+
+  await page.getByLabel("API operation").selectOption("responses");
+  await page.getByLabel("Inspect model").fill("gpt-5.6-sol");
+  await expect(board.getByText("ChatGPT route")).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(board).toBeVisible();

@@ -43,6 +43,7 @@ import type {
   Provider,
   ProviderInput,
   Route,
+  RouteOperation,
   RoutePreview,
   RoutingRuleGroup,
   RoutingRuleGroupInput,
@@ -675,8 +676,12 @@ export function App() {
     });
   }, [api]);
 
-  const previewRoute = useCallback((model: string, signal: AbortSignal): Promise<RoutePreview> => (
-    api.getRoutePreview(model, signal)
+  const previewRoute = useCallback((
+    model: string,
+    operation: RouteOperation,
+    signal: AbortSignal
+  ): Promise<RoutePreview> => (
+    api.getRoutePreview(model, operation, signal)
   ), [api]);
 
   useEffect(() => {
