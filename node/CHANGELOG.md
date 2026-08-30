@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.18
+
+### Patch Changes
+
+- 33ca36d: Route Codex JSON Image Edits through the ChatGPT account, reject malformed edit formats before custom fallback, and make route previews request-format aware.
+
 ## 0.4.17
 
 ### Patch Changes
