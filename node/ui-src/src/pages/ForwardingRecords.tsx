@@ -75,10 +75,23 @@ function routeReasonLabel(record: ForwardingRecord, t: Translator): string {
   if (record.routeReason === "not_chatgpt_auth") return t("forwarding.reason.notChatgptAuth");
   if (record.routeReason === "unsupported_operation") return t("forwarding.reason.unsupportedOperation");
   if (record.routeReason === "unsupported_account_model") return t("forwarding.reason.unsupportedAccountModel");
+  if (record.routeReason === "unsupported_request_format") return t("forwarding.reason.unsupportedRequestFormat");
+  if (record.routeReason === "model_not_detected") return t("forwarding.reason.modelNotDetected");
+  if (record.routeReason === "invalid_multipart") return t("forwarding.reason.invalidMultipart");
   if (record.routeReason === "unsupported_method") return t("forwarding.reason.unsupportedMethod");
   if (record.routeReason === "unsupported_path") return t("forwarding.reason.unsupportedPath");
   if (record.routeReason === "custom_only") return t("forwarding.reason.customOnly");
   return t("forwarding.reason.legacy");
+}
+function routeLabel(record: ForwardingRecord, t: Translator): string {
+  if (["unsupported_request_format", "model_not_detected", "invalid_multipart"].includes(
+    record.routeReason ?? ""
+  )) {
+    return t("forwarding.route.rejected");
+  }
+  if (record.route === "account") return t("forwarding.route.account");
+  if (record.route === "custom") return t("forwarding.route.custom");
+  return t("forwarding.route.unknown");
 }
 function selectionReasonLabel(record: ForwardingRecord, t: Translator): string | null {
   if (record.providerSelectionReason === "model_priority") return t("forwarding.selection.modelPriority");
@@ -384,11 +397,7 @@ function RecordDetails({
         <span>
           <b>{t("forwarding.routeDecision")}</b>
           <span className="record-provider-detail">
-            {t(record.route === "account"
-              ? "forwarding.route.account"
-              : record.route === "custom"
-                ? "forwarding.route.custom"
-                : "forwarding.route.unknown")}
+            {routeLabel(record, t)}
             <small>{routeReasonLabel(record, t)}</small>
           </span>
         </span>
@@ -852,11 +861,7 @@ export function ForwardingRecordsPage({
                               className={cx("route-dot", `route-dot-${record.route}`)}
                               aria-hidden="true"
                             />
-                            {t(record.route === "account"
-                              ? "forwarding.route.account"
-                              : record.route === "custom"
-                                ? "forwarding.route.custom"
-                                : "forwarding.route.unknown")}
+                            {routeLabel(record, t)}
                           </span>
                           <small>{routeReasonLabel(record, t)}</small>
                         </span>

@@ -2400,15 +2400,23 @@ button.token-heatmap-cell[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink
   gap: 6px;
 }
 
+.route-preview-controls.has-format {
+  width: min(100%, 590px);
+  min-width: 500px;
+  grid-template-columns: 132px 116px minmax(0, 1fr) 34px;
+}
+
 .route-preview-model-field,
-.route-preview-operation-field {
+.route-preview-operation-field,
+.route-preview-format-field {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
 .route-preview-model-field > span:first-child,
-.route-preview-operation-field > span:first-child {
+.route-preview-operation-field > span:first-child,
+.route-preview-format-field > span:first-child {
   color: var(--muted);
   font-size: 8px;
   font-weight: 800;
@@ -2416,7 +2424,8 @@ button.token-heatmap-cell[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink
   text-transform: uppercase;
 }
 
-.route-preview-operation-field select {
+.route-preview-operation-field select,
+.route-preview-format-field select {
   width: 100%;
   min-width: 0;
   height: 34px;
@@ -2429,7 +2438,8 @@ button.token-heatmap-cell[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink
   outline: 0;
 }
 
-.route-preview-operation-field select:focus-visible {
+.route-preview-operation-field select:focus-visible,
+.route-preview-format-field select:focus-visible {
   border-color: #6ca2dc;
   box-shadow: 0 0 0 2px rgb(108 162 220 / 18%);
 }
@@ -2889,6 +2899,7 @@ button.token-heatmap-cell[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink
   .route-preview-heading-meta > p { max-width: 260px; }
   .route-preview-source time { display: none; }
   .route-preview-controls { width: 410px; min-width: 360px; grid-template-columns: 124px minmax(0, 1fr) 34px; }
+  .route-preview-controls.has-format { width: 500px; min-width: 460px; grid-template-columns: 124px 108px minmax(0, 1fr) 34px; }
   .route-preview-primary-lane,
   .route-preview-candidates { grid-template-columns: 112px minmax(0, 1fr) auto; }
   .route-preview-primary-lane { grid-template-columns: 112px minmax(0, 1fr); }
@@ -2903,7 +2914,10 @@ button.token-heatmap-cell[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink
   .route-preview-heading-meta { flex-wrap: wrap; gap: 3px 8px; }
   .route-preview-heading-meta > p { width: 100%; max-width: none; }
   .route-preview-controls { width: 100%; min-width: 0; grid-template-columns: 112px minmax(0, 1fr) 40px; }
-  .route-preview-operation-field select { height: 40px; }
+  .route-preview-controls.has-format { min-width: 0; grid-template-columns: 112px minmax(0, 1fr) 40px; }
+  .route-preview-controls.has-format .route-preview-model-field { grid-column: 1 / 4; grid-row: 2; }
+  .route-preview-operation-field select,
+  .route-preview-format-field select { height: 40px; }
   .route-preview-input-shell { height: 40px; }
   .route-preview-input-shell input { height: 38px; }
   .route-preview-refresh { width: 40px; min-width: 40px; min-height: 40px; }

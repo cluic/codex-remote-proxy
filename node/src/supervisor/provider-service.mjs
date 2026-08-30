@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   isRouteOperation,
+  isRouteRequestFormat,
   isValidAccountRoutingState
 } from "../routing/account-routing.mjs";
 import { ProviderScheduler } from "../routing/provider-scheduler.mjs";
@@ -425,8 +426,10 @@ export class ProviderService {
     }));
   }
 
-  async previewRoute(model, operation = "responses") {
-    if (!isRoutePreviewModel(model) || !isRouteOperation(operation)) {
+  async previewRoute(model, operation = "responses", requestFormat = "json") {
+    if (!isRoutePreviewModel(model)
+      || !isRouteOperation(operation)
+      || !isRouteRequestFormat(requestFormat)) {
       throw serviceError("ROUTE_PREVIEW_INPUT_INVALID", { status: 400 });
     }
     return await this.#runExclusive(async () => {
@@ -434,14 +437,14 @@ export class ProviderService {
       let preview = null;
       if (workerState?.phase === "running" && typeof this.workerManager.previewRoute === "function") {
         try {
-          preview = await this.workerManager.previewRoute(model, operation);
+          preview = await this.workerManager.previewRoute(model, operation, requestFormat);
         } catch (error) {
           if (!["WORKER_NOT_RUNNING", "WORKER_IPC_SEND_FAILED", "WORKER_ACK_TIMEOUT"].includes(error?.code)) {
             throw serviceError("ROUTE_PREVIEW_UNAVAILABLE", { status: 503, cause: error });
           }
         }
       }
-      preview ??= await this.#buildConfiguredRoutePreview(model, operation);
+      preview ??= await this.#buildConfiguredRoutePreview(model, operation, requestFormat);
       return this.#decorateRoutePreview(preview, model);
     });
   }
@@ -2059,7 +2062,7 @@ export class ProviderService {
     return toPublicProvider(profile, configured);
   }
 
-  async #buildConfiguredRoutePreview(model, operation) {
+  async #buildConfiguredRoutePreview(model, operation, requestFormat) {
     const document = this.registry.getDocument();
     const activeProviderId = document.activeProviderId;
     const eligible = document.providers
@@ -2129,7 +2132,8 @@ export class ProviderService {
       }),
       nowMs: Number.isFinite(nowMs) ? nowMs : Date.now(),
       model,
-      operation
+      operation,
+      requestFormat
     });
   }
 

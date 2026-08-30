@@ -1,6 +1,7 @@
 import { validateHeaderValue } from "node:http";
 
 import {
+  isRouteRequestFormat,
   isRouteOperation,
   isValidAccountRoutingState
 } from "../routing/account-routing.mjs";
@@ -28,7 +29,12 @@ const BASE_FIELDS = new Set(["version", "type", "requestId"]);
 const CONFIGURE_FIELDS = new Set([...BASE_FIELDS, "generation", "settings"]);
 const ACCOUNT_STATE_FIELDS = new Set([...BASE_FIELDS, "revision", "state"]);
 const ACCOUNT_STATE_APPLIED_FIELDS = new Set([...BASE_FIELDS, "revision"]);
-const ROUTE_PREVIEW_REQUEST_FIELDS = new Set([...BASE_FIELDS, "model", "operation"]);
+const ROUTE_PREVIEW_REQUEST_FIELDS = new Set([
+  ...BASE_FIELDS,
+  "model",
+  "operation",
+  "requestFormat"
+]);
 const ROUTE_PREVIEW_FIELDS = new Set([...BASE_FIELDS, "preview"]);
 const CHILD_STATE_FIELDS = new Set([...BASE_FIELDS, "state"]);
 const FATAL_FIELDS = new Set([...BASE_FIELDS, "error"]);
@@ -557,7 +563,8 @@ export function validateParentMessage(message) {
   if (message.type === "route-preview") {
     if (!hasExactFields(message, ROUTE_PREVIEW_REQUEST_FIELDS)
       || !isRoutePreviewModel(message.model)
-      || !isRouteOperation(message.operation)) {
+      || !isRouteOperation(message.operation)
+      || !isRouteRequestFormat(message.requestFormat)) {
       throw protocolError();
     }
     return message;

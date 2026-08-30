@@ -301,13 +301,15 @@ test("worker configures once, proxies traffic, reports public state, and shuts d
     type: "route-preview",
     requestId: "route-preview-1",
     model: "preview-model",
-    operation: "responses"
+    operation: "responses",
+    requestFormat: "json"
   });
   const routePreview = await worker.waitForMessage(
     (message) => message?.type === "route-preview" && message.requestId === "route-preview-1",
     "worker route preview"
   );
   assert.equal(JSON.stringify(routePreview).includes(settings.upstream.apiKey), false);
+  assert.equal(routePreview.preview.requestFormat, "json");
   validateChildMessage(routePreview);
   assert.equal(routePreview.preview.source, "live");
   assert.equal(routePreview.preview.generation, 1);

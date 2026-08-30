@@ -66,6 +66,7 @@ test("builds a live account-first preview with an exact custom fallback chain", 
     generation: 12,
     evaluatedAt: "2030-01-01T00:00:00.000Z",
     operation: "responses",
+    requestFormat: "json",
     route: "account",
     reason: "account_eligible",
     account: {
@@ -145,10 +146,35 @@ test("uses the real operation and model capability gates for image previews", ()
     operation: "images/edits"
   });
   assert.equal(editEndpoint.operation, "images/edits");
+  assert.equal(editEndpoint.requestFormat, "json");
   assert.equal(editEndpoint.route, "account");
   assert.equal(editEndpoint.reason, "account_eligible");
   assert.equal(editEndpoint.account.operationSupported, true);
   assert.equal(isValidRoutePreview(editEndpoint), true);
+
+  const unsupportedFormat = buildRoutePreview({
+    source: "live",
+    generation: 2,
+    settings: {
+      ...settings(),
+      providers: settings().providers.map((provider) => ({
+        ...provider,
+        supportedModels: null
+      }))
+    },
+    accountState,
+    providerScheduler: scheduler,
+    nowMs: NOW,
+    model: "gpt-image-2",
+    operation: "images/edits",
+    requestFormat: "unsupported"
+  });
+  assert.equal(unsupportedFormat.route, "unavailable");
+  assert.equal(unsupportedFormat.reason, "unsupported_request_format");
+  assert.equal(unsupportedFormat.account.reason, "unsupported_request_format");
+  assert.equal(unsupportedFormat.customPrimaryProviderId, null);
+  assert.deepEqual(unsupportedFormat.candidates, []);
+  assert.equal(isValidRoutePreview(unsupportedFormat), true);
 
   const directImageModel = buildRoutePreview({
     source: "live",

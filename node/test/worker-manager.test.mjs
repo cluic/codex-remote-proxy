@@ -88,6 +88,7 @@ function routePreview(generation = 1) {
     generation,
     evaluatedAt: "2030-01-01T00:00:00.000Z",
     operation: "responses",
+    requestFormat: "json",
     route: "custom",
     reason: "custom_only",
     account: {
@@ -574,12 +575,17 @@ test("route previews use a bounded read-only IPC request without changing lifecy
       type: "route-preview",
       requestId: "route-preview-2",
       model: "model-a",
-      operation: "responses"
+      operation: "responses",
+      requestFormat: "json"
     }
   );
   assert.equal(harness.manager.getPublicState().phase, "running");
 
-  await settle(harness.manager.previewRoute("gpt-image-2", "images/edits"), harness.clock);
+  await settle(harness.manager.previewRoute(
+    "gpt-image-2",
+    "images/edits",
+    "multipart"
+  ), harness.clock);
   assert.deepEqual(
     harness.children[0].sent.findLast((message) => message.type === "route-preview"),
     {
@@ -587,7 +593,8 @@ test("route previews use a bounded read-only IPC request without changing lifecy
       type: "route-preview",
       requestId: "route-preview-3",
       model: "gpt-image-2",
-      operation: "images/edits"
+      operation: "images/edits",
+      requestFormat: "multipart"
     }
   );
 

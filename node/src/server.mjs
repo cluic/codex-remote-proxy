@@ -25,6 +25,7 @@ import {
   account429Cooldown,
   decideUpstreamRoute,
   parseCodexQuotaHeaders,
+  requestFormatFromContentType,
   requestOperation
 } from "./routing/account-routing.mjs";
 import {
@@ -912,26 +913,50 @@ function configuredProviderCandidates(settings) {
       }];
 }
 
-function boundedRequestModel(encodedBody, contentEncoding, contentType, operation) {
+function validRequestModel(model) {
+  return typeof model === "string"
+    && model.length > 0
+    && model.trim() === model
+    && Buffer.byteLength(model, "utf8") <= 512
+    && [...model].length <= 256
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(model);
+}
+
+function inspectBoundedRequestModel(encodedBody, contentEncoding, contentType, operation) {
   const decoded = decodeBoundedBody(
     encodedBody,
     contentEncoding,
     METRIC_BODY_INSPECTION_MAX_BYTES
   );
-  if (!decoded) return null;
+  if (!decoded) return { status: "model_not_detected", model: null };
   if (operation === "images/edits") {
-    const inspection = inspectMultipartModel(decoded, contentType);
-    return inspection.status === "valid" ? inspection.model : null;
+    const requestFormat = requestFormatFromContentType(operation, contentType);
+    if (requestFormat === "unsupported") {
+      return { status: "unsupported_request_format", model: null };
+    }
+    if (requestFormat === "multipart") {
+      const inspection = inspectMultipartModel(decoded, contentType);
+      if (inspection.status === "valid") return { status: "valid", model: inspection.model };
+      return {
+        status: inspection.status === "missing" ? "model_not_detected" : "invalid_multipart",
+        model: null
+      };
+    }
   }
   const payload = parseBoundedJson(decoded, METRIC_BODY_INSPECTION_MAX_BYTES);
   const model = payload?.model;
-  return typeof model === "string"
-    && model.length > 0
-    && model.trim() === model
-    && [...model].length <= 256
-    && !/[\u0000-\u001f\u007f-\u009f]/.test(model)
-    ? model
-    : null;
+  return validRequestModel(model)
+    ? { status: "valid", model }
+    : { status: "model_not_detected", model: null };
+}
+
+function boundedRequestModel(encodedBody, contentEncoding, contentType, operation) {
+  return inspectBoundedRequestModel(
+    encodedBody,
+    contentEncoding,
+    contentType,
+    operation
+  ).model;
 }
 
 function settingsForProvider(settings, provider) {
@@ -1699,6 +1724,18 @@ export function createServer(settings, {
     const accountRawHeaders = accessAuthorization.source === "authorization"
       ? withoutAuthorizationRawHeaders(req.rawHeaders)
       : req.rawHeaders;
+    const requestOperationKind = requestOperation(req.url);
+    const requestContentType = typeof req.headers["content-type"] === "string"
+      ? req.headers["content-type"]
+      : "";
+    const requestFormat = requestFormatFromContentType(
+      requestOperationKind,
+      requestContentType
+    );
+    const accountFirstImageEditsPreflight = baseRequestSettings.routing?.mode === "account_first"
+      && req.method === "POST"
+      && requestOperationKind === "images/edits"
+      && requestFormat !== "unsupported";
     const decideRouteForModel = (model = null, modelKnown = false) => decideUpstreamRoute({
       mode: baseRequestSettings.routing?.mode ?? "custom_only",
       method: req.method,
@@ -1707,11 +1744,16 @@ export function createServer(settings, {
       accountState,
       model,
       modelKnown,
+      requestFormat,
       localBlockedUntilMs: routingState.accountBlockedUntilMs,
       nowMs: routingNow()
     });
     const routeDecision = decideRouteForModel();
-    if (routeDecision.route === "custom" && currentCustomProvider === null) {
+    const requestFormatRejected = routeDecision.reason === "unsupported_request_format";
+    if (routeDecision.route === "custom"
+      && currentCustomProvider === null
+      && !requestFormatRejected
+      && !accountFirstImageEditsPreflight) {
       writeJson(res, 503, {
         error: {
           code: "PROVIDER_POOL_UNAVAILABLE",
@@ -1720,7 +1762,7 @@ export function createServer(settings, {
       });
       return;
     }
-    let requestSettings = routeDecision.route === "account"
+    let requestSettings = routeDecision.route === "account" || currentCustomProvider === null
       ? baseRequestSettings
       : settingsForProvider(baseRequestSettings, currentCustomProvider);
     const requestProtectedValues = protectedRequestValues(req, baseRequestSettings);
@@ -1737,17 +1779,16 @@ export function createServer(settings, {
       ? resolveAccountTarget(new URL(routeDecision.target.href))
       : customTargetUrl;
     const safeRequestPath = redactProtectedUrl(req.url, requestProtectedValues);
-    let safeTargetUrl = redactProtectedUrl(targetUrl.href, requestProtectedValues);
+    let safeTargetUrl = targetUrl === null
+      ? null
+      : redactProtectedUrl(targetUrl.href, requestProtectedValues);
     const safeMethod = redactRecoverableProtectedText(req.method || "GET", requestProtectedValues);
-    let transport = targetUrl.protocol === "https:" ? https : http;
+    let transport = targetUrl?.protocol === "https:" ? https : http;
     const startedAt = Date.now();
     const metricStartedAt = metricNow();
     const responsesRequest = isResponsesRequest(req.url);
-    const requestOperationKind = requestOperation(req.url);
-    const multipartModelRequest = requestOperationKind === "images/edits";
-    const requestContentType = typeof req.headers["content-type"] === "string"
-      ? req.headers["content-type"]
-      : "";
+    const multipartModelRequest = requestOperationKind === "images/edits"
+      && requestFormat === "multipart";
     let overrideModel = requestSettings.proxy.modelMode === "override"
       && typeof requestSettings.proxy.modelOverride === "string"
       ? requestSettings.proxy.modelOverride
@@ -1779,9 +1820,13 @@ export function createServer(settings, {
     const modelTransformCollector = modelTransformRequired && !initialAccountRoute
       ? createBoundedCollector(MODEL_OVERRIDE_MAX_BYTES)
       : null;
-    let forwardedHeaders = initialAccountRoute
-      ? buildAccountUpstreamHeaders(req, requestSettings, targetUrl)
-      : buildUpstreamHeaders(req, requestSettings, targetUrl, {
+    let forwardedHeaders = requestFormatRejected
+      ? []
+      : initialAccountRoute
+        ? buildAccountUpstreamHeaders(req, requestSettings, targetUrl)
+        : currentCustomProvider === null
+          ? []
+          : buildUpstreamHeaders(req, requestSettings, targetUrl, {
           stripContentHeaders: false,
           stripAccountHeaders: true
         });
@@ -1941,6 +1986,32 @@ export function createServer(settings, {
         errorType: "proxy_model_unavailable",
         result: "upstreamError",
         error: new Error("no custom provider supports the requested model")
+      });
+    }
+
+    function rejectAccountPreflight(reason, statusCode, errorType, message) {
+      routeReason = reason;
+      metricRoute = "custom";
+      currentCustomProvider = null;
+      customCandidates = [];
+      customSelectionReason = null;
+      targetUrl = null;
+      safeTargetUrl = null;
+      forwardedHeaders = [];
+      if (captureContext) {
+        captureContext.targetUrl = null;
+        captureContext.providerId = null;
+        captureContext.providerName = null;
+        captureContext.route = "custom";
+        captureContext.routeReason = reason;
+        captureContext.providerSelectionReason = null;
+        captureContext.requestHeaders = {};
+      }
+      finishProxyFailure({
+        statusCode,
+        errorType,
+        result: "upstreamError",
+        error: new Error(message)
       });
     }
 
@@ -2175,7 +2246,13 @@ export function createServer(settings, {
     function proxyErrorPayload(statusCode, errorType) {
       return {
         error: {
-          message: statusCode === 504
+          message: errorType === "proxy_unsupported_request_format"
+            ? "Image Edits account routing requires application/json or multipart/form-data"
+            : errorType === "proxy_model_not_detected"
+              ? "Image Edits request must contain a valid model field"
+              : errorType === "proxy_invalid_multipart"
+                ? "Image Edits multipart body is invalid"
+                : statusCode === 504
             ? "Upstream request timed out"
             : (statusCode === 413
                 ? "Request body is too large for model override"
@@ -2387,7 +2464,7 @@ export function createServer(settings, {
           const fallbackReason = observedQuota?.status === "exhausted"
             ? "account_quota_exhausted"
             : "account_cooldown";
-          if (!multipartModelRequest && Buffer.isBuffer(replayBody)) {
+          if (requestOperationKind !== "images/edits" && Buffer.isBuffer(replayBody)) {
             routeReason = fallbackReason;
             if (captureContext) captureContext.routeReason = routeReason;
             incoming.destroy();
@@ -2581,16 +2658,33 @@ export function createServer(settings, {
     req.on("aborted", handleClientAbort);
     req.on("error", handleClientAbort);
 
+    if (requestFormatRejected) {
+      rejectAccountPreflight(
+        "unsupported_request_format",
+        415,
+        "proxy_unsupported_request_format",
+        "unsupported Image Edits request format"
+      );
+      return;
+    }
+
     const modelAwareRouting = providerPriorityRules.length > 0
       || configuredCustomProviders.some((provider) => (
         Array.isArray(provider.supportedModels)
         || Array.isArray(provider.disabledModels) && provider.disabledModels.length > 0
       ));
+    const customModelTransformationConfigured = configuredCustomProviders.some((provider) => (
+      provider.proxy?.modelMode === "override"
+      || Array.isArray(provider.proxy?.modelMappings) && provider.proxy.modelMappings.length > 0
+    ));
     const customFailoverReplay = !initialAccountRoute
       && responsesRequest
       && customCandidates.length > 1;
     const customModelPreflight = !initialAccountRoute && modelAwareRouting;
-    if (initialAccountRoute || customFailoverReplay || customModelPreflight) {
+    if (initialAccountRoute
+      || accountFirstImageEditsPreflight
+      || customFailoverReplay
+      || customModelPreflight) {
       const accountChunks = [];
       let accountBytes = 0;
       let outgoing = null;
@@ -2610,7 +2704,7 @@ export function createServer(settings, {
           accountBytes += chunk.length;
           return;
         }
-        if (initialAccountRoute) {
+        if (initialAccountRoute || accountFirstImageEditsPreflight) {
           routeReason = "account_body_too_large";
           metricRoute = "custom";
           currentCustomProvider = null;
@@ -2620,8 +2714,13 @@ export function createServer(settings, {
         }
         streamingCustom = true;
         replayBody = null;
-        let inspectedModel = requestModelInspector?.snapshot()?.strings?.model;
-        if (multipartModelRequest && directRequestInspection && encodedRequestMetric) {
+        let inspectedModel = accountFirstImageEditsPreflight
+          ? null
+          : requestModelInspector?.snapshot()?.strings?.model;
+        if (!accountFirstImageEditsPreflight
+          && multipartModelRequest
+          && directRequestInspection
+          && encodedRequestMetric) {
           const multipartInspection = inspectMultipartModel(
             encodedRequestMetric.buffer(),
             requestContentType,
@@ -2630,6 +2729,17 @@ export function createServer(settings, {
           inspectedModel = multipartInspection.status === "valid"
             ? multipartInspection.model
             : null;
+        }
+        if (accountFirstImageEditsPreflight
+          && (modelAwareRouting || customModelTransformationConfigured)) {
+          logRequestBody();
+          finishProxyFailure({
+            statusCode: 413,
+            errorType: "proxy_request_too_large",
+            result: "upstreamError",
+            error: new Error("Image Edits model preflight exceeds the bounded limit")
+          });
+          return;
         }
         if (modelAwareRouting && typeof inspectedModel !== "string") {
           logRequestBody();
@@ -2685,12 +2795,26 @@ export function createServer(settings, {
           return;
         }
         replayBody = Buffer.concat(accountChunks, accountBytes);
-        requestedRoutingModel = boundedRequestModel(
+        const routingInspection = inspectBoundedRequestModel(
           replayBody,
           requestEncoding,
           requestContentType,
           requestOperationKind
         );
+        if (accountFirstImageEditsPreflight
+          && routingInspection.status !== "valid") {
+          const invalidMultipart = routingInspection.status === "invalid_multipart";
+          rejectAccountPreflight(
+            routingInspection.status,
+            400,
+            invalidMultipart ? "proxy_invalid_multipart" : "proxy_model_not_detected",
+            invalidMultipart
+              ? "invalid Image Edits multipart body"
+              : "Image Edits model was not detected"
+          );
+          return;
+        }
+        requestedRoutingModel = routingInspection.model;
         let customBodyRoute = !initialAccountRoute;
         if (initialAccountRoute) {
           const refinedRoute = decideRouteForModel(requestedRoutingModel, true);
@@ -2814,7 +2938,7 @@ export function createApp(settings = loadConfig(), {
     accessKeyStore?.close();
   });
 
-  const previewRoute = (model, operation = "responses") => {
+  const previewRoute = (model, operation = "responses", requestFormat = "json") => {
     const active = settingsSource
       ? settingsSource.current()
       : { generation: 0, settings };
@@ -2833,7 +2957,8 @@ export function createApp(settings = loadConfig(), {
       localBlockedUntilMs: routingState.accountBlockedUntilMs,
       nowMs: routingNow(),
       model,
-      operation
+      operation,
+      requestFormat
     });
   };
 

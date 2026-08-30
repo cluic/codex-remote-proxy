@@ -13,6 +13,11 @@ export const ROUTE_OPERATIONS = Object.freeze([
   "images/generations",
   "images/edits"
 ]);
+export const ROUTE_REQUEST_FORMATS = Object.freeze([
+  "json",
+  "multipart",
+  "unsupported"
+]);
 
 const MAX_HEADER_VALUE_BYTES = 64 * 1024;
 const MAX_RESET_AFTER_SECONDS = 31 * 24 * 60 * 60;
@@ -29,6 +34,7 @@ const NON_CHATGPT_AUTH_MODES = new Set(["apikey", "headers", "bedrockApiKey"]);
 const ROUTING_MODES = new Set(["custom_only", "account_first"]);
 const QUOTA_STATUSES = new Set(["available", "exhausted", "unknown"]);
 const ROUTE_OPERATION_SET = new Set(ROUTE_OPERATIONS);
+const ROUTE_REQUEST_FORMAT_SET = new Set(ROUTE_REQUEST_FORMATS);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -102,6 +108,25 @@ export function requestOperation(requestUrl) {
 
 export function isRouteOperation(value) {
   return ROUTE_OPERATION_SET.has(value);
+}
+
+export function isRouteRequestFormat(value) {
+  return ROUTE_REQUEST_FORMAT_SET.has(value);
+}
+
+export function requestFormatFromContentType(operation, contentType) {
+  if (operation !== "images/edits") return "json";
+  if (typeof contentType !== "string") return "unsupported";
+  const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
+  if (mediaType === "application/json") return "json";
+  if (mediaType === "multipart/form-data") return "multipart";
+  return "unsupported";
+}
+
+export function accountSupportsRequestFormat(operation, requestFormat) {
+  return operation !== "images/edits"
+    || requestFormat === "json"
+    || requestFormat === "multipart";
 }
 
 export function operationRequestUrl(operation) {
@@ -190,6 +215,7 @@ export function decideUpstreamRoute({
   accountState,
   model = null,
   modelKnown = model !== null,
+  requestFormat = "json",
   localBlockedUntilMs = null,
   nowMs = Date.now()
 }) {
@@ -205,6 +231,10 @@ export function decideUpstreamRoute({
   }
   if (!accountSupportsOperation(operation)) {
     return { route: "custom", reason: "unsupported_operation", target: null };
+  }
+  if (!isRouteRequestFormat(requestFormat)
+    || !accountSupportsRequestFormat(operation, requestFormat)) {
+    return { route: "custom", reason: "unsupported_request_format", target: null };
   }
   const target = buildChatGptAccountTarget(requestUrl);
   if (!target) return { route: "custom", reason: "unsupported_path", target: null };

@@ -96,6 +96,7 @@ export type RoutePreviewReason =
   | "account_quota_exhausted"
   | "unsupported_operation"
   | "unsupported_account_model"
+  | "unsupported_request_format"
   | "custom_only"
   | "not_chatgpt_auth"
   | "provider_pool_unavailable"
@@ -106,6 +107,8 @@ export type RouteOperation =
   | "chat/completions"
   | "images/generations"
   | "images/edits";
+
+export type RouteRequestFormat = "json" | "multipart" | "unsupported";
 
 export type ProviderSelectionReason =
   | "sole_eligible"
@@ -132,6 +135,7 @@ export interface RoutePreview {
   generation: number;
   evaluatedAt: string | null;
   operation: RouteOperation;
+  requestFormat: RouteRequestFormat;
   route: "account" | "custom" | "unavailable";
   reason: RoutePreviewReason;
   account: {
@@ -336,6 +340,9 @@ export interface ForwardingRecord {
     | "unsupported_path"
     | "unsupported_operation"
     | "unsupported_account_model"
+    | "unsupported_request_format"
+    | "model_not_detected"
+    | "invalid_multipart"
     | "custom_only"
     | null;
   providerSelectionReason: ProviderSelectionReason | null;
