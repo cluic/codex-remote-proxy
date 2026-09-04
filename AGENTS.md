@@ -117,6 +117,7 @@
 - Forwarding detail contracts must keep body metadata nested under both `request.body` and `response.body` across services, Admin projection, UI types, and fixtures.
 - Recoverable legacy-source ambiguity must import separate inactive Providers or enter Setup; it must not force users to edit secret-bearing files.
 - Invalid registry quarantine must use a fixed no-replace marker and a crash-resumable journal bound to source and lock identities.
+- Local preview servers must use a cookie host distinct from any active CRP Admin service.
 
 ## Required Checks
 

@@ -1725,6 +1725,7 @@ export function createServer(settings, {
       ? withoutAuthorizationRawHeaders(req.rawHeaders)
       : req.rawHeaders;
     const requestOperationKind = requestOperation(req.url);
+    const modelCatalogRequest = requestOperationKind === "models";
     const requestContentType = typeof req.headers["content-type"] === "string"
       ? req.headers["content-type"]
       : "";
@@ -1796,7 +1797,8 @@ export function createServer(settings, {
     let modelMappings = Array.isArray(requestSettings.proxy.modelMappings)
       ? requestSettings.proxy.modelMappings
       : [];
-    let modelTransformRequired = overrideModel !== null || modelMappings.length > 0;
+    let modelTransformRequired = !modelCatalogRequest
+      && (overrideModel !== null || modelMappings.length > 0);
     const requestEncoding = req.headers["content-encoding"];
     const normalizedRequestEncoding = singleContentEncoding(requestEncoding);
     const directRequestInspection = normalizedRequestEncoding === "" || normalizedRequestEncoding === "identity";
@@ -2030,7 +2032,8 @@ export function createServer(settings, {
       modelMappings = Array.isArray(requestSettings.proxy.modelMappings)
         ? requestSettings.proxy.modelMappings
         : [];
-      modelTransformRequired = overrideModel !== null || modelMappings.length > 0;
+      modelTransformRequired = !modelCatalogRequest
+        && (overrideModel !== null || modelMappings.length > 0);
       metricRoute = "custom";
       targetUrl = customTargetUrl;
       safeTargetUrl = redactProtectedUrl(targetUrl.href, requestProtectedValues);

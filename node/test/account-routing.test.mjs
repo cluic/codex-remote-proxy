@@ -100,6 +100,49 @@ test("routes account-first requests only with an eligible method, path, and uniq
   }
 });
 
+test("routes GET model catalogs through the account first with custom fallback eligibility", () => {
+  for (const requestUrl of ["/models?refresh=1", "/v1/models?refresh=1"]) {
+    const decision = decideUpstreamRoute({
+      mode: "account_first",
+      method: "GET",
+      requestUrl,
+      rawHeaders: ACCOUNT_HEADERS,
+      accountState: UNKNOWN_STATE,
+      nowMs: NOW_MS
+    });
+    assert.equal(decision.route, "account");
+    assert.equal(decision.reason, "account_eligible");
+    assert.equal(decision.target.href,
+      "https://chatgpt.com/backend-api/codex/models?refresh=1");
+  }
+
+  const fallback = (overrides = {}) => decideUpstreamRoute({
+    mode: "account_first",
+    method: "GET",
+    requestUrl: "/v1/models",
+    rawHeaders: ACCOUNT_HEADERS,
+    accountState: UNKNOWN_STATE,
+    nowMs: NOW_MS,
+    ...overrides
+  });
+  assert.deepEqual(
+    fallback({ method: "POST" }),
+    { route: "custom", reason: "unsupported_method", target: null }
+  );
+  assert.deepEqual(
+    fallback({ rawHeaders: [] }),
+    { route: "custom", reason: "account_headers_missing", target: null }
+  );
+  assert.deepEqual(
+    fallback({ accountState: { ...UNKNOWN_STATE, authMode: "apikey" } }),
+    { route: "custom", reason: "not_chatgpt_auth", target: null }
+  );
+  assert.deepEqual(
+    fallback({ localBlockedUntilMs: NOW_MS + 1_000 }),
+    { route: "custom", reason: "account_cooldown", target: null }
+  );
+});
+
 test("classifies operations separately from models and exposes account capability limits", () => {
   assert.equal(requestOperation("/v1/responses?stream=true"), "responses");
   assert.equal(requestOperation("/chat/completions"), "chat/completions");
@@ -108,6 +151,7 @@ test("classifies operations separately from models and exposes account capabilit
   assert.equal(accountSupportsOperation("responses"), true);
   assert.equal(accountSupportsOperation("images/generations"), true);
   assert.equal(accountSupportsOperation("images/edits"), true);
+  assert.equal(accountSupportsOperation("models"), true);
   assert.equal(accountSupportsModel("responses", "gpt-5.6"), true);
   assert.equal(accountSupportsModel("responses", "gpt-image-2"), false);
   assert.equal(accountSupportsModel("images/generations", "gpt-image-2"), true);
@@ -250,6 +294,12 @@ test("parses bounded Codex windows and derives explicit or generic 429 cooldowns
     "x-codex-secondary-used-percent": "100",
     "x-codex-secondary-reset-after-seconds": "240"
   }, NOW_MS).blockedUntilMs, NOW_MS + 240_000);
+  assert.equal(account429Cooldown({
+    "x-codex-primary-used-percent": "100",
+    "x-codex-primary-reset-after-seconds": "120",
+    "x-codex-secondary-used-percent": "100",
+    "x-codex-secondary-reset-after-seconds": "240"
+  }, NOW_MS).untilMs, NOW_MS + 240_000);
   assert.deepEqual(account429Cooldown({
     "x-codex-primary-used-percent": "100",
     "x-codex-primary-reset-after-seconds": "120"
@@ -272,8 +322,9 @@ test("parses bounded Codex windows and derives explicit or generic 429 cooldowns
     NOW_MS + ACCOUNT_429_FALLBACK_COOLDOWN_MS
   );
   assert.equal(account429Cooldown({
-    "x-codex-primary-reset-after-seconds": "45"
-  }, NOW_MS).untilMs, NOW_MS + 45_000);
+    "x-codex-primary-reset-after-seconds": "45",
+    "x-codex-secondary-reset-after-seconds": "90"
+  }, NOW_MS).untilMs, NOW_MS + 90_000);
   assert.equal(parseCodexQuotaHeaders({
     "x-codex-primary-used-percent": "101",
     "x-codex-primary-reset-after-seconds": "999999999"

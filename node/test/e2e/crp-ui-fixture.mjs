@@ -444,21 +444,21 @@ function createServices({ upstream }) {
         threadId: null,
         method: "GET",
         incomingUrl: "http://127.0.0.1:15100/models",
-        targetUrl: "https://fallback.example/v1/models",
+        targetUrl: "https://chatgpt.com/backend-api/codex/models",
         requestBytes: 0,
         responseStatus: 200,
         responseBytes: 2_400,
         stream: false,
-        upstreamRequestId: "fallback-models-6",
+        upstreamRequestId: "chatgpt-models-6",
         inputTokens: null,
         outputTokens: null,
         usageObservationStatus: "not_applicable",
         errorType: null,
         errorMessage: null,
         outcome: "success",
-        providerId: "provider-2",
-        providerName: "Fallback API",
-        route: "custom",
+        providerId: "chatgpt-account",
+        providerName: "ChatGPT",
+        route: "account",
         requestedModel: null,
         forwardedModel: null
       },
@@ -605,14 +605,14 @@ function createServices({ upstream }) {
     ].map((record) => ({
       ...record,
       cachedInputTokens: record.id === 3 ? 64 : null,
-      routeReason: record.id === 3
+      routeReason: record.id === 3 || record.id === 6
         ? "account_eligible"
         : record.id === 4
           ? "account_cooldown"
           : record.id === 2
             ? "account_quota_exhausted"
             : "custom_only",
-      providerSelectionReason: record.id === 3
+      providerSelectionReason: record.id === 3 || record.id === 6
         ? null
         : record.id === 4
           ? "model_priority"
