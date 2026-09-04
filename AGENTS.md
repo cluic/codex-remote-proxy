@@ -85,6 +85,7 @@
 - Verify optional command-line tools are installed before relying on them in release automation.
 - GitHub CLI JSON queries must use fields advertised by the installed `gh` version.
 - CommonJS inline Node scripts must wrap asynchronous work instead of mixing `require()` with top-level `await`.
+- External security audits may retry only bounded transport failures; completed vulnerability findings must fail immediately.
 - Retryable POST routing may replay only before upstream delivery is possible; uncertain delivery must cool the provider for later requests.
 - Managed startup mutations must prove marker and inode identity, publish without clobber, disable through inert content, and preserve foreign paths and shared-directory modes.
 - Running provider pools must reject eligible configuration mutations unless the resulting snapshot is hot-applied and confirmed; failed probes must not invalidate a live snapshot.

@@ -50,7 +50,27 @@ jobs:
         run: npm test
 
       - name: Audit runtime dependencies
-        run: npm audit --omit=dev
+        shell: bash
+        run: |
+          audit_log="$RUNNER_TEMP/crp-runtime-audit.log"
+          for attempt in 1 2 3; do
+            set +e
+            timeout 90s npm audit --omit=dev --fetch-retries=0 --fetch-timeout=60000 >"$audit_log" 2>&1
+            status=$?
+            set -e
+            cat "$audit_log"
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$status" -ne 124 ] && ! grep -Eqi 'network timeout|audit endpoint returned an error|Service Unavailable|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|ENOTFOUND|socket hang up' "$audit_log"; then
+              exit "$status"
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            echo "npm audit transport failed on attempt $attempt/3; retrying." >&2
+            sleep $((attempt * 15))
+          done
 
       - name: Verify package contents
         run: node --test test/package-content.test.mjs
