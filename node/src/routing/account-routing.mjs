@@ -103,6 +103,9 @@ export function requestOperation(requestUrl) {
     || incoming.pathname === "/v1/images/edits") {
     return "images/edits";
   }
+  if (incoming.pathname === "/models" || incoming.pathname === "/v1/models") {
+    return "models";
+  }
   return null;
 }
 
@@ -136,11 +139,13 @@ export function operationRequestUrl(operation) {
 export function accountSupportsOperation(operation) {
   return operation === "responses"
     || operation === "images/generations"
-    || operation === "images/edits";
+    || operation === "images/edits"
+    || operation === "models";
 }
 
 export function accountSupportsModel(operation, model, { allowUnknown = false } = {}) {
   if (!accountSupportsOperation(operation)) return false;
+  if (operation === "models") return true;
   if (typeof model !== "string") return allowUnknown;
   const imageModel = /^gpt-image(?:-|$)/i.test(model);
   return operation === "images/generations" || operation === "images/edits"
@@ -222,12 +227,13 @@ export function decideUpstreamRoute({
   if (!ROUTING_MODES.has(mode) || mode === "custom_only") {
     return { route: "custom", reason: "custom_only", target: null };
   }
-  if (method !== "POST") {
-    return { route: "custom", reason: "unsupported_method", target: null };
-  }
   const operation = requestOperation(requestUrl);
   if (operation === null) {
     return { route: "custom", reason: "unsupported_path", target: null };
+  }
+  const expectedMethod = operation === "models" ? "GET" : "POST";
+  if (method !== expectedMethod) {
+    return { route: "custom", reason: "unsupported_method", target: null };
   }
   if (!accountSupportsOperation(operation)) {
     return { route: "custom", reason: "unsupported_operation", target: null };
@@ -323,7 +329,7 @@ export function account429Cooldown(headers, nowMs = Date.now()) {
   const resetAfterSeconds = quota?.windows
     .map((window) => window.resetAfterSeconds)
     .filter((value) => value !== null)
-    .sort((left, right) => left - right)[0] ?? null;
+    .sort((left, right) => right - left)[0] ?? null;
   const explicitUntilMs = quota?.blockedUntilMs
     ?? (resetAfterSeconds === null ? null : nowMs + (resetAfterSeconds * 1_000));
   return {

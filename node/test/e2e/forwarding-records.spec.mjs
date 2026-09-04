@@ -107,6 +107,9 @@ test("scans, filters, loads details on demand, and toggles forwarding capture", 
   await showModelRequests.check();
   await expect(page.locator(".records-table tbody tr")).toHaveCount(6);
   await expect(page.locator(".records-table")).toContainText("/models");
+  const modelRows = page.locator(".records-table tbody tr").filter({ hasText: "/models" });
+  await expect(modelRows).toHaveCount(2);
+  await expect(modelRows.first()).toContainText("ChatGPT");
   await showModelRequests.uncheck();
   await expect(page.locator(".records-table tbody tr")).toHaveCount(4);
   await page.getByRole("button", { name: "Aborted", exact: true }).click();

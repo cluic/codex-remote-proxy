@@ -695,6 +695,180 @@ test("account-first sends eligible Responses traffic to the fixed Codex route", 
   assert.equal(metrics[0].model, "client-account-model");
 });
 
+test("Worker account-first routes GET model catalogs to ChatGPT and falls back after account 429", async (t) => {
+  const accountObserved = [];
+  const accountSignals = [createSignal(), createSignal()];
+  const account = http.createServer((req, res) => {
+    const requestIndex = accountObserved.length;
+    accountObserved.push({
+      path: req.url,
+      authorization: req.headers.authorization,
+      accountId: req.headers["chatgpt-account-id"],
+      hasCustomAuth: Object.hasOwn(req.headers, "x-provider-auth")
+    });
+    req.on("end", () => {
+      accountSignals[requestIndex]?.resolve();
+      res.setHeader("content-type", "application/json");
+      if (requestIndex === 0) {
+        res.end(JSON.stringify({ data: [{ id: "account-model" }] }));
+        return;
+      }
+      res.statusCode = 429;
+      res.setHeader("x-codex-primary-used-percent", "100");
+      res.setHeader("x-codex-primary-reset-after-seconds", "60");
+      res.end(JSON.stringify({ error: { type: "rate_limit" } }));
+    });
+    req.resume();
+  });
+  const accountPort = await listen(account);
+  t.after(() => closeServer(account));
+
+  const customObserved = [];
+  const customSignal = createSignal();
+  const custom = http.createServer((req, res) => {
+    customObserved.push({
+      path: req.url,
+      authorization: req.headers.authorization,
+      accountId: req.headers["chatgpt-account-id"],
+      customAuth: req.headers["x-provider-auth"]
+    });
+    req.on("end", () => {
+      customSignal.resolve();
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ data: [{ id: "custom-model" }] }));
+    });
+    req.resume();
+  });
+  const customPort = await listen(custom);
+  t.after(() => closeServer(custom));
+
+  const settings = makeSettings({
+    baseUrl: `http://127.0.0.1:${customPort}`,
+    apiKey: "custom-token-sentinel",
+    authHeader: "x-provider-auth",
+    modelMode: "override",
+    modelOverride: "must-not-rewrite-model-catalogs",
+    routingMode: "account_first",
+    accountState: {
+      authMode: "chatgpt",
+      quotaStatus: "available",
+      blockedUntil: null,
+      updatedAt: "2026-08-20T00:00:00.000Z"
+    }
+  });
+  const source = new RuntimeSettingsSource();
+  source.apply({ generation: 31, settings });
+  const captureManager = createMemoryCaptureManager();
+  const metrics = [];
+  const metricSignals = [createSignal(), createSignal()];
+  const proxy = createServer(settings, {
+    settingsSource: source,
+    captureManager,
+    logFn() {},
+    routingNow: () => Date.parse("2026-08-20T00:01:00.000Z"),
+    resolveAccountTarget(target) {
+      const local = new URL(`http://127.0.0.1:${accountPort}`);
+      local.pathname = target.pathname;
+      local.search = target.search;
+      return local;
+    },
+    recordMetric(observation) {
+      metrics.push(structuredClone(observation));
+      metricSignals[metrics.length - 1]?.resolve();
+    }
+  });
+  const proxyPort = await listen(proxy);
+  t.after(() => closeServer(proxy));
+
+  const requestHeaders = {
+    authorization: "Bearer account-token-sentinel",
+    "chatgpt-account-id": "account-id-sentinel",
+    "x-provider-auth": "client-custom-auth-sentinel"
+  };
+  const accountResponse = await fetch(
+    `http://127.0.0.1:${proxyPort}/models?refresh=account`,
+    { headers: requestHeaders }
+  );
+  assert.equal(accountResponse.status, 200);
+  assert.deepEqual(await accountResponse.json(), {
+    data: [{ id: "account-model" }]
+  });
+  await withDeadline(accountSignals[0].promise, "account model request was not observed");
+  await withDeadline(metricSignals[0].promise, "account model metric was not recorded");
+
+  const fallbackResponse = await fetch(
+    `http://127.0.0.1:${proxyPort}/v1/models?refresh=fallback`,
+    { headers: requestHeaders }
+  );
+  assert.equal(fallbackResponse.status, 200);
+  assert.deepEqual(await fallbackResponse.json(), {
+    data: [{ id: "custom-model" }]
+  });
+  await withDeadline(accountSignals[1].promise, "429 account model request was not observed");
+  await withDeadline(customSignal.promise, "custom model fallback was not observed");
+  await withDeadline(metricSignals[1].promise, "custom fallback metric was not recorded");
+
+  assert.deepEqual(accountObserved, [
+    {
+      path: "/backend-api/codex/models?refresh=account",
+      authorization: "Bearer account-token-sentinel",
+      accountId: "account-id-sentinel",
+      hasCustomAuth: false
+    },
+    {
+      path: "/backend-api/codex/models?refresh=fallback",
+      authorization: "Bearer account-token-sentinel",
+      accountId: "account-id-sentinel",
+      hasCustomAuth: false
+    }
+  ]);
+  assert.deepEqual(customObserved, [{
+    path: "/v1/models?refresh=fallback",
+    authorization: undefined,
+    accountId: undefined,
+    customAuth: "Bearer custom-token-sentinel"
+  }]);
+  assert.deepEqual(metrics.map(({ route, providerId, result }) => ({
+    route,
+    providerId,
+    result
+  })), [
+    { route: "account", providerId: null, result: "success" },
+    { route: "custom", providerId: "provider-primary", result: "success" }
+  ]);
+  assert.deepEqual(captureManager.records.map((record) => ({
+    method: record.method,
+    targetUrl: record.targetUrl,
+    providerId: record.providerId,
+    providerName: record.providerName,
+    route: record.route,
+    routeReason: record.routeReason,
+    providerSelectionReason: record.providerSelectionReason,
+    responseStatus: record.responseStatus
+  })), [
+    {
+      method: "GET",
+      targetUrl: `http://127.0.0.1:${accountPort}/backend-api/codex/models?refresh=account`,
+      providerId: "chatgpt-account",
+      providerName: "ChatGPT",
+      route: "account",
+      routeReason: "account_eligible",
+      providerSelectionReason: null,
+      responseStatus: 200
+    },
+    {
+      method: "GET",
+      targetUrl: `http://127.0.0.1:${customPort}/v1/models?refresh=fallback`,
+      providerId: "provider-primary",
+      providerName: "Primary",
+      route: "custom",
+      routeReason: "account_quota_exhausted",
+      providerSelectionReason: "sole_eligible",
+      responseStatus: 200
+    }
+  ]);
+});
+
 test("account-first forwards Image API bytes to ChatGPT and keeps image models off Responses", async (t) => {
   const accountObserved = [];
   const account = http.createServer((req, res) => {
