@@ -82,7 +82,9 @@
 - UI information-architecture changes must update every E2E locator tied to removed headings or containers before the full browser run.
 - Fixed-port core-chain verification must inspect active listeners first and must not stop a user-owned CRP service without approval.
 - Repository diagnostics must use paths relative to their declared working directory.
+- Verify optional command-line tools are installed before relying on them in release automation.
 - GitHub CLI JSON queries must use fields advertised by the installed `gh` version.
+- CommonJS inline Node scripts must wrap asynchronous work instead of mixing `require()` with top-level `await`.
 - Retryable POST routing may replay only before upstream delivery is possible; uncertain delivery must cool the provider for later requests.
 - Managed startup mutations must prove marker and inode identity, publish without clobber, disable through inert content, and preserve foreign paths and shared-directory modes.
 - Running provider pools must reject eligible configuration mutations unless the resulting snapshot is hot-applied and confirmed; failed probes must not invalidate a live snapshot.
