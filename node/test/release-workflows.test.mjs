@@ -196,6 +196,10 @@ test("release preflight encodes the strict event-field exemption and patch gate"
   const workflow = readWorkflowText("release-preflight.yml");
   assert.deepEqual(extractTopLevelChildKeys(workflow, "on"), ["pull_request"]);
 
+  const auditStep = extractStepBlock(workflow, "Audit runtime dependencies");
+  assert.match(auditStep, /^        run: node scripts\/audit-runtime-dependencies\.mjs$/m);
+  assert.equal(auditStep.includes("|| true"), false);
+
   const classifier = extractStepBlock(workflow, "Classify Changesets release pull request");
   const expectedExpression = normalizeExpression(`
     github.event_name == 'pull_request' &&

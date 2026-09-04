@@ -50,7 +50,7 @@ jobs:
         run: npm test
 
       - name: Audit runtime dependencies
-        run: npm audit --omit=dev
+        run: node scripts/audit-runtime-dependencies.mjs
 
       - name: Verify package contents
         run: node --test test/package-content.test.mjs
