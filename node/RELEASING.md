@@ -23,7 +23,7 @@ Publishing uses GitHub OIDC and requires no long-lived `NPM_TOKEN`.
 
 Every checkout that occurs before pull-request code runs must use `persist-credentials: false`. Native credential smoke jobs must prove the intended Keychain, Credential Manager, or Secret Service backend; a file fallback is not acceptable evidence.
 
-Release preflight requires a complete structured npm audit report. It retries an incomplete report up to three times with each attempt capped at 90 seconds; a completed vulnerability finding fails immediately and is never converted into a passing result.
+Release preflight requires a complete structured npm audit report. It retries only explicit process timeouts or structured npm transport errors, up to three attempts capped at 90 seconds each; completed vulnerability findings and local execution errors fail immediately.
 
 ## Local Deterministic Gate
 
