@@ -403,6 +403,9 @@ export class CrpApi {
     if (query.includeModels !== undefined) {
       parameters.set("includeModels", String(query.includeModels));
     }
+    for (const key of ["since", "until", "model", "providerId", "sessionId"] as const) {
+      if (query[key]) parameters.set(key, query[key]);
+    }
     return await this.get<ForwardingRecordsPageData>(
       `/api/v1/forwarding-records?${parameters.toString()}`,
       signal

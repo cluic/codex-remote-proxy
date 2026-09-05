@@ -470,6 +470,10 @@ test("terminates after a second session exchange makes the open tab CSRF stale",
 for (const status of [500, 403]) {
   test(`treats a ${status} session exchange failure as terminal even with a valid cookie`, async ({ page, crp }) => {
     await openCrp(page, crp);
+    // Workspace readiness intentionally excludes background charts. Settle the
+    // original document's requests before observing the new session bootstrap.
+    await expect.poll(() => crp.calls.some((call) => call.operation === "getMetrics")
+      && crp.calls.some((call) => call.operation === "getTokenHeatmap")).toBe(true);
     const apiRequests = [];
     page.on("request", (request) => {
       const url = new URL(request.url());

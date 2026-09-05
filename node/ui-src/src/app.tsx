@@ -152,13 +152,35 @@ export function App() {
     }
   }, [api]);
 
-  const loadWorkspace = useCallback(async (window: MetricsWindow): Promise<WorkspaceData | null> => {
+  const loadMetrics = useCallback(async (
+    window: MetricsWindow,
+    signal?: AbortSignal,
+    reportError = true
+  ): Promise<void> => {
+    const sequence = ++metricsSequenceRef.current;
+    if (reportError) setMetricsError(null);
+    try {
+      const nextMetrics = await api.getMetrics(window, signal);
+      if (sequence === metricsSequenceRef.current && !signal?.aborted) {
+        setMetrics(nextMetrics);
+        setMetricsError(null);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")
+        && !signal?.aborted
+        && sequence === metricsSequenceRef.current
+        && reportError) {
+        setMetrics(null);
+        setMetricsError(asApiError(error));
+      }
+    }
+  }, [api]);
+
+  const loadWorkspace = useCallback(async (): Promise<WorkspaceData | null> => {
     const sequence = ++loadSequenceRef.current;
-    const metricsSequence = ++metricsSequenceRef.current;
     loadControllerRef.current?.abort();
     const controller = new AbortController();
     loadControllerRef.current = controller;
-    void loadHeatmap(controller.signal);
     try {
       const [
         status,
@@ -192,22 +214,6 @@ export function App() {
       setWorkspace(nextWorkspace);
       setActivity(nextActivity);
       setLoadError(null);
-      try {
-        const nextMetrics = await api.getMetrics(window, controller.signal);
-        if (!controller.signal.aborted
-          && sequence === loadSequenceRef.current
-          && metricsSequence === metricsSequenceRef.current) {
-          setMetrics(nextMetrics);
-          setMetricsError(null);
-        }
-      } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")
-          && sequence === loadSequenceRef.current
-          && metricsSequence === metricsSequenceRef.current) {
-          setMetrics(null);
-          setMetricsError(asApiError(error));
-        }
-      }
       return nextWorkspace;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return null;
@@ -217,7 +223,7 @@ export function App() {
     } finally {
       if (sequence === loadSequenceRef.current) loadControllerRef.current = null;
     }
-  }, [api, loadHeatmap]);
+  }, [api]);
 
   useEffect(() => {
     if (initializedRef.current) return undefined;
@@ -245,7 +251,7 @@ export function App() {
         return;
       }
       if (cancelled) return;
-      const loaded = await loadWorkspace("24h");
+      const loaded = await loadWorkspace();
       if (cancelled) return;
       if (loaded && loaded.status.activeProviderId === null) {
         history.replaceState(null, "", "/setup");
@@ -287,6 +293,23 @@ export function App() {
     };
   }, [accessMode, ready, route]);
 
+  useEffect(() => {
+    if (!ready || accessMode === "initializing" || accessMode === "terminal"
+      || accessMode === "stopped" || (route !== "overview" && route !== "system")) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    void loadMetrics(metricsWindowRef.current, controller.signal);
+    if (route === "overview") void loadHeatmap(controller.signal);
+    return () => controller.abort();
+  }, [accessMode, loadHeatmap, loadMetrics, ready, route]);
+
+  const refreshObservability = useCallback((targetRoute: Route) => {
+    if (targetRoute !== "overview" && targetRoute !== "system") return;
+    void loadMetrics(metricsWindowRef.current);
+    if (targetRoute === "overview") void loadHeatmap();
+  }, [loadHeatmap, loadMetrics]);
+
   const changeLocale = useCallback((next: Locale) => {
     persistLocale(next);
     setLocale(next);
@@ -303,9 +326,12 @@ export function App() {
   const refresh = useCallback(async () => {
     setActionError(null);
     setNotice(null);
-    const loaded = await loadWorkspace(metricsWindowRef.current);
-    if (loaded) setNotice({ key: "notice.refreshed" });
-  }, [loadWorkspace]);
+    const loaded = await loadWorkspace();
+    if (loaded) {
+      refreshObservability(routeFromPath(location.pathname));
+      setNotice({ key: "notice.refreshed" });
+    }
+  }, [loadWorkspace, refreshObservability]);
 
   const resumeManagement = useCallback(async () => {
     if (pendingRef.current || api.mutationAllowed) return;
@@ -316,7 +342,8 @@ export function App() {
     try {
       await api.resumeSession();
       setAccessMode("writable");
-      await loadWorkspace(metricsWindowRef.current);
+      const loaded = await loadWorkspace();
+      if (loaded) refreshObservability(routeFromPath(location.pathname));
       setNotice({ key: "notice.managementResumed" });
     } catch (error) {
       setActionError(asApiError(error));
@@ -324,7 +351,7 @@ export function App() {
       pendingRef.current = false;
       setPending(null);
     }
-  }, [api, loadWorkspace]);
+  }, [api, loadWorkspace, refreshObservability]);
 
   const executeMutation = useCallback(async <T,>(
     key: string,
@@ -343,13 +370,16 @@ export function App() {
     } catch (error) {
       failure = asApiError(error);
     }
-    if (api.mutationAllowed) await loadWorkspace(metricsWindowRef.current);
+    if (api.mutationAllowed) {
+      const loaded = await loadWorkspace();
+      if (loaded) refreshObservability(routeFromPath(location.pathname));
+    }
     if (failure) setActionError(failure);
     else setNotice({ key: successKey });
     pendingRef.current = false;
     setPending(null);
     return failure ? null : value;
-  }, [api, loadWorkspace]);
+  }, [api, loadWorkspace, refreshObservability]);
 
   const createProvider = useCallback(async (input: ProviderInput, credential: string) => (
     await executeMutation("provider-create", () => api.createProvider(input, credential), "notice.providerCreated")
@@ -665,17 +695,8 @@ export function App() {
   const changeMetricsWindow = useCallback((next: MetricsWindow) => {
     metricsWindowRef.current = next;
     setMetricsWindow(next);
-    const sequence = ++metricsSequenceRef.current;
-    setMetricsError(null);
-    void api.getMetrics(next).then((nextMetrics) => {
-      if (sequence === metricsSequenceRef.current) setMetrics(nextMetrics);
-    }).catch((error) => {
-      if (sequence === metricsSequenceRef.current) {
-        setMetrics(null);
-        setMetricsError(asApiError(error));
-      }
-    });
-  }, [api]);
+    void loadMetrics(next);
+  }, [loadMetrics]);
 
   const previewRoute = useCallback((
     model: string,
@@ -687,23 +708,14 @@ export function App() {
   ), [api]);
 
   useEffect(() => {
-    if (route !== "overview" || accessMode === "initializing"
+    if (!ready || route !== "overview" || accessMode === "initializing"
       || accessMode === "terminal" || accessMode === "stopped") return undefined;
     let controller: AbortController | null = null;
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
       controller?.abort();
       controller = new AbortController();
-      const sequence = ++metricsSequenceRef.current;
-      void api.getMetrics(metricsWindowRef.current, controller.signal).then((nextMetrics) => {
-        if (sequence !== metricsSequenceRef.current) return;
-        setMetrics(nextMetrics);
-        setMetricsError(null);
-      }).catch((error) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
-          // Keep the last valid chart during a transient background refresh failure.
-        }
-      });
+      void loadMetrics(metricsWindowRef.current, controller.signal, false);
       void loadHeatmap(controller.signal);
     };
     const interval = window.setInterval(refresh, 30_000);
@@ -713,7 +725,7 @@ export function App() {
       document.removeEventListener("visibilitychange", refresh);
       controller?.abort();
     };
-  }, [accessMode, api, loadHeatmap, route]);
+  }, [accessMode, loadHeatmap, loadMetrics, ready, route]);
 
   const loadActivityPage = useCallback((offset: number) => {
     if (activityLoadingRef.current) return;
@@ -924,6 +936,7 @@ export function App() {
         <ForwardingRecordsPage
           locale={locale}
           t={t}
+          providers={workspace.providers}
           captureEnabled={workspace.settings.captureEnabled}
           captureDetailsEnabled={workspace.settings.captureDetailsEnabled}
           captureStatus={workspace.status.capture}

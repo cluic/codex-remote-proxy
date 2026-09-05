@@ -1569,7 +1569,10 @@ export function createAdminServer({
       return;
     }
     if (url.pathname === `${API_PREFIX}/forwarding-records` && request.method === "GET") {
-      const allowed = new Set(["limit", "before", "outcome", "search", "includeModels"]);
+      const allowed = new Set([
+        "limit", "before", "outcome", "search", "includeModels",
+        "since", "until", "model", "providerId", "sessionId"
+      ]);
       for (const key of url.searchParams.keys()) {
         if (!allowed.has(key)) throw bodyError("API_BODY_INVALID");
       }
@@ -1596,6 +1599,28 @@ export function createAdminServer({
           && !["true", "false"].includes(includeModelValues[0]))) {
         throw bodyError("API_BODY_INVALID");
       }
+      const filters = {};
+      for (const key of ["since", "until", "model", "providerId", "sessionId"]) {
+        const values = url.searchParams.getAll(key);
+        if (values.length > 1) throw bodyError("API_BODY_INVALID");
+        if (values.length === 0) continue;
+        const value = values[0];
+        if (key === "since" || key === "until") {
+          const milliseconds = Date.parse(value);
+          if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+            || !Number.isFinite(milliseconds)
+            || new Date(milliseconds).toISOString() !== value) {
+            throw bodyError("API_BODY_INVALID");
+          }
+        } else if (value.trim().length === 0 || value !== value.trim()
+          || [...value].length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(value)) {
+          throw bodyError("API_BODY_INVALID");
+        }
+        filters[key] = value;
+      }
+      if (filters.since && filters.until && filters.since >= filters.until) {
+        throw bodyError("API_BODY_INVALID");
+      }
       if (!forwardingRecordsService || typeof forwardingRecordsService.list !== "function") {
         throw new CrpError(
           "FORWARDING_RECORDS_UNAVAILABLE",
@@ -1609,7 +1634,8 @@ export function createAdminServer({
         before,
         outcome: outcomeValues[0] ?? "all",
         search: searchValues[0] ?? "",
-        includeModels: includeModelValues.length === 0 || includeModelValues[0] === "true"
+        includeModels: includeModelValues.length === 0 || includeModelValues[0] === "true",
+        ...filters
       });
       sendJson(response, 200, projectForwardingRecordsPage(result, limit));
       return;

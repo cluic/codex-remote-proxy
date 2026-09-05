@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   CaptureManager,
   DEFAULT_CAPTURE_DB_PATH,
+  FORWARDING_METADATA_INDEX,
   encodeBody,
   loadRuntimeCaptureConfig,
   normalizeCaptureConfig,
@@ -363,7 +364,18 @@ test("capture manager upgrades schema 1 and persists model, provider, and usage 
       provider_selection_reason, requested_model, forwarded_model
     FROM http_transactions
   `).get();
+  const indexColumns = upgraded.prepare(`PRAGMA index_info(${FORWARDING_METADATA_INDEX})`).all()
+    .map(({ name }) => name);
   upgraded.close();
+  assert.deepEqual(indexColumns, [
+    "id", "started_at", "completed_at", "duration_ms",
+    "request_id", "session_id", "thread_id", "method", "incoming_url", "target_url",
+    "provider_id", "provider_name", "route", "route_reason", "provider_selection_reason",
+    "requested_model", "forwarded_model", "request_body_bytes", "response_status",
+    "response_body_bytes", "is_stream", "upstream_request_id", "input_tokens",
+    "output_tokens", "cached_input_tokens", "details_captured", "usage_observation_status",
+    "error_type", "error_message"
+  ]);
   assert.equal(version, 6);
   assert.ok(columns.includes("provider_id"));
   assert.ok(columns.includes("input_tokens"));

@@ -1,6 +1,7 @@
 import { lstatSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
+import { FORWARDING_METADATA_COLUMNS, FORWARDING_METADATA_INDEX } from "../capture-store.mjs";
 import { CrpError } from "../shared/errors.mjs";
 
 const MAX_LIMIT = 100;
@@ -251,23 +252,45 @@ function projectBody(value, encoding, bytes, sourceTruncated = false) {
   };
 }
 
+function validDateBound(value) {
+  if (value === null) return true;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
+}
+
+function validExactFilter(value) {
+  return value === null || (typeof value === "string"
+    && value.length > 0 && value === value.trim()
+    && [...value].length <= MAX_ID_CODE_POINTS
+    && !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
+}
+
 function normalizeOptions({
   limit = 50,
   before = null,
   outcome = "all",
   search = "",
-  includeModels = true
+  includeModels = true,
+  since = null,
+  until = null,
+  model = null,
+  providerId = null,
+  sessionId = null
 } = {}) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LIMIT
     || (before !== null && (!Number.isSafeInteger(before) || before < 1))
     || !OUTCOMES.has(outcome)
     || typeof includeModels !== "boolean"
+    || !validDateBound(since) || !validDateBound(until)
+    || (since !== null && until !== null && since >= until)
+    || !validExactFilter(model) || !validExactFilter(providerId) || !validExactFilter(sessionId)
     || typeof search !== "string"
     || [...search].length > MAX_SEARCH_CODE_POINTS
     || /[\u0000-\u001f\u007f]/.test(search)) {
     throw new TypeError("Forwarding record query is invalid.");
   }
-  return { limit, before, outcome, search: search.trim(), includeModels };
+  return { limit, before, outcome, search: search.trim(), includeModels, since, until, model, providerId, sessionId };
 }
 
 function outcomeSql(outcome) {
@@ -293,11 +316,38 @@ function escapeLike(value) {
 function buildWhere(options, {
   providerColumns = false,
   modelColumns = false,
-  reasonColumns = false
+  reasonColumns = false,
+  sessionColumn = false
 } = {}) {
   const conditions = [];
   const parameters = {};
   if (!options.includeModels) conditions.push(MODEL_REQUEST_HIDDEN_SQL);
+  if (options.since !== null) {
+    conditions.push("started_at >= @since");
+    parameters.since = options.since;
+  }
+  if (options.until !== null) {
+    conditions.push("started_at < @until");
+    parameters.until = options.until;
+  }
+  if (options.model !== null) {
+    if (modelColumns) {
+      conditions.push("(requested_model = @model OR forwarded_model = @model)");
+      parameters.model = options.model;
+    } else conditions.push("0");
+  }
+  if (options.providerId !== null) {
+    if (providerColumns) {
+      conditions.push("provider_id = @providerId");
+      parameters.providerId = options.providerId;
+    } else conditions.push("0");
+  }
+  if (options.sessionId !== null) {
+    if (sessionColumn) {
+      conditions.push("session_id = @sessionId");
+      parameters.sessionId = options.sessionId;
+    } else conditions.push("0");
+  }
   if (options.before !== null) {
     conditions.push("id < @before");
     parameters.before = options.before;
@@ -363,6 +413,9 @@ export class ForwardingRecordsService {
     let database;
     try {
       database = this.openDatabase(this.path);
+      // Keep the list and its facets on one committed snapshot, while allowing
+      // the WAL writer to continue. Never initialize or migrate from this reader.
+      database.exec("BEGIN");
       const providerProfiles = this.listProviders();
       const providers = Array.isArray(providerProfiles)
         ? providerProfiles.map(normalizeProviderBase).filter(Boolean)
@@ -382,11 +435,22 @@ export class ForwardingRecordsService {
         .every((column) => columns.has(column));
       const hasReasonColumns = ["route_reason", "provider_selection_reason"]
         .every((column) => columns.has(column));
-      const where = buildWhere(options, {
+      const hasMetadataIndex = FORWARDING_METADATA_COLUMNS.every((column) => columns.has(column))
+        && database.prepare("PRAGMA index_list(http_transactions)").all()
+          .some((index) => index.name === FORWARDING_METADATA_INDEX);
+      // Explicit selection prevents the rowid ORDER BY from favoring the body
+      // table. Older databases retain their existing read-only query path.
+      const source = hasMetadataIndex
+        ? `http_transactions INDEXED BY ${FORWARDING_METADATA_INDEX}`
+        : "http_transactions";
+      const filterColumns = {
         providerColumns: hasProviderColumns,
         modelColumns: hasModelColumns,
-        reasonColumns: hasReasonColumns
-      });
+        reasonColumns: hasReasonColumns,
+        sessionColumn: columns.has("session_id")
+      };
+      const summaryWhere = buildWhere({ ...options, before: null, outcome: "all" }, filterColumns);
+      const where = buildWhere(options, filterColumns);
       const providerColumns = hasProviderColumns
         ? "provider_id, provider_name, route,"
         : "NULL AS provider_id, NULL AS provider_name, NULL AS route,";
@@ -406,11 +470,11 @@ export class ForwardingRecordsService {
       const rows = database.prepare(`
         SELECT
           id, started_at, completed_at, duration_ms,
-          request_id, session_id, thread_id, method,
+          request_id, ${columns.has("session_id") ? "session_id" : "NULL AS session_id"}, thread_id, method,
           incoming_url, target_url, ${providerColumns} ${reasonColumns} ${modelColumns} request_body_bytes,
           response_status, response_body_bytes, is_stream,
           upstream_request_id, ${tokenColumns} ${detailsColumn} ${usageObservationColumn} error_type, error_message
-        FROM http_transactions
+        FROM ${source}
         ${where.sql}
         ORDER BY id DESC
         LIMIT @rowLimit
@@ -425,9 +489,10 @@ export class ForwardingRecordsService {
           SUM(CASE WHEN error_type IS NULL AND response_status BETWEEN 400 AND 499 THEN 1 ELSE 0 END) AS rejected,
           SUM(CASE WHEN error_type = 'proxy_client_abort' THEN 1 ELSE 0 END) AS aborted,
           SUM(CASE WHEN (error_type IS NULL OR error_type != 'proxy_client_abort') AND (error_type IS NOT NULL OR response_status IS NULL OR response_status >= 500 OR response_status < 200 OR response_status BETWEEN 300 AND 399) THEN 1 ELSE 0 END) AS error
-        FROM http_transactions
-        ${options.includeModels ? "" : `WHERE ${MODEL_REQUEST_HIDDEN_SQL}`}
-      `).get();
+        FROM ${source}
+        ${summaryWhere.sql}
+      `).get(summaryWhere.parameters);
+      database.exec("COMMIT");
       return {
         storageState: "ready",
         records,

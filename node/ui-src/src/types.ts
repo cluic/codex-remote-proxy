@@ -383,6 +383,11 @@ export interface ForwardingRecordsQuery {
   outcome?: ForwardingOutcome;
   search?: string;
   includeModels?: boolean;
+  since?: string | null;
+  until?: string | null;
+  model?: string | null;
+  providerId?: string | null;
+  sessionId?: string | null;
 }
 
 export interface ModelCatalog {

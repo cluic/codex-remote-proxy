@@ -1398,22 +1398,37 @@ function createServices({ upstream }) {
       }
     },
     forwardingRecordsService: {
-      list({ limit, before, outcome, search, includeModels }) {
-        calls.push({ operation: "getForwardingRecords", limit, before, outcome, search, includeModels });
+      list({ limit, before, outcome, search, includeModels, since, until, model, providerId, sessionId }) {
+        calls.push({ operation: "getForwardingRecords", limit, before, outcome, search, includeModels,
+          ...(since ? { since } : {}), ...(until ? { until } : {}),
+          ...(model ? { model } : {}), ...(providerId ? { providerId } : {}),
+          ...(sessionId ? { sessionId } : {}) });
         let records = state.forwardingRecords;
         if (!includeModels) {
           records = records.filter((record) => {
-            const pathname = new URL(record.incomingUrl, "http://127.0.0.1").pathname;
-            return !pathname.endsWith("/models");
+            if (record.incomingUrl === null) return true;
+            return !/\/models(?:\?|\/|$)/i.test(record.incomingUrl);
           });
+        }
+        if (since) records = records.filter((record) => record.startedAt >= since);
+        if (until) records = records.filter((record) => record.startedAt < until);
+        if (model) records = records.filter((record) => (
+          record.requestedModel === model || record.forwardedModel === model
+        ));
+        if (providerId) records = records.filter((record) => record.providerId === providerId);
+        if (sessionId) records = records.filter((record) => record.sessionId === sessionId);
+        if (search) {
+          const query = search.toLowerCase();
+          const fields = ["requestId", "incomingUrl", "targetUrl", "errorType", "errorMessage",
+            "providerId", "providerName", "route", "requestedModel", "forwardedModel",
+            "routeReason", "providerSelectionReason"];
+          records = records.filter((record) => fields.some((field) => (
+            typeof record[field] === "string" && record[field].toLowerCase().includes(query)
+          )));
         }
         const summaryRecords = records;
         if (before !== null) records = records.filter((record) => record.id < before);
         if (outcome !== "all") records = records.filter((record) => record.outcome === outcome);
-        if (search) {
-          const query = search.toLowerCase();
-          records = records.filter((record) => JSON.stringify(record).toLowerCase().includes(query));
-        }
         const page = records.slice(0, limit);
         return {
           storageState: "ready",
