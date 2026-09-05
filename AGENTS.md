@@ -124,6 +124,9 @@
 - Discover source paths before targeted reads instead of guessing filenames.
 - Browser verification must rebuild generated UI assets after source changes.
 - Copying captured payloads must preserve the original content instead of exporting a lossy parsed representation.
+- Unbounded database maintenance must not run synchronously before the Worker readiness acknowledgement.
+- Replacement background maintenance must wait for confirmed cancellation of prior work on the same resource.
+- Upgrade tests must cover nonempty persisted databases and maintenance exceeding startup deadlines.
 
 ## Required Checks
 

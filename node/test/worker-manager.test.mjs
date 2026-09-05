@@ -1154,6 +1154,27 @@ test("a failed startup terminates the partial child and confirms fixed-port rele
   assert.equal(harness.manager.getPublicState().pid, null);
 });
 
+test("a successful retry clears the prior startup acknowledgement timeout", async (t) => {
+  const harness = createHarness([{ configure: false }, {}]);
+  t.after(() => harness.manager.close());
+
+  await assert.rejects(
+    settle(harness.manager.start(makeSnapshot()), harness.clock),
+    (error) => error?.code === "WORKER_ACK_TIMEOUT"
+  );
+  assert.deepEqual(harness.manager.getPublicState().error, {
+    code: "WORKER_ACK_TIMEOUT",
+    message: "Worker did not acknowledge the request in time."
+  });
+
+  const started = await settle(harness.manager.start(makeSnapshot(2)), harness.clock);
+
+  assert.equal(started.phase, "running");
+  assert.equal(started.generation, 2);
+  assert.equal(started.error, null);
+  assert.equal(harness.manager.getPublicState().error, null);
+});
+
 test("close terminates a live child, confirms port release, and removes child listeners", async () => {
   const harness = createHarness();
   await settle(harness.manager.start(makeSnapshot()), harness.clock);

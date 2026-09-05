@@ -122,6 +122,7 @@ async function closeResources() {
   }
   if (drainPromise) {
     await drainPromise;
+    await app.captureManager.waitForBackgroundTasks();
     return;
   }
   if (!resourceClosePromise) {
@@ -134,6 +135,7 @@ async function closeResources() {
     }
   }
   await resourceClosePromise;
+  await app.captureManager.waitForBackgroundTasks();
 }
 
 async function finishProcess(exitCode) {

@@ -159,6 +159,22 @@ test("explains final errors separately from HTTP status", async ({ page, crp }) 
   await assertNoSecrets(page, crp);
 });
 
+test("discloses temporary recording preparation and observes completion without restarting", async ({ page, crp }, testInfo) => {
+  crp.state.captureRuntimeState = "enabling";
+  await openRecords(page, crp);
+  const notice = page.getByTestId("forwarding-capture-preparing");
+  await expect(notice).toContainText("new requests are not recorded");
+  await expect(page.getByTestId("forwarding-capture-state")).toHaveText("Preparing recording index");
+  await page.getByRole("combobox", { name: "Language", exact: true }).selectOption("zh-CN");
+  await expect(notice).toContainText("暂不采集新请求");
+  await captureEvidence(page, crp, testInfo, "capture-index-preparing-zh");
+  crp.state.captureRuntimeState = "enabled";
+  await expect(notice).not.toBeVisible({ timeout: 7000 });
+  await expect(page.getByTestId("forwarding-capture-state")).toHaveText("记录已开启");
+  expect(crp.calls.some((call) => call.operation === "restartProxy")).toBe(false);
+  await assertNoSecrets(page, crp);
+});
+
 test("copies captured JSON exactly even when the display is formatted", async ({ page, crp }) => {
   const raw = '{"id":9007199254740993,"x":1,"x":2}';
   crp.state.forwardingRecordDetails.get(3).request.body.content = raw;

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -11,8 +12,10 @@ import { fileURLToPath } from "node:url";
 
 import { validateChildMessage } from "../../src/worker/protocol.mjs";
 import { AccessKeyStore } from "../../src/access-key-store.mjs";
+import { createCaptureManager, FORWARDING_METADATA_INDEX } from "../../src/capture-store.mjs";
 
-const WORKER_ENTRY_PATH = fileURLToPath(new URL("../../src/worker/worker-entry.mjs", import.meta.url));
+const WORKER_ENTRY_PATH = process.env.CRP_TEST_WORKER_ENTRY_PATH
+  ?? fileURLToPath(new URL("../../src/worker/worker-entry.mjs", import.meta.url));
 const EVENT_DEADLINE_MS = 3000;
 
 function makeTempDir(prefix) {
@@ -126,9 +129,11 @@ async function cleanupChild(child) {
   }
 }
 
-function spawnWorker(t) {
+function spawnWorker(t, { execArgv, environment = {} } = {}) {
   const child = fork(WORKER_ENTRY_PATH, [], {
     execPath: process.execPath,
+    ...(execArgv ? { execArgv } : {}),
+    env: { ...process.env, ...environment },
     stdio: ["ignore", "pipe", "pipe", "ipc"]
   });
   const messages = [];
@@ -367,6 +372,107 @@ test("worker configures once, proxies traffic, reports public state, and shuts d
   await sendMessage(worker.child, { version: 1, type: "shutdown", requestId: "shutdown-1" });
   const exit = await waitForExit(worker.child);
   assert.deepEqual(exit, { code: 0, signal: null });
+  assert.equal(worker.output().includes(settings.upstream.apiKey), false);
+});
+
+test("slow Capture index preparation does not block Worker configure or proxy traffic", {
+  timeout: 20000
+}, async (t) => {
+  const dir = makeTempDir("crp-worker-slow-index");
+  mkdirSync(dir, { recursive: true });
+  let worker;
+  const upstream = http.createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ ok: true }));
+    });
+  });
+  t.after(async () => {
+    if (worker) await cleanupChild(worker.child);
+    await closeServer(upstream);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const upstreamPort = await listen(upstream);
+  const configPath = join(dir, "proxy-config.json");
+  const settings = makeSettings({ baseUrl: `http://127.0.0.1:${upstreamPort}`, configPath });
+  settings.capture.enabled = true;
+  const capture = createCaptureManager({ configPath, capture: settings.capture, watchRuntimeConfig: false }).start();
+  capture.close();
+  const database = new DatabaseSync(settings.capture.dbPath);
+  try {
+    database.exec(`DROP INDEX ${FORWARDING_METADATA_INDEX}`);
+    database.exec(`INSERT INTO http_transactions (
+      started_at, completed_at, duration_ms, request_headers_json, request_body,
+      request_body_encoding, request_body_bytes, response_headers_json,
+      response_body, response_body_encoding, response_body_bytes, is_stream
+    ) VALUES ('2026-09-05T00:00:00.000Z', '2026-09-05T00:00:01.000Z', 1000,
+      '{}', '', 'empty', 0, '{}', '', 'empty', 0, 0)`);
+  } finally { database.close(); }
+  const marker = join(dir, "index-started");
+  worker = spawnWorker(t, {
+    execArgv: ["--import", new URL("../fixtures/slow-capture-index.mjs", import.meta.url).href],
+    environment: { CRP_TEST_INDEX_STARTED: marker }
+  });
+  await worker.waitForMessage(message => message?.type === "ready", "worker ready");
+  await sendMessage(worker.child, { version: 1, type: "configure", requestId: "slow-index-configure", generation: 1, settings });
+  const configured = await worker.waitForMessage(message => message?.type === "configured", "configure while index is slow");
+  assert.equal(configured.state.listening, true);
+  await withDeadline((async () => {
+    while (!existsSync(marker)) await new Promise(resolve => setTimeout(resolve, 20));
+  })(), "index preparation started");
+  const origin = `http://127.0.0.1:${configured.state.listenPort}`;
+  const health = await withDeadline(fetch(`${origin}/_proxy/health`).then(response => response.json()), "health while index is slow");
+  assert.equal(health.configured, true);
+  assert.equal(health.captureActive, false);
+  assert.equal(health.captureState, "enabling");
+  const result = await withDeadline(fetch(`${origin}/responses`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}"
+  }).then(response => response.json()), "traffic while index is slow");
+  assert.deepEqual(result, { ok: true });
+  // Cancel a preparer that holds SQLite's write lock, then enable immediately.
+  // Neither command may reopen the writer before the first preparer exits.
+  await sendMessage(worker.child, {
+    version: 1, type: "configure", requestId: "index-disable", generation: 2,
+    settings: { ...settings, capture: { ...settings.capture, enabled: false } }
+  });
+  await worker.waitForMessage(message => message?.type === "configured"
+    && message.requestId === "index-disable", "disable capture during preparation");
+  await sendMessage(worker.child, {
+    version: 1, type: "configure", requestId: "index-reenable", generation: 3, settings
+  });
+  await worker.waitForMessage(message => message?.type === "configured"
+    && message.requestId === "index-reenable", "reenable capture during cancellation");
+  await withDeadline((async () => {
+    while (true) {
+      const status = await fetch(`${origin}/_proxy/health`).then(response => response.json());
+      if (status.captureActive) return;
+      await new Promise(resolve => setTimeout(resolve, 40));
+    }
+  })(), "capture enabled after index preparation", 10000);
+  await sendMessage(worker.child, {
+    version: 1, type: "configure", requestId: "index-disable-before-close", generation: 4,
+    settings: { ...settings, capture: { ...settings.capture, enabled: false } }
+  });
+  await worker.waitForMessage(message => message?.type === "configured"
+    && message.requestId === "index-disable-before-close", "disable before shutdown fixture");
+  const maintenanceFixture = new DatabaseSync(settings.capture.dbPath);
+  try { maintenanceFixture.exec(`DROP INDEX ${FORWARDING_METADATA_INDEX}`); }
+  finally { maintenanceFixture.close(); }
+  rmSync(marker);
+  await sendMessage(worker.child, {
+    version: 1, type: "configure", requestId: "index-start-before-close", generation: 5, settings
+  });
+  await worker.waitForMessage(message => message?.type === "configured"
+    && message.requestId === "index-start-before-close", "start maintenance before shutdown");
+  await withDeadline((async () => {
+    while (!existsSync(marker)) await new Promise(resolve => setTimeout(resolve, 20));
+  })(), "index lock held before shutdown");
+  await sendMessage(worker.child, { version: 1, type: "shutdown", requestId: "slow-index-shutdown" });
+  await waitForExit(worker.child);
+  const lockProbe = new DatabaseSync(settings.capture.dbPath);
+  try { lockProbe.exec("BEGIN IMMEDIATE; ROLLBACK"); }
+  finally { lockProbe.close(); }
   assert.equal(worker.output().includes(settings.upstream.apiKey), false);
 });
 

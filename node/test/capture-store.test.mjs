@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join, resolve } from "node:path";
@@ -8,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   CaptureManager,
   DEFAULT_CAPTURE_DB_PATH,
+  FORWARDING_METADATA_COLUMNS,
   FORWARDING_METADATA_INDEX,
   encodeBody,
   loadRuntimeCaptureConfig,
@@ -17,6 +19,58 @@ import {
 
 function makeTempDir(prefix) {
   return join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+}
+
+function createNonemptyDatabaseWithoutMetadataIndex(dir) {
+  mkdirSync(dir, { recursive: true });
+  const runtimeConfigPath = join(dir, "proxy-config.json");
+  const dbPath = join(dir, "traffic.sqlite3");
+  writeFileSync(runtimeConfigPath, JSON.stringify({ capture: { enabled: true, dbPath } }));
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false
+  }).start();
+  manager.close();
+  const database = new DatabaseSync(dbPath);
+  try {
+    database.exec(`
+      INSERT INTO http_transactions (
+        started_at, request_headers_json, request_body, request_body_encoding,
+        request_body_bytes, response_headers_json, response_body,
+        response_body_encoding, response_body_bytes, is_stream
+      ) VALUES (
+        '2026-09-05T00:00:00.000Z', '{}', '', 'empty', 0, '{}', '', 'empty', 0, 0
+      );
+      DROP INDEX ${FORWARDING_METADATA_INDEX};
+    `);
+  } finally {
+    database.close();
+  }
+  return { runtimeConfigPath, dbPath };
+}
+
+class ControlledIndexWorker extends EventEmitter {
+  constructor({ termination = Promise.resolve(0) } = {}) {
+    super();
+    this.termination = termination;
+    this.terminated = false;
+    this.unreferenced = false;
+  }
+
+  unref() {
+    this.unreferenced = true;
+  }
+
+  terminate() {
+    this.terminated = true;
+    return this.termination;
+  }
+
+  finish(type = "complete", code = type === "complete" ? 0 : 1) {
+    this.emit("message", { type });
+    this.emit("exit", code);
+  }
 }
 
 async function waitFor(condition, description, { timeoutMs = 5000, intervalMs = 25 } = {}) {
@@ -79,6 +133,227 @@ test("encodeBody preserves utf8 and base64 encodes binary", () => {
     () => encodeBody(Buffer.from("prefix"), { totalBytes: 4096, truncated: false }),
     /truncation marker is inconsistent/
   );
+});
+
+test("nonempty databases prepare the forwarding index without blocking capture startup", async (t) => {
+  const dir = makeTempDir("crp-capture-index-background");
+  const { runtimeConfigPath, dbPath } = createNonemptyDatabaseWithoutMetadataIndex(dir);
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false
+  }).start();
+  t.after(async () => {
+    manager.close();
+    await manager.waitForBackgroundTasks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  assert.deepEqual(manager.getPublicState(), {
+    captureConfigured: true,
+    captureDetailsConfigured: false,
+    captureActive: false,
+    captureDbPath: dbPath,
+    captureRuntimeDbPath: null,
+    captureState: "enabling",
+    captureRestartRequired: false,
+    failedWriteCount: 0,
+    lastWriteErrorAt: null,
+    lastWriteErrorMessage: null,
+    captureLastErrorAt: null,
+    captureLastErrorMessage: null
+  });
+  assert.equal(manager.beginRecord(), null);
+
+  await manager.waitForBackgroundTasks();
+  assert.equal(manager.getPublicState().captureActive, true);
+  const database = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    assert.deepEqual(
+      database.prepare(`PRAGMA index_info(${FORWARDING_METADATA_INDEX})`).all()
+        .map(({ name }) => name),
+      FORWARDING_METADATA_COLUMNS
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("index preparation failures expose only a stable capture error", async (t) => {
+  const dir = makeTempDir("crp-capture-index-failure");
+  const { runtimeConfigPath, dbPath } = createNonemptyDatabaseWithoutMetadataIndex(dir);
+  const controlledWorker = new ControlledIndexWorker();
+  const logs = [];
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false,
+    indexWorkerFactory: () => controlledWorker,
+    log: (level, message, fields) => logs.push({ level, message, fields })
+  }).start();
+  t.after(async () => {
+    manager.close();
+    await manager.waitForBackgroundTasks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  controlledWorker.emit("error", new Error("raw SQLite failure at /private/example"));
+  controlledWorker.emit("exit", 1);
+  await manager.waitForBackgroundTasks();
+
+  const state = manager.getPublicState();
+  assert.equal(state.captureActive, false);
+  assert.equal(state.captureState, "error");
+  assert.equal(state.captureLastErrorMessage, "Capture forwarding index preparation failed");
+  assert.deepEqual(logs, [{
+    level: "warn",
+    message: "Capture forwarding index preparation failed",
+    fields: { code: "CAPTURE_INDEX_PREPARATION_FAILED" }
+  }]);
+  assert.doesNotMatch(JSON.stringify({ state, logs }), /raw SQLite|\/private\/example/);
+});
+
+test("closing during index preparation waits for termination and ignores stale completion", async (t) => {
+  const dir = makeTempDir("crp-capture-index-close");
+  const { runtimeConfigPath, dbPath } = createNonemptyDatabaseWithoutMetadataIndex(dir);
+  let releaseTermination;
+  const termination = new Promise((resolvePromise) => {
+    releaseTermination = resolvePromise;
+  });
+  const controlledWorker = new ControlledIndexWorker({ termination });
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false,
+    indexWorkerFactory: () => controlledWorker
+  }).start();
+  t.after(async () => {
+    releaseTermination(0);
+    manager.close();
+    await manager.waitForBackgroundTasks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  manager.close();
+  controlledWorker.finish();
+  let settled = false;
+  manager.waitForBackgroundTasks().then(() => {
+    settled = true;
+  });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(controlledWorker.terminated, true);
+  assert.equal(settled, false);
+  assert.equal(manager.getPublicState().captureActive, false);
+
+  releaseTermination(0);
+  await manager.waitForBackgroundTasks();
+  assert.equal(manager.getPublicState().captureActive, false);
+});
+
+test("a rejected termination remains blocked until the index worker exits", async (t) => {
+  const dir = makeTempDir("crp-capture-index-rejected-termination");
+  const { runtimeConfigPath, dbPath } = createNonemptyDatabaseWithoutMetadataIndex(dir);
+  const controlledWorker = new ControlledIndexWorker({
+    termination: Promise.reject(new Error("termination failed"))
+  });
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false,
+    indexWorkerFactory: () => controlledWorker
+  }).start();
+  t.after(async () => {
+    controlledWorker.emit("exit", 1);
+    manager.close();
+    await manager.waitForBackgroundTasks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  manager.close();
+  let settled = false;
+  const waiting = manager.waitForBackgroundTasks().then(() => {
+    settled = true;
+  });
+  await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  assert.equal(settled, false);
+
+  controlledWorker.emit("exit", 1);
+  await waiting;
+  assert.equal(settled, true);
+});
+
+test("switching paths cancels index preparation without reopening the stale database", async (t) => {
+  const dir = makeTempDir("crp-capture-index-path-switch");
+  const { runtimeConfigPath, dbPath } = createNonemptyDatabaseWithoutMetadataIndex(dir);
+  const nextDbPath = join(dir, "traffic-next.sqlite3");
+  const controlledWorker = new ControlledIndexWorker();
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false,
+    indexWorkerFactory: () => controlledWorker
+  }).start();
+  t.after(async () => {
+    manager.close();
+    await manager.waitForBackgroundTasks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  manager.applyRuntimeConfig({ enabled: true, detailsEnabled: false, dbPath: nextDbPath });
+  controlledWorker.finish();
+  await manager.waitForBackgroundTasks();
+
+  const state = manager.getPublicState();
+  assert.equal(controlledWorker.terminated, true);
+  assert.equal(state.captureActive, true);
+  assert.equal(state.captureState, "enabled");
+  assert.equal(resolve(state.captureRuntimeDbPath), resolve(nextDbPath));
+});
+
+test("rapid re-enable waits for cancelled index maintenance before starting another worker", async (t) => {
+  const dir = makeTempDir("crp-capture-index-reenable");
+  const { runtimeConfigPath, dbPath } = createNonemptyDatabaseWithoutMetadataIndex(dir);
+  let releaseFirstTermination;
+  const firstTermination = new Promise((resolvePromise) => {
+    releaseFirstTermination = resolvePromise;
+  });
+  const workers = [
+    new ControlledIndexWorker({ termination: firstTermination }),
+    new ControlledIndexWorker()
+  ];
+  let workerCount = 0;
+  const manager = new CaptureManager({
+    configPath: runtimeConfigPath,
+    capture: { enabled: true, dbPath },
+    watchRuntimeConfig: false,
+    indexWorkerFactory: () => workers[workerCount++]
+  }).start();
+  t.after(async () => {
+    releaseFirstTermination(0);
+    manager.close();
+    await manager.waitForBackgroundTasks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  manager.applyRuntimeConfig({ enabled: false, detailsEnabled: false, dbPath });
+  manager.applyRuntimeConfig({ enabled: true, detailsEnabled: false, dbPath });
+  assert.equal(workerCount, 1);
+  assert.equal(manager.getPublicState().captureState, "enabling");
+
+  releaseFirstTermination(0);
+  await waitFor(() => workerCount === 2, "replacement index worker to start");
+  const database = new DatabaseSync(dbPath);
+  try {
+    database.exec(`CREATE INDEX ${FORWARDING_METADATA_INDEX}
+      ON http_transactions (${FORWARDING_METADATA_COLUMNS.join(", ")})`);
+  } finally {
+    database.close();
+  }
+  workers[1].finish();
+  await manager.waitForBackgroundTasks();
+
+  assert.equal(manager.getPublicState().captureActive, true);
+  assert.equal(workerCount, 2);
 });
 
 test("capture manager persists truncated prefixes with total observed byte counts", (t) => {

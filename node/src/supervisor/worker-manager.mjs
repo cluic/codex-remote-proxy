@@ -427,6 +427,7 @@ export class WorkerManager {
       this.#lastSnapshot = structuredClone(snapshot);
       this.#phase = "running";
       this.#startedAt = new Date(this.#clock.now()).toISOString();
+      this.#lastError = null;
       return this.getPublicState();
     } catch (error) {
       this.#lastError = {

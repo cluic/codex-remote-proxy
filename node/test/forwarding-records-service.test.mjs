@@ -487,20 +487,25 @@ test("refuses a symlink Capture database without opening its target", (t) => {
   assert.equal(opened, false);
 });
 
-function upgradeDatabase(path) {
+async function upgradeDatabase(path) {
   const manager = new CaptureManager({
     configPath: `${path}.config.json`,
     capture: { enabled: true, dbPath: path },
     watchRuntimeConfig: false
   }).start();
-  try { assert.equal(manager.getPublicState().captureActive, true); }
-  finally { manager.close(); }
+  try {
+    await manager.waitForBackgroundTasks();
+    assert.equal(manager.getPublicState().captureActive, true);
+  } finally {
+    manager.close();
+    await manager.waitForBackgroundTasks();
+  }
 }
 
-test("exact filters, time bounds, search and visibility scope facets before outcome and paging", (t) => {
+test("exact filters, time bounds, search and visibility scope facets before outcome and paging", async (t) => {
   const path = join(makeTempDir(t), "traffic.sqlite3");
   createDatabase(path);
-  upgradeDatabase(path);
+  await upgradeDatabase(path);
   const database = new DatabaseSync(path);
   try {
     database.exec(`
@@ -566,10 +571,10 @@ test("legacy filters fail closed and the reader leaves schema and rows unchanged
   } finally { after.close(); }
 });
 
-test("writer index covers actual list and summary queries without selecting captured bodies", (t) => {
+test("writer index covers actual list and summary queries without selecting captured bodies", async (t) => {
   const path = join(makeTempDir(t), "traffic.sqlite3");
   createDatabase(path);
-  upgradeDatabase(path);
+  await upgradeDatabase(path);
   const plans = [];
   const service = new ForwardingRecordsService({
     path,
@@ -600,10 +605,10 @@ test("writer index covers actual list and summary queries without selecting capt
   }
 });
 
-test("list and facets share a WAL snapshot and subsequent reads observe edits and deletes", (t) => {
+test("list and facets share a WAL snapshot and subsequent reads observe edits and deletes", async (t) => {
   const path = join(makeTempDir(t), "traffic.sqlite3");
   createDatabase(path);
-  upgradeDatabase(path);
+  await upgradeDatabase(path);
   const writer = new DatabaseSync(path);
   let mutate = true;
   try {
@@ -632,10 +637,10 @@ test("list and facets share a WAL snapshot and subsequent reads observe edits an
 
 test("synthetic body-bearing forwarding benchmark", {
   skip: process.env.CRP_FORWARDING_BENCHMARK !== "1"
-}, (t) => {
+}, async (t) => {
   const path = join(makeTempDir(t), "traffic.sqlite3");
   createDatabase(path);
-  upgradeDatabase(path);
+  await upgradeDatabase(path);
   const database = new DatabaseSync(path);
   const rowCount = 4_000;
   const bodyBytes = 64 * 1024;
@@ -670,7 +675,7 @@ test("synthetic body-bearing forwarding benchmark", {
   };
   const beforeBytes = statSync(path).size;
   const before = measure();
-  const start = performance.now(); upgradeDatabase(path);
+  const start = performance.now(); await upgradeDatabase(path);
   const indexBuildMs = performance.now() - start;
   const after = measure();
   assert.deepEqual(after.result, before.result);
