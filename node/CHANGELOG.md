@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.20
+
+### Patch Changes
+
+- 790dcd0: Speed up forwarding history with a metadata covering index and route-scoped chart loading; add precise filters, compact responsive records, and accessible request details that preserve the list position and explain errors and payload availability.
+
 ## 0.4.19
 
 ### Patch Changes
