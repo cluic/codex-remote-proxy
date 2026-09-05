@@ -1,5 +1,32 @@
 # CRP Overview Redesign QA
 
+## Forwarding Records performance and interaction update — 2026-09-05
+
+This section supersedes earlier forwarding layout descriptions. The change was developed on `codex/forwarding-performance-ux` from released 0.4.19 and carries a patch Changeset. Publication status is tracked by npm's `latest` tag; the user's existing service was not replaced during this verification.
+
+- Desktop records use six scan columns with no horizontal overflow, a bounded vertical table and sticky headings. At 1440×900 with 64 synthetic records (50 on the current page), the table fits its 1096px content area and the pager ends at y=861px.
+- Clicking a record opens a native modal drawer in the current viewport. Escape/backdrop/close preserve list position and return focus without overriding newer focus. Previous/next record navigation replaces the old below-table detail block.
+- Summary, Request and Response tabs separate safe recorded failure evidence from HTTP status and full metadata. Header disclosures no longer reserve a blank column. Body display defaults to raw; optional formatted previews are display-only and Copy raw body preserves exact captured text, including large JSON numbers and duplicate keys. Changing records clears the prior payload before the next request settles.
+- At 390×844, record cards replace the desktop table, the refresh button has its own grid cell, outcome filters fit one row, and the first card begins around y=595px. Final screenshots show multiple immediately scannable outcomes/models/durations. Mobile details occupy the viewport and keep navigation and close controls visible.
+- Time/model/provider/session/search filters apply to result facets before outcome/paging. The same-session action has an explicit removable scope. Relative time bounds are recalculated on refresh, and refresh retains the last successful list while showing progress.
+- Opening Forwarding Records does not fetch unrelated Metrics/heatmap data. Charts load on their applicable routes after workspace readiness; manual refresh and relevant mutations still refresh them in the background.
+- Read-only diagnostic of the existing ~7.16GB Capture database found a table-scan outcome/visibility aggregate taking 3,179ms. The new writer-created covering index contains only existing list metadata, never headers/bodies. Reader queries remain read-only and retain an exact legacy fallback when the index is absent. List/facets share a committed snapshot; no stale summary cache was added.
+- Synthetic benchmark: 4,000 rows, 64KiB request + 64KiB response bodies per row (~500MiB payload); five sequential warm-cache samples per query path. Median list+summary latency was 95.69ms without the index and 3.05ms with it; one-time initialization/index build took 273ms and storage grew 786,432 bytes. This is synthetic evidence, not a measured live speedup. Existing installations gain the index on normal Capture initialization after updating.
+
+Validation: 688 unit tests passed (one opt-in benchmark skipped in the ordinary suite and passed separately), 66 integration tests passed, full Chromium E2E 67/67 passed, and all eight forwarding scenarios passed again after the final mobile-only compaction. UI typecheck, source lint, generated three-file UI verification, exact package/release checks, patch Changeset validation and runtime dependency audit passed (0 vulnerabilities). The fixed-port core-chain was not rerun because the user's service owns 15100/15101. The existing Supervisor and Worker remained running and unchanged. This local verification makes no new real-upstream or native-keyring evidence claim; platform CI supplies the separate native-backend gate.
+
+Independent source review covered backend filters/index/snapshot safety and frontend async state/focus/copy semantics; no remaining P1/P2 findings were reported after corrections. Merge risk: L2 / moderate (query behavior, an additive Capture index and a page interaction redesign); no credential, Codex configuration or Worker protocol change.
+
+Current-run visual evidence (synthetic demo data; separate `localhost` cookie host from the live Admin service):
+
+- `output/ux-audit-2026-09-05/after-list-desktop.png`
+- `output/ux-audit-2026-09-05/after-detail-desktop.png`
+- `output/ux-audit-2026-09-05/after-list-mobile.png`
+- `output/ux-audit-2026-09-05/after-detail-mobile.png`
+- Initial actual-product audit and scope notes: `output/ux-audit-2026-09-05/audit.md` and `implementation-scopes.md`.
+
+Handoff: the feature includes implementation, generated UI, tests, README contracts and a patch Changeset. The local demo is separate from real CRP. Publication follows the feature PR and Changesets release PR gates. Installing the published build, restarting an existing service and timing the real post-index query are separate rollout work; publication alone does not update an already running process.
+
 Date: 2026-08-21
 
 ## Comparison Contract

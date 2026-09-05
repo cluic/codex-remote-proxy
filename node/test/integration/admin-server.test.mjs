@@ -1918,6 +1918,24 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
     { limit: 1, before: null, outcome: "all", search: "", includeModels: true }
   ]);
 
+  const filters = new URLSearchParams({
+    since: "2026-07-01T00:00:00.000Z",
+    until: "2026-08-01T00:00:00.000Z",
+    model: "vendor/model-a",
+    providerId: "chatgpt-account",
+    sessionId: "session-1"
+  });
+  const filtered = await harness.request(`/api/v1/forwarding-records?${filters}`, {
+    headers: bearer(harness)
+  });
+  assert.equal(filtered.response.status, 200);
+  assertNoSensitiveResponse(filtered);
+  assert.deepEqual(harness.calls.filter(([name]) => name === "forwardingRecords").at(-1), [
+    "forwardingRecords",
+    { limit: 50, before: null, outcome: "all", search: "", includeModels: true,
+      ...Object.fromEntries(filters) }
+  ]);
+
   for (const path of [
     "/api/v1/forwarding-records?limit=0",
     "/api/v1/forwarding-records?before=1&before=2",
@@ -1925,6 +1943,20 @@ test("forwarding records are authenticated, query-bounded, and metadata-only", a
     "/api/v1/forwarding-records?search=one&search=two",
     "/api/v1/forwarding-records?includeModels=1",
     "/api/v1/forwarding-records?includeModels=true&includeModels=false",
+    "/api/v1/forwarding-records?since=2026-02-30T00:00:00.000Z",
+    "/api/v1/forwarding-records?since=2026-07-01",
+    "/api/v1/forwarding-records?since=2026-07-01T00:00:00.000Z&since=2026-07-02T00:00:00.000Z",
+    "/api/v1/forwarding-records?until=2026-07-01T00:00:00.000Z&since=2026-07-02T00:00:00.000Z",
+    "/api/v1/forwarding-records?until=2026-07-01T00:00:00.000Z&since=2026-07-01T00:00:00.000Z",
+    "/api/v1/forwarding-records?model=",
+    "/api/v1/forwarding-records?model=%20model-a",
+    "/api/v1/forwarding-records?model=model-a&model=model-b",
+    "/api/v1/forwarding-records?providerId=provider-1&providerId=provider-2",
+    "/api/v1/forwarding-records?providerId=%00",
+    "/api/v1/forwarding-records?sessionId=one&sessionId=two",
+    "/api/v1/forwarding-records?sessionId=",
+    `/api/v1/forwarding-records?model=${"a".repeat(257)}`,
+    `/api/v1/forwarding-records?providerId=${"a".repeat(257)}`,
     "/api/v1/forwarding-records?unknown=1"
   ]) {
     const invalid = await harness.request(path, { headers: bearer(harness) });

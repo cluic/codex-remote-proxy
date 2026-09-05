@@ -7,6 +7,19 @@ import { DEFAULT_CAPTURE_DB_PATH } from "./capture-config.mjs";
 
 export { DEFAULT_CAPTURE_DB_PATH };
 
+// A covering projection keeps list and facet queries away from captured body
+// overflow pages. It contains only fields already exposed by the metadata list.
+export const FORWARDING_METADATA_INDEX = "idx_http_transactions_forwarding_metadata";
+export const FORWARDING_METADATA_COLUMNS = Object.freeze([
+  "id", "started_at", "completed_at", "duration_ms",
+  "request_id", "session_id", "thread_id", "method", "incoming_url", "target_url",
+  "provider_id", "provider_name", "route", "route_reason", "provider_selection_reason",
+  "requested_model", "forwarded_model", "request_body_bytes", "response_status",
+  "response_body_bytes", "is_stream", "upstream_request_id", "input_tokens",
+  "output_tokens", "cached_input_tokens", "details_captured", "usage_observation_status",
+  "error_type", "error_message"
+]);
+
 const WATCH_INTERVAL_MS = 500;
 const WATCH_DEBOUNCE_MS = 100;
 const REDACTED_VALUE = "[REDACTED]";
@@ -378,6 +391,8 @@ function initializeDatabase(db) {
       ON http_transactions (thread_id);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_response_status
       ON http_transactions (response_status);
+    CREATE INDEX IF NOT EXISTS ${FORWARDING_METADATA_INDEX}
+      ON http_transactions (${FORWARDING_METADATA_COLUMNS.join(", ")});
     PRAGMA user_version = 6;
   `);
 }

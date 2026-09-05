@@ -121,6 +121,9 @@
 - Recoverable legacy-source ambiguity must import separate inactive Providers or enter Setup; it must not force users to edit secret-bearing files.
 - Invalid registry quarantine must use a fixed no-replace marker and a crash-resumable journal bound to source and lock identities.
 - Local preview servers must use a cookie host distinct from any active CRP Admin service.
+- Discover source paths before targeted reads instead of guessing filenames.
+- Browser verification must rebuild generated UI assets after source changes.
+- Copying captured payloads must preserve the original content instead of exporting a lossy parsed representation.
 
 ## Required Checks
 
