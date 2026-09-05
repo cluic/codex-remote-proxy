@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.21
+
+### Patch Changes
+
+- 1d6c333: Fix gateway startup and update rollback timeouts on existing Capture databases by preparing the forwarding index in an isolated background worker, safely settling cancellation/shutdown, disclosing temporary recording preparation, and clearing stale Worker errors after a verified successful retry.
+
 ## 0.4.20
 
 ### Patch Changes
