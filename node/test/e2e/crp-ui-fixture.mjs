@@ -431,6 +431,7 @@ function createServices({ upstream }) {
     accessKeys: [],
     captureEnabled: true,
     captureDetailsEnabled: false,
+    captureRuntimeState: null,
     forwardingDetailFailures: new Set(),
     autoStartEnabled: false,
     forwardingRecords: [
@@ -1777,8 +1778,9 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
       fetchImpl: async () => new Response(JSON.stringify({
         captureConfigured: services.state.captureEnabled,
         captureDetailsConfigured: services.state.captureDetailsEnabled,
-        captureActive: services.state.captureEnabled,
-        captureState: services.state.captureEnabled ? "enabled" : "disabled",
+        captureActive: services.state.captureEnabled
+          && (!services.state.captureRuntimeState || services.state.captureRuntimeState === "enabled"),
+        captureState: services.state.captureEnabled ? services.state.captureRuntimeState ?? "enabled" : "disabled",
         failedWriteCount: 0,
         lastWriteErrorAt: null
       }), {

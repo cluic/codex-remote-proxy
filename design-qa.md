@@ -1,5 +1,21 @@
 # CRP Overview Redesign QA
 
+## 0.4.20 startup regression follow-up — 2026-09-05
+
+Root cause: the forwarding metadata covering index was created synchronously inside Capture initialization, before the proxy Worker could send its configured acknowledgement. On a nonempty, body-heavy database, one-time index construction could exceed the existing five-second acknowledgement deadline. A running `crp update` correctly rolled back when activation failed; an update performed after shutdown did not need to restart a previously stopped Worker, so the same failure appeared later at `crp start`. The npm 0.4.20 artifact's integrity and all 46 shipped files were verified against the reviewed release commit, ruling out a mismatched package as the explanation.
+
+The corrective patch moves nonempty-database index construction into an isolated thread with its own SQLite connection. Capture stays explicitly inactive/`enabling` until success, while gateway configuration, health and forwarding continue. New requests during preparation are not captured; existing history is preserved. The UI displays this temporary gap and polls only GET status while preparation is active. Empty-database initialization remains immediate. Index failures disclose only a static error; cancellation, path replacement and shutdown track all outstanding workers and wait for confirmed termination before replacement. Normal Worker shutdown awaits background settlement. A successful start clears a stale prior error only after correlated acknowledgement, health and epoch checks pass. Readiness deadlines and update rollback protections were not relaxed.
+
+Regression evidence:
+
+- The real 0.4.20 Worker entrypoint, isolated under a task-specific temporary root, fails to configure when a test preload delays index creation for 6.5 seconds. This reproduced the startup timeout without reading or rebuilding the user's database.
+- The corrected real Worker configures and serves health/proxy traffic while the same delay holds a SQLite write lock. The test also disables and rapidly re-enables Capture, verifies eventual recording, then shuts down during a second index build and proves the database write lock is released.
+- 695 unit tests passed (one optional performance benchmark skipped), 67 integration tests passed, and full Chromium E2E passed 68/68. Typecheck, lint, generated UI verification, exact 47-file package/release checks, patch Changeset validation, diff checks and runtime audit passed; audit reported 0 vulnerabilities.
+- Independent L3 source reviews approved the cancellation/shutdown lifecycle, confirmed retry error clearing, and checked UI sequence/abort guards. No actionable findings remained. Review and test evidence does not claim a real-user database migration or a post-upgrade live speed measurement.
+- The recorded English/Chinese preparation notice and automatic transition were verified with synthetic fixtures. Screenshot: `output/playwright/task11/forwarding-records-disclos-c7fc9-mpletion-without-restarting-chromium/capture-index-preparing-zh.png`.
+
+The user's installed package and already-running Supervisor may report different versions after an npm reinstall; Supervisor build metadata does not establish the code version of a later Worker process. Existing user services and files were left unchanged during investigation. Rollout follows the corrective patch PR and npm publication; first start after updating should be allowed to finish index preparation without repeated restarts.
+
 ## Forwarding Records performance and interaction update — 2026-09-05
 
 This section supersedes earlier forwarding layout descriptions. The change was developed on `codex/forwarding-performance-ux` from released 0.4.19 and carries a patch Changeset. Publication status is tracked by npm's `latest` tag; the user's existing service was not replaced during this verification.

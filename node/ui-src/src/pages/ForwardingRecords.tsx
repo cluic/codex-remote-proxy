@@ -865,6 +865,11 @@ export function ForwardingRecordsPage({
   const outcomeOptions: ForwardingOutcome[] = ["all", "success", "rejected", "aborted", "error"];
   const initialLoading = loading && data === null;
   const refreshing = loading && data !== null;
+  const preparingCapture = captureSelection && captureStatus.state === "enabling";
+  const captureIsActive = captureSelection && captureStatus.active;
+  const captureLabel = preparingCapture ? "forwarding.capturePreparing"
+    : captureIsActive ? "forwarding.captureActive"
+      : captureSelection ? "forwarding.captureWaiting" : "forwarding.captureInactive";
 
   return (
     <div className="page-stack forwarding-page" data-testid="page-forwarding-records">
@@ -873,8 +878,8 @@ export function ForwardingRecordsPage({
       <Panel className="forwarding-command-panel">
         <div className="forwarding-status-bar">
           <div className="forwarding-capture-summary">
-            <span className={cx("capture-status-dot", captureSelection && "is-active")} aria-hidden="true" />
-            <div><strong>{t(captureSelection ? "forwarding.captureActive" : "forwarding.captureInactive")}</strong><span>{t(captureDetailsSelection ? "forwarding.captureSummaryDetails" : "forwarding.captureSummaryMetadata")}</span></div>
+            <span className={cx("capture-status-dot", captureIsActive && "is-active")} aria-hidden="true" />
+            <div><strong data-testid="forwarding-capture-state">{t(captureLabel)}</strong><span>{t(captureDetailsSelection ? "forwarding.captureSummaryDetails" : "forwarding.captureSummaryMetadata")}</span></div>
           </div>
           <div className="forwarding-summary" aria-label={t("forwarding.summary")}>
             <span><strong>{formatNumber(locale, summary.total)}</strong>{t("forwarding.total")}</span>
@@ -898,7 +903,7 @@ export function ForwardingRecordsPage({
           <div className="capture-settings-grid">
             <div className={cx("capture-control", captureSelection && "capture-control-active")}>
               <div className="capture-indicator"><Database aria-hidden="true" /></div>
-              <div><strong>{t("forwarding.capture")}</strong><span>{t(captureSelection ? "forwarding.captureOn" : "forwarding.captureOff")}</span></div>
+              <div><strong>{t("forwarding.capture")}</strong><span>{t(preparingCapture ? "forwarding.capturePreparingHelp" : captureIsActive ? "forwarding.captureOn" : "forwarding.captureOff")}</span></div>
               <label className="compact-switch"><input type="checkbox" checked={captureSelection} disabled={readOnly || pending !== null} aria-label={t("forwarding.capture")} onChange={(event) => void toggleCapture(event.target.checked)} /><span aria-hidden="true"><span /></span></label>
             </div>
             <div className={cx("capture-control", "capture-detail-control", !captureSelection && "is-disabled")}>
@@ -910,7 +915,9 @@ export function ForwardingRecordsPage({
         </details>
       </Panel>
 
-      {captureStatus.configured && captureStatus.state !== "stopped" && !captureStatus.active ? (
+      {preparingCapture ? (
+        <div data-testid="forwarding-capture-preparing"><Notice title={t("forwarding.capturePreparing")} tone="warning"><p>{t("forwarding.capturePreparingHelp")}</p></Notice></div>
+      ) : captureStatus.configured && captureStatus.state !== "stopped" && !captureStatus.active ? (
         <Notice title={t("forwarding.captureMismatchTitle")} tone="warning"><p>{t("forwarding.captureMismatchHelp")}</p></Notice>
       ) : null}
 

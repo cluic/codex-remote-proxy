@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { Worker } from "node:worker_threads";
 
 import { DEFAULT_CAPTURE_DB_PATH } from "./capture-config.mjs";
 
@@ -22,6 +23,7 @@ export const FORWARDING_METADATA_COLUMNS = Object.freeze([
 
 const WATCH_INTERVAL_MS = 500;
 const WATCH_DEBOUNCE_MS = 100;
+const INDEX_PREPARATION_ERROR = "Capture forwarding index preparation failed";
 const REDACTED_VALUE = "[REDACTED]";
 const MAX_CAPTURE_TOKENS = 100_000_000;
 const MAX_CAPTURE_MODEL_CODE_POINTS = 256;
@@ -321,6 +323,18 @@ function createInsertStatement(db) {
   `);
 }
 
+function createForwardingMetadataIndex(db) {
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS ${FORWARDING_METADATA_INDEX}
+      ON http_transactions (${FORWARDING_METADATA_COLUMNS.join(", ")});
+  `);
+}
+
+function hasForwardingMetadataIndex(db) {
+  return db.prepare("PRAGMA index_list(http_transactions)").all()
+    .some((index) => index.name === FORWARDING_METADATA_INDEX);
+}
+
 function initializeDatabase(db) {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
@@ -391,10 +405,18 @@ function initializeDatabase(db) {
       ON http_transactions (thread_id);
     CREATE INDEX IF NOT EXISTS idx_http_transactions_response_status
       ON http_transactions (response_status);
-    CREATE INDEX IF NOT EXISTS ${FORWARDING_METADATA_INDEX}
-      ON http_transactions (${FORWARDING_METADATA_COLUMNS.join(", ")});
     PRAGMA user_version = 6;
   `);
+}
+
+function defaultIndexWorkerFactory(dbPath) {
+  return new Worker(new URL("./capture-index-worker.mjs", import.meta.url), {
+    workerData: {
+      dbPath,
+      indexName: FORWARDING_METADATA_INDEX,
+      columns: FORWARDING_METADATA_COLUMNS
+    }
+  });
 }
 
 function noopHandle() {
@@ -409,12 +431,14 @@ export class CaptureManager {
     capture,
     log = defaultLogger,
     defaultDbPath = DEFAULT_CAPTURE_DB_PATH,
-    watchRuntimeConfig = true
+    watchRuntimeConfig = true,
+    indexWorkerFactory = defaultIndexWorkerFactory
   }) {
     this.configPath = configPath;
     this.log = log;
     this.defaultDbPath = defaultDbPath;
     this.watchRuntimeConfig = watchRuntimeConfig;
+    this.indexWorkerFactory = indexWorkerFactory;
     this.desiredConfig = normalizeCaptureConfig(capture, {
       baseDir: dirname(configPath),
       defaultDbPath,
@@ -436,6 +460,11 @@ export class CaptureManager {
     this.closed = false;
     this.watchTimer = null;
     this.watchInterval = null;
+    this.indexPreparation = null;
+    this.indexPreparationGeneration = 0;
+    this.backgroundTasks = new Set();
+    this.pendingEnable = null;
+    this.pendingEnableGeneration = 0;
     this.runtimeConfigFingerprint = null;
     this.handleRuntimeConfigChange = this.handleRuntimeConfigChange.bind(this);
     this.pollRuntimeConfig = this.pollRuntimeConfig.bind(this);
@@ -475,7 +504,25 @@ export class CaptureManager {
       clearTimeout(this.watchTimer);
       this.watchTimer = null;
     }
+    this.cancelPendingEnable();
+    this.cancelIndexPreparation();
     this.closeDatabase();
+  }
+
+  async waitForBackgroundTasks() {
+    while (this.backgroundTasks.size > 0 || this.pendingEnable) {
+      const tasks = [...this.backgroundTasks];
+      const pendingEnable = this.pendingEnable;
+      for (const { worker } of tasks) worker.ref?.();
+      try {
+        await Promise.allSettled([
+          ...tasks.map(({ settlement }) => settlement),
+          ...(pendingEnable ? [pendingEnable.settlement] : [])
+        ]);
+      } finally {
+        for (const { worker } of tasks) worker.unref?.();
+      }
+    }
   }
 
   pollRuntimeConfig() {
@@ -535,6 +582,8 @@ export class CaptureManager {
       return;
     }
 
+    this.cancelPendingEnable();
+    this.cancelIndexPreparation();
     if (this.acceptingRecords || this.state === "enabled" || this.state === "error") {
       this.disableRecording();
       return;
@@ -548,18 +597,23 @@ export class CaptureManager {
   }
 
   enableFromConfig(config, { source }) {
+    if (this.indexPreparation?.dbPath === config.dbPath
+      || this.pendingEnable?.dbPath === config.dbPath) {
+      return;
+    }
+    this.cancelPendingEnable();
+    this.cancelIndexPreparation();
     this.state = "enabling";
+    if (this.backgroundTasks.size > 0) {
+      this.scheduleEnable(config.dbPath, { source });
+      return;
+    }
     try {
-      this.openDatabase(config.dbPath);
-      this.activeDbPath = config.dbPath;
-      this.acceptingRecords = true;
-      this.state = "enabled";
-      this.restartRequired = false;
-      this.clearLastError();
-      this.log("info", "Capture recording enabled", {
-        source,
-        db_path: this.activeDbPath
-      });
+      if (!this.openDatabase(config.dbPath)) {
+        this.startIndexPreparation(config.dbPath, { source });
+        return;
+      }
+      this.finishEnable(config.dbPath, { source });
     } catch (error) {
       this.acceptingRecords = false;
       this.closeDatabase();
@@ -575,6 +629,155 @@ export class CaptureManager {
         error: JSON.stringify(error.message)
       });
     }
+  }
+
+  scheduleEnable(dbPath, { source }) {
+    const generation = ++this.pendingEnableGeneration;
+    const blockers = [...this.backgroundTasks].map(({ settlement }) => settlement);
+    const pending = {
+      dbPath,
+      generation,
+      settlement: null
+    };
+    pending.settlement = Promise.allSettled(blockers).then(() => {
+      if (this.pendingEnable !== pending
+        || this.pendingEnableGeneration !== generation) {
+        return;
+      }
+      this.pendingEnable = null;
+      if (this.closed || !this.desiredConfig.enabled || this.desiredConfig.dbPath !== dbPath) {
+        return;
+      }
+      this.enableFromConfig(this.desiredConfig, { source });
+    });
+    this.pendingEnable = pending;
+  }
+
+  cancelPendingEnable() {
+    if (!this.pendingEnable) return;
+    this.pendingEnable = null;
+    this.pendingEnableGeneration += 1;
+  }
+
+  finishEnable(dbPath, { source }) {
+    this.activeDbPath = dbPath;
+    this.acceptingRecords = true;
+    this.state = "enabled";
+    this.restartRequired = false;
+    this.clearLastError();
+    this.log("info", "Capture recording enabled", {
+      source,
+      db_path: this.activeDbPath
+    });
+  }
+
+  startIndexPreparation(dbPath, { source }) {
+    const generation = ++this.indexPreparationGeneration;
+    let worker;
+    try {
+      worker = this.indexWorkerFactory(dbPath);
+    } catch {
+      this.failIndexPreparation();
+      return;
+    }
+
+    let resolveSettlement;
+    const settlement = new Promise((resolvePromise) => {
+      resolveSettlement = resolvePromise;
+    });
+    const manager = this;
+    let backgroundTask;
+    const preparation = {
+      dbPath,
+      generation,
+      worker,
+      source,
+      result: null,
+      cancelled: false,
+      exited: false,
+      terminationFailed: false,
+      settled: false,
+      settle() {
+        if (this.settled) return;
+        this.settled = true;
+        manager.backgroundTasks.delete(backgroundTask);
+        resolveSettlement();
+      }
+    };
+    backgroundTask = { worker, settlement };
+    this.backgroundTasks.add(backgroundTask);
+    this.indexPreparation = preparation;
+
+    worker.on("message", (message) => {
+      if (message?.type === "complete" || message?.type === "failed") {
+        preparation.result = message.type;
+      }
+    });
+    worker.on("error", () => {
+      preparation.result = "failed";
+    });
+    worker.on("exit", (code) => {
+      preparation.exited = true;
+      if (this.indexPreparation !== preparation
+        || this.indexPreparationGeneration !== generation) {
+        if (!preparation.cancelled || preparation.terminationFailed) preparation.settle();
+        return;
+      }
+      this.indexPreparation = null;
+      if (code !== 0 || preparation.result !== "complete") {
+        this.failIndexPreparation();
+        preparation.settle();
+        return;
+      }
+      if (this.closed || !this.desiredConfig.enabled || this.desiredConfig.dbPath !== dbPath) {
+        preparation.settle();
+        return;
+      }
+      try {
+        if (!this.openDatabase(dbPath)) {
+          throw new Error(INDEX_PREPARATION_ERROR);
+        }
+        this.finishEnable(dbPath, { source });
+      } catch {
+        this.closeDatabase();
+        this.failIndexPreparation();
+      }
+      preparation.settle();
+    });
+    worker.unref?.();
+  }
+
+  failIndexPreparation() {
+    this.acceptingRecords = false;
+    this.activeDbPath = null;
+    this.state = "error";
+    this.setLastError(INDEX_PREPARATION_ERROR);
+    this.log("warn", INDEX_PREPARATION_ERROR, {
+      code: "CAPTURE_INDEX_PREPARATION_FAILED"
+    });
+  }
+
+  cancelIndexPreparation() {
+    const preparation = this.indexPreparation;
+    if (!preparation) return;
+    this.indexPreparation = null;
+    this.indexPreparationGeneration += 1;
+    preparation.cancelled = true;
+    let termination;
+    try {
+      termination = preparation.worker.terminate();
+    } catch {
+      preparation.terminationFailed = true;
+      if (preparation.exited) preparation.settle();
+      return;
+    }
+    Promise.resolve(termination).then(
+      () => preparation.settle(),
+      () => {
+        preparation.terminationFailed = true;
+        if (preparation.exited) preparation.settle();
+      }
+    );
   }
 
   disableRecording() {
@@ -596,10 +799,30 @@ export class CaptureManager {
 
   openDatabase(dbPath) {
     mkdirSync(dirname(dbPath), { recursive: true });
-    const db = new DatabaseSync(dbPath);
-    initializeDatabase(db);
-    this.db = db;
-    this.insertStatement = createInsertStatement(db);
+    let db;
+    try {
+      db = new DatabaseSync(dbPath);
+      initializeDatabase(db);
+      if (!hasForwardingMetadataIndex(db)) {
+        const hasRows = db.prepare("SELECT 1 FROM http_transactions LIMIT 1").get() !== undefined;
+        if (hasRows) {
+          db.close();
+          return false;
+        }
+        createForwardingMetadataIndex(db);
+      }
+      const insertStatement = createInsertStatement(db);
+      this.db = db;
+      this.insertStatement = insertStatement;
+      return true;
+    } catch (error) {
+      if (db && db !== this.db) {
+        try {
+          db.close();
+        } catch {}
+      }
+      throw error;
+    }
   }
 
   closeDatabase() {

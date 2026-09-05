@@ -310,6 +310,30 @@ export function App() {
     if (targetRoute === "overview") void loadHeatmap();
   }, [loadHeatmap, loadMetrics]);
 
+  useEffect(() => {
+    if (!ready || route !== "forwarding" || accessMode === "initializing"
+      || accessMode === "terminal" || accessMode === "stopped"
+      || workspace?.status.capture.state !== "enabling") return undefined;
+    const controller = new AbortController();
+    let inFlight = false;
+    const timer = window.setInterval(() => {
+      if (inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      const sequence = loadSequenceRef.current;
+      void api.getStatus(controller.signal).then((status) => {
+        if (!controller.signal.aborted && sequence === loadSequenceRef.current) {
+          setWorkspace((current) => current ? { ...current, status } : current);
+        }
+      }).catch(() => {
+        // Authentication failures already enter the terminal state in CrpApi.
+      }).finally(() => { inFlight = false; });
+    }, 2000);
+    return () => {
+      window.clearInterval(timer);
+      controller.abort();
+    };
+  }, [accessMode, api, ready, route, workspace?.status.capture.state]);
+
   const changeLocale = useCallback((next: Locale) => {
     persistLocale(next);
     setLocale(next);

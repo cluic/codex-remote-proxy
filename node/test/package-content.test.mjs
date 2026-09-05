@@ -13,6 +13,7 @@ const REVIEWED_PACKAGE_PATHS = new Set([
   "proxy-config.example.json",
   "src/access-key-store.mjs",
   "src/capture-config.mjs",
+  "src/capture-index-worker.mjs",
   "src/capture-store.mjs",
   "src/codex/codex-config.mjs",
   "src/codex/codex-history-repair.mjs",
@@ -167,7 +168,7 @@ test("npm pack invocation uses an explicit command interpreter only on Windows",
 
 test("exact package path comparison detects every extra and missing path", () => {
   const reviewed = [...REVIEWED_PACKAGE_PATHS];
-  assert.equal(REVIEWED_PACKAGE_PATHS.size, 46);
+  assert.equal(REVIEWED_PACKAGE_PATHS.size, 47);
   assert.deepEqual(comparePackagePaths(reviewed), { missing: [], unexpected: [] });
 
   const runtimeExtras = [
