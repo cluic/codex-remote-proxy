@@ -56,6 +56,8 @@ npm run changeset -- status
 
 The production UI is a Next.js App Router static export produced by the deterministic Webpack path. `build:ui` refreshes the reviewed `ui/.crp-ui-manifest.json`, route HTML and Flight data, and hashed local chunks; `verify:ui-build` must reproduce that complete manifest exactly and validate its CSP hashes. Release review must use the manifest and package-content allowlist rather than a fixed three-file assumption. Every supported release platform must run `verify:ui-build` in CI; a successful local host build cannot stand in for another platform.
 
+The UI build ID fingerprints the UI source and dependency graph while normalizing the package-lock root version fields. A Changesets version-only release PR therefore keeps the committed UI manifest compatible without rebuilding frontend assets; dependency graph changes still require a fresh `build:ui` output.
+
 Historical M2D/V7 working-tree evidence on Node 22.19 on 2026-07-16:
 
 - exact full suite: 451/451 total (`401` unit-core + `8` isolated capture + `41` ordinary integration + `1` serial core-chain);
