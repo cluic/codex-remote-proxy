@@ -131,6 +131,7 @@
 - CSP hash sources must retain their required single quotes and pass real-browser hydration verification.
 - Tailwind migrations must define the legacy CSS cascade order and verify that new utilities take effect.
 - Authenticated preview diagnostics must not print response headers containing `Set-Cookie`.
+- Static UI release validation must use a clean checkout with canonical LF line endings.
 
 ## Required Checks
 

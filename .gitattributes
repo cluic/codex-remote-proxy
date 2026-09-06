@@ -1,0 +1,3 @@
+* text=auto
+node/ui/** text eol=lf
+node/ui-src/** text eol=lf
