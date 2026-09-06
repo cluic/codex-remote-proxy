@@ -50,6 +50,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify UI build
+        run: npm run verify:ui-build
+
       - name: Run syntax checks
         run: npm run lint
 

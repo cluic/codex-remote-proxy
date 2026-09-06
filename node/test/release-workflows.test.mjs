@@ -363,6 +363,12 @@ test("every workflow checkout disables persisted credentials", () => {
   }
 });
 
+test("every supported platform verifies the generated UI build", () => {
+  const workflow = readWorkflowText("platform-tests.yml");
+  const verify = extractStepBlock(workflow, "Verify UI build");
+  assert.match(verify, /^        run: npm run verify:ui-build$/m);
+});
+
 test("Linux native smoke proves Secret Service and the default collection before Node", () => {
   const workflow = readWorkflowText("platform-tests.yml");
   const installScript = extractStepBlock(workflow, "Install Linux Secret Service");
