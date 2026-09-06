@@ -11,7 +11,32 @@ permissions:
   id-token: write
 
 jobs:
+  canonical-ui:
+    name: Verify canonical UI checkout
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify canonical UI checkout
+        run: npm run verify:ui-build
+
   release:
+    needs: canonical-ui
     runs-on: ubuntu-latest
     defaults:
       run:

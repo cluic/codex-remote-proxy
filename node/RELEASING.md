@@ -42,7 +42,7 @@ Run from `node/`:
 ```bash
 npm run lint
 npm run typecheck:ui
-npm run build:ui
+npm run verify:ui-assets
 npm run verify:ui-build
 npm test
 node --test test/codex-config.test.mjs test/codex-history-repair.test.mjs
@@ -53,6 +53,12 @@ node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs tes
 npm pack --dry-run --json --ignore-scripts
 npm run changeset -- status
 ```
+
+The production UI is a Next.js App Router static export produced by the default Webpack path. `build:ui` refreshes the reviewed `ui/.crp-ui-manifest.json`, route HTML and Flight data, and hashed local chunks; `verify:ui-build` reproduces that complete tree in the canonical environment and compares it with the untouched checkout. `verify:ui-assets` binds the committed source digest to the manifest and reuses the complete resource, CSP, source-map, and external-reference policy without rebuilding. Release review must use the manifest and package-content allowlist rather than a fixed three-file assumption.
+
+The UI build ID fingerprints the UI source and dependency graph while normalizing the package-lock root version fields. A Changesets version-only release PR therefore keeps the committed UI manifest compatible without rebuilding frontend assets; dependency graph changes still require a fresh `build:ui` output.
+
+Canonical UI candidate artifacts are generated with the default Webpack build on a clean Ubuntu Node 22 runner and uploaded only for review. Release preflight and the release workflow run `verify:ui-build` before any candidate build can replace `ui/`; macOS, Windows, and Linux platform jobs run `verify:ui-assets`, the package allowlist, and their platform-specific tests. Push source and validation changes first, download the candidate produced for that exact commit, inspect it, replace `ui/`, refresh the literal package allowlist, and commit the reviewed result before it can pass the checkout comparison. Do not replace canonical artifacts with a local host build.
 
 Historical M2D/V7 working-tree evidence on Node 22.19 on 2026-07-16:
 

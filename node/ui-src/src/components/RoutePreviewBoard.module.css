@@ -1,0 +1,93 @@
+.hero :global(.route-preview-body) {
+  color: var(--primary-foreground);
+  background: var(--primary);
+  border-top-color: color-mix(in srgb, var(--primary-foreground) 14%, transparent);
+  padding-block: 7px;
+}
+
+.hero :global(.route-preview-primary-lane),
+.hero :global(.route-preview-fallback-disclosure),
+.hero :global(.route-preview-candidates),
+.hero :global(.route-preview-details) {
+  color: var(--primary-foreground);
+  background: color-mix(in srgb, var(--primary-foreground) 6%, transparent);
+  border-color: color-mix(in srgb, var(--primary-foreground) 16%, transparent);
+  box-shadow: none;
+}
+
+.hero :global(.route-preview-input-shell input) {
+  font-size: 8px;
+}
+
+.hero :global(.route-preview-primary-lane)::after {
+  background: var(--primary-foreground);
+  opacity: .55;
+}
+
+.hero :global(.route-preview-lane-label > span),
+.hero :global(.route-preview-candidates-label > svg),
+.hero :global(.route-preview-details summary > svg) {
+  color: var(--primary-foreground);
+}
+
+.hero :global(.route-preview-lane-label small),
+.hero :global(.route-preview-candidates-label span),
+.hero :global(.route-preview-details summary small),
+.hero :global(.route-preview-details p),
+.hero :global(.route-preview-fallback-condition),
+.hero :global(.route-preview-stale) {
+  color: color-mix(in srgb, var(--primary-foreground) 68%, transparent);
+}
+
+.hero :global(.route-path-node),
+.hero :global(.route-preview-chain > .route-path-node:last-of-type) {
+  color: var(--primary-foreground);
+  background: color-mix(in srgb, var(--primary-foreground) 7%, transparent);
+  border-color: color-mix(in srgb, var(--primary-foreground) 18%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--primary-foreground) 8%, transparent);
+}
+
+.hero :global(.route-path-node-icon),
+.hero :global(.route-path-node-active .route-path-node-icon),
+.hero :global(.route-path-node-warning .route-path-node-icon) {
+  color: var(--primary-foreground);
+  background: color-mix(in srgb, var(--primary-foreground) 12%, transparent);
+}
+
+.hero :global(.route-path-node small),
+.hero :global(.route-path-node > div > span),
+.hero :global(.route-preview-candidate-copy small) {
+  color: color-mix(in srgb, var(--primary-foreground) 65%, transparent);
+}
+
+.hero :global(.route-path-connector)::before,
+.hero :global(.route-path-connector)::after {
+  border-color: color-mix(in srgb, var(--primary-foreground) 28%, transparent);
+  background: color-mix(in srgb, var(--primary-foreground) 28%, transparent);
+}
+
+.hero :global(.route-preview-candidate),
+.hero :global(.route-preview-fallback-toggle),
+.hero :global(.route-preview-details summary) {
+  color: var(--primary-foreground);
+  border-color: color-mix(in srgb, var(--primary-foreground) 12%, transparent);
+}
+
+.hero :global(.route-preview-candidate) {
+  color: var(--foreground);
+  background: #f3f6f4;
+  border-color: #d6e0da;
+}
+
+.hero :global(.route-preview-candidate-copy strong) {
+  color: var(--foreground);
+}
+
+.hero :global(.route-preview-candidate-copy small) {
+  color: #52645a;
+}
+
+.hero :global(.route-preview-candidate-rank) {
+  color: var(--primary-foreground);
+  background: color-mix(in srgb, var(--primary-foreground) 10%, transparent);
+}

@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  normalizeLockfileForUiDigest,
+  normalizeUiSourceBytes
+} from "../scripts/build-next-ui.mjs";
 import { syncLockfileVersion } from "../scripts/sync-lockfile-version.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -17,17 +21,23 @@ function readWorkflowText(name) {
 }
 
 function extractStepBlock(workflowText, stepName) {
+  const blocks = extractStepBlocks(workflowText, stepName);
+  assert.equal(blocks.length, 1, `expected one active step named ${stepName}`);
+  return blocks[0];
+}
+
+function extractStepBlocks(workflowText, stepName) {
   const lines = workflowText.split("\n");
   const marker = `      - name: ${stepName}`;
   const starts = lines
     .map((line, index) => line === marker ? index : -1)
     .filter((index) => index !== -1);
-  assert.equal(starts.length, 1, `expected one active step named ${stepName}`);
-  const start = starts[0];
-  const next = lines.findIndex((line, index) => (
-    index > start && line.startsWith("      - name: ")
-  ));
-  return lines.slice(start, next === -1 ? lines.length : next).join("\n");
+  return starts.map((start, index) => {
+    const next = starts[index + 1] ?? lines.findIndex((line, lineIndex) => (
+      lineIndex > start && line.startsWith("      - name: ")
+    ));
+    return lines.slice(start, next === -1 ? lines.length : next).join("\n");
+  });
 }
 
 function extractTopLevelChildKeys(workflowText, sectionName) {
@@ -270,6 +280,39 @@ test("package versioning keeps package and lockfile root versions synchronized",
   );
 });
 
+test("UI build digest ignores version-only lockfile changes", () => {
+  const lockfile = {
+    name: packageName,
+    version: "0.4.21",
+    lockfileVersion: 3,
+    packages: {
+      "": { name: packageName, version: "0.4.21", dependencies: { stable: "1.0.0" } },
+      "node_modules/stable": { version: "1.0.0", integrity: "sha512-stable" }
+    }
+  };
+  const nextVersion = structuredClone(lockfile);
+  nextVersion.version = "0.4.22";
+  nextVersion.packages[""].version = "0.4.22";
+
+  assert.deepEqual(
+    normalizeLockfileForUiDigest(lockfile),
+    normalizeLockfileForUiDigest(nextVersion)
+  );
+
+  nextVersion.packages["node_modules/stable"].version = "1.0.1";
+  assert.notDeepEqual(
+    normalizeLockfileForUiDigest(lockfile),
+    normalizeLockfileForUiDigest(nextVersion)
+  );
+});
+
+test("UI build digest normalizes source line endings", () => {
+  assert.deepEqual(
+    normalizeUiSourceBytes(Buffer.from("first\r\nsecond\rthird\n", "utf8")),
+    Buffer.from("first\nsecond\nthird\n", "utf8")
+  );
+});
+
 test("lockfile version sync preserves the dependency graph and is byte-idempotent", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "crp-lock-version-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -330,10 +373,40 @@ test("lockfile version sync fails before writing mismatched package metadata", (
 
 test("every workflow checkout disables persisted credentials", () => {
   for (const name of ["release.yml", "release-preflight.yml", "platform-tests.yml"]) {
-    const checkout = extractStepBlock(readWorkflowText(name), "Checkout");
-    assert.match(checkout, /^        uses: actions\/checkout@v4$/m);
-    assert.match(checkout, /^          persist-credentials: false$/m);
+    for (const checkout of extractStepBlocks(readWorkflowText(name), "Checkout")) {
+      assert.match(checkout, /^        uses: actions\/checkout@v4$/m);
+      assert.match(checkout, /^          persist-credentials: false$/m);
+    }
   }
+});
+
+test("platform matrix verifies committed UI assets and canonical Linux build uploads output", () => {
+  const workflow = readWorkflowText("platform-tests.yml");
+  const verify = extractStepBlock(workflow, "Verify committed UI assets");
+  assert.match(verify, /^        run: npm run verify:ui-assets$/m);
+  const generate = extractStepBlock(workflow, "Generate canonical UI artifact");
+  assert.match(generate, /^        run: npm run build:ui$/m);
+  const canonicalStart = workflow.indexOf("  canonical-ui:\n");
+  assert.notEqual(canonicalStart, -1);
+  assert.match(workflow.slice(canonicalStart), /^          node-version: 22\.19\.0$/m);
+  const upload = extractStepBlock(workflow, "Upload canonical UI artifact");
+  assert.match(upload, /include-hidden-files: true/);
+  assert.match(upload, /^          path: node\/ui\/\*\*$/m);
+});
+
+test("canonical UI verification compares the checkout before candidate generation or publication", () => {
+  const preflight = readWorkflowText("release-preflight.yml");
+  const preflightVerify = extractStepBlock(preflight, "Verify canonical UI checkout");
+  assert.match(preflightVerify, /^        run: npm run verify:ui-build$/m);
+  assert.equal(preflightVerify.includes("npm run build:ui"), false);
+  assert.match(preflight, /^          node-version: 22\.19\.0$/m);
+
+  const release = readWorkflowText("release.yml");
+  const releaseVerify = extractStepBlock(release, "Verify canonical UI checkout");
+  assert.match(releaseVerify, /^        run: npm run verify:ui-build$/m);
+  assert.match(release, /^  release:\n    needs: canonical-ui$/m);
+  assert.match(release, /^          node-version: 22\.19\.0$/m);
+  assert.match(release, /^          node-version: 24$/m);
 });
 
 test("Linux native smoke proves Secret Service and the default collection before Node", () => {

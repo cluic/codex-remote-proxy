@@ -138,18 +138,18 @@ export const DailyTokenHeatmap = memo(function DailyTokenHeatmap({
   ));
 
   return (
-    <div className="token-heatmap" data-testid="token-heatmap">
+    <div className="token-heatmap grid min-w-0 gap-3" data-testid="token-heatmap">
       {unavailable ? (
-        <div className="token-heatmap-error" role="status">
+        <div className="token-heatmap-error grid min-h-32 place-items-center content-center gap-1 rounded-lg bg-muted/40 p-4 text-center" role="status">
           <strong>{t("overview.heatmapUnavailable")}</strong>
           <span>{t("overview.heatmapUnavailableHelp")}</span>
           {error ? <code>{error.code}</code> : null}
         </div>
       ) : weeks.length === 0 ? (
-        <div className="token-heatmap-empty" role="status">{t("overview.heatmapNoData")}</div>
+        <div className="token-heatmap-empty grid min-h-32 place-items-center rounded-lg bg-muted/40 p-4 text-muted-foreground" role="status">{t("overview.heatmapNoData")}</div>
       ) : (
         <>
-          <div className="token-heatmap-scroll layout-contained-scroll">
+          <div className="token-heatmap-scroll layout-contained-scroll min-w-0 overflow-x-auto">
             <div className="token-heatmap-calendar" aria-label={t("overview.heatmapDescription")}>
               <div className="token-heatmap-months" aria-hidden="true">
                 <span />
@@ -187,13 +187,13 @@ export const DailyTokenHeatmap = memo(function DailyTokenHeatmap({
               </div>
             </div>
           </div>
-          <div className="token-heatmap-legend" aria-label={t("overview.heatmapLegend")}>
+          <div className="token-heatmap-legend flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground" aria-label={t("overview.heatmapLegend")}>
             <span>{t("overview.heatmapLess")}</span>
             {[0, 1, 2, 3, 4].map((level) => <i className={`token-heatmap-cell-level-${level}`} key={level} aria-hidden="true" />)}
             <span>{t("overview.heatmapMore")}</span>
             <span className="token-heatmap-legend-unobserved"><i />{t("overview.heatmapUnobservedShort")}</span>
           </div>
-          <div className="token-heatmap-selection" aria-live="polite" aria-atomic="true">
+          <div className="token-heatmap-selection flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-muted/25 px-3 py-2.5" aria-live="polite" aria-atomic="true">
             {selected ? (
               <>
                 <strong>{formatUtcDate(locale, selected.key, { dateStyle: "medium" })}</strong>

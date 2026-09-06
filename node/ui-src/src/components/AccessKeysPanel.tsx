@@ -166,14 +166,14 @@ function AccessKeyEditor({
       footer={(
         <>
           <Button variant="ghost" disabled={busy} onClick={close}>{t("common.cancel")}</Button>
-          <span className="modal-footer-spacer" />
+          <span className="modal-footer-spacer ml-auto" />
           <Button variant="primary" busy={busy} form="access-key-form" type="submit">
             {t(editing ? "common.save" : "accessKeys.add")}
           </Button>
         </>
       )}
     >
-      <form id="access-key-form" className="access-key-form" onSubmit={submit} noValidate>
+      <form id="access-key-form" className="access-key-form grid gap-4" onSubmit={submit} noValidate>
         {error ? <FormError>{error}</FormError> : null}
         <Field
           autoFocus
@@ -202,7 +202,7 @@ function AccessKeyEditor({
             <div className="access-key-generate-slot">
               <span className="field-label" aria-hidden="true">&nbsp;</span>
               <Button
-                className="access-key-generate"
+                className="access-key-generate h-[42px]"
                 onClick={() => {
                   const next = generatedSecret();
                   setSecret(next);
@@ -212,7 +212,7 @@ function AccessKeyEditor({
             </div>
           </div>
         ) : null}
-        <div className="access-key-constraints">
+        <div className="access-key-constraints grid gap-3 sm:grid-cols-2">
           <Field
             id="access-key-expires"
             name="expiresAt"
@@ -256,7 +256,7 @@ export function AccessKeysPanel({
 
   return (
     <>
-      <Panel className="access-keys-panel">
+      <Panel className="access-keys-panel overflow-hidden">
         <PanelHeader
           title={t("accessKeys.title")}
           description={t("accessKeys.description")}
@@ -272,16 +272,16 @@ export function AccessKeysPanel({
           )}
         />
         {accessKeys.length === 0 ? (
-          <div className="access-key-empty">
-            <KeyRound aria-hidden="true" />
+          <div className="access-key-empty flex min-h-36 items-center justify-center gap-3 px-5 py-8 text-muted-foreground">
+            <KeyRound className="size-5 text-primary/70" aria-hidden="true" />
             <div>
               <strong>{t("accessKeys.empty")}</strong>
               <span>{t("accessKeys.emptyHelp")}</span>
             </div>
           </div>
         ) : (
-          <div className="access-key-table-wrap">
-            <table className="access-key-table">
+          <div className="access-key-table-wrap overflow-x-auto border-t border-border">
+            <table className="access-key-table w-full min-w-[680px] border-collapse text-sm">
               <caption className="visually-hidden">{t("accessKeys.title")}</caption>
               <thead>
                 <tr>
@@ -299,7 +299,7 @@ export function AccessKeysPanel({
                   const tone = status === "active" ? "success"
                     : status === "disabled" ? "neutral" : "warning";
                   return (
-                    <tr key={accessKey.id}>
+                    <tr key={accessKey.id} data-status={status}>
                       <th scope="row">
                         <strong>{accessKey.name}</strong>
                         <code>{accessKey.keyHint}</code>
@@ -311,7 +311,7 @@ export function AccessKeysPanel({
                       <td>{formatDate(locale, accessKey.expiresAt, true)}</td>
                       <td>{formatDate(locale, accessKey.lastUsedAt, true)}</td>
                       <td>
-                        <div className="access-key-actions">
+                        <div className="access-key-actions flex items-center justify-end gap-1">
                           <IconButton
                             label={t(accessKey.enabled ? "accessKeys.disable" : "accessKeys.enable")}
                             disabled={readOnly || busy}
@@ -362,7 +362,7 @@ export function AccessKeysPanel({
             <Button variant="ghost" disabled={busy} onClick={() => setDeleting(null)}>
               {t("common.cancel")}
             </Button>
-            <span className="modal-footer-spacer" />
+            <span className="modal-footer-spacer ml-auto" />
             <Button
               variant="danger"
               busy={busy}

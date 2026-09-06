@@ -5,7 +5,7 @@
 - CLI and supervisor entrypoint: `node/bin/crp.mjs`
 - Proxy worker: `node/src/server.mjs`
 - Provider, credential, and control-plane modules: `node/src/`
-- Local Web management UI: `node/ui/` (target architecture)
+- Local Web management UI source: `node/ui-src/app/` and `node/ui-src/src/`; generated static export: `node/ui/`
 - Tests: `node/test/`
 
 ## Working Rules
@@ -127,6 +127,12 @@
 - Unbounded database maintenance must not run synchronously before the Worker readiness acknowledgement.
 - Replacement background maintenance must wait for confirmed cancellation of prior work on the same resource.
 - Upgrade tests must cover nonempty persisted databases and maintenance exceeding startup deadlines.
+- Next.js migrations must move ordinary business components out of the reserved `pages` directory before building.
+- CSP hash sources must retain their required single quotes and pass real-browser hydration verification.
+- Tailwind migrations must define the legacy CSS cascade order and verify that new utilities take effect.
+- Authenticated preview diagnostics must not print response headers containing `Set-Cookie`.
+- Static UI release validation must use a clean checkout with canonical LF line endings.
+- Canonical verification must compare the untouched checked-in UI before any build replaces it.
 
 ## Required Checks
 

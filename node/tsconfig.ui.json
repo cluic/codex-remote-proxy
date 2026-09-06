@@ -11,13 +11,22 @@
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["ui-src/src/*"]
+    },
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx",
+    "jsx": "preserve",
+    "plugins": [{ "name": "next" }],
     "noUncheckedIndexedAccess": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["ui-src/src/**/*.ts", "ui-src/src/**/*.tsx"]
+  "include": [
+    "ui-src/**/*.ts",
+    "ui-src/**/*.tsx",
+    "ui-src/next-env.d.ts",
+    "ui-src/.crp-next-ui-build/types/**/*.ts"
+  ]
 }

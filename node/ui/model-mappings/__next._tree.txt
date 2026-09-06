@@ -1,0 +1,3 @@
+:HL["/_next/static/css/9e1661e816f29201.css","style"]
+:HL["/_next/static/css/5ee22adf52b0619f.css","style"]
+0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"model-mappings","param":null,"prefetchHints":4192,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}}}},"staleTime":300,"buildId":"crp-c000f69fcd8493278df3809ab25b8d42f0687ec4255264dbe4c1f6e6d42c6d1a"}

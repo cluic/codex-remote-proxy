@@ -1,0 +1,27 @@
+1:"$Sreact.fragment"
+2:I[8996,["313","static/chunks/313-2f8466e707e35ec0.js","996","static/chunks/996-a0f483af1b22140d.js","186","static/chunks/app/system/page-d34dd020730b4798.js"],"CrpRoute"]
+3:I[1872,[],"OutletBoundary"]
+4:"$Sreact.suspense"
+8:I[1872,[],"ViewportBoundary"]
+9:I[1872,[],"MetadataBoundary"]
+b:I[1133,[],""]
+c:I[4297,[],""]
+f:I[530,["313","static/chunks/313-2f8466e707e35ec0.js","996","static/chunks/996-a0f483af1b22140d.js","177","static/chunks/app/layout-1e45b7c268af9839.js"],"ClientProviders"]
+10:I[4525,["345","static/chunks/app/not-found-f9320e13bb9b8591.js"],"default"]
+11:I[9568,["345","static/chunks/app/not-found-f9320e13bb9b8591.js"],""]
+:HL["/_next/static/css/9e1661e816f29201.css","style"]
+:HL["/_next/static/css/5ee22adf52b0619f.css","style"]
+7:X
+e:X
+e:C
+12:"CRP requires JavaScript. CRP 需要启用 JavaScript。"
+0:{"buildId":"crp-c000f69fcd8493278df3809ab25b8d42f0687ec4255264dbe4c1f6e6d42c6d1a","data":[{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"route":"system"}],null,["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":"$@6","staleTime":"$7","varyParams":null},{"rsc":["$","$1","h",{"children":[null,["$","$L8",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}],["$","meta","2",{"name":"theme-color","content":"#f4f6f4"}],["$","meta","3",{"name":"color-scheme","content":"light"}]]}],["$","div",null,{"hidden":true,"children":["$","$L9",null,{"children":["$","$4",null,{"name":"Next.Metadata","children":[["$","meta","0",{"name":"description","content":"Local management console for Codex Remote Proxy"}]]}]}]}],null]}],"isPartial":"$@a","staleTime":"$7","varyParams":null},{"rsc":["$","$1","c",{"children":[null,["$","$Lb",null,{"parallelRouterKey":"children","template":["$","$Lc",null,{}]}]]}],"isPartial":"$@d","staleTime":"$7","varyParams":"$e"},{"rsc":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/css/9e1661e816f29201.css","precedence":"next"}],["$","link","1",{"rel":"stylesheet","href":"/_next/static/css/5ee22adf52b0619f.css","precedence":"next"}]],["$","html",null,{"lang":"en","aria-busy":"true","children":["$","body",null,{"children":[["$","$Lf",null,{"children":["$","$Lb",null,{"parallelRouterKey":"children","template":["$","$Lc",null,{}],"notFound":[["$","main",null,{"className":"standalone-state","aria-labelledby":"not-found-title","children":["$","div",null,{"className":"standalone-card","children":[["$","div",null,{"className":"brand-symbol","aria-hidden":"true","children":["$","$L10",null,{"iconNode":[["path",{"d":"m7 11 2-2-2-2","key":"1lz0vl"}],["path",{"d":"M11 13h4","key":"1p7l4v"}],["rect",{"width":"18","height":"18","x":"3","y":"3","rx":"2","ry":"2","key":"1m3agn"}]],"className":"lucide-square-terminal"}]}],["$","h1",null,{"id":"not-found-title","children":"Page not found"}],["$","p",null,{"children":"Open the CRP local console from its root address."}],["$","$L11",null,{"className":"button button-primary","href":"/overview","children":"Open Overview"}]]}]}],[]]}]}],["$","noscript",null,{"children":"CRP requires JavaScript. CRP 需要启用 JavaScript。"}]]}]}]]}],"isPartial":"$@13","staleTime":"$7","varyParams":null}],"isUpgradeableISRFallback":false,"a":"$@14","rootVaryParams":null,"needsRuntimeRequest":"$@15"}
+5:null
+7:300
+15:true
+7:C
+14:0
+a:"$undefined"
+d:"$undefined"
+13:"$undefined"
+6:"$undefined"

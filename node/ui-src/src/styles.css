@@ -2114,6 +2114,7 @@ code {
   .sidebar-worker-actions .icon-button { width: 32px; min-width: 32px; min-height: 32px; }
   .sidebar-supervisor-exit { width: 32px; min-width: 32px; min-height: 32px; flex-basis: 32px; }
   .topbar { min-height: 62px; padding: 8px 16px; }
+  .topbar-title h1 { font-size: 15px; }
   .topbar-title span { display: none; }
   .topbar-actions .status-badge { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
   .session-banner { padding: 10px 16px 0; }

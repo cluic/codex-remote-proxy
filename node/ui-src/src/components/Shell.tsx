@@ -1,9 +1,12 @@
+"use client";
+
 import {
   Activity,
   Boxes,
   ChevronDown,
   ChevronRight,
   CircleGauge,
+  Ellipsis,
   FileClock,
   GitFork,
   Languages,
@@ -25,6 +28,9 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Translator, TranslationKey } from "../i18n";
 import type { AccessMode, Locale, Provider, Route, StatusResponse } from "../types";
 import { Button, IconButton, Modal, Notice, StatusBadge, cx } from "./Primitives";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { Sheet, SheetClose, SheetContent } from "./ui/sheet";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const navConfig = [
   { route: "overview" as const, key: "nav.overview" as const, icon: CircleGauge },
@@ -93,67 +99,9 @@ export function Shell({
   const [mobileOpen, setMobileOpen] = useState(false);
   const [restartOpen, setRestartOpen] = useState(false);
   const [shutdownOpen, setShutdownOpen] = useState(false);
-  const asideRef = useRef<HTMLElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
-  const wasOpenRef = useRef(false);
-  const restoreMenuOnCloseRef = useRef(true);
-  const openGenerationRef = useRef(0);
-  const openFocusFrameRef = useRef<number | null>(null);
   const restartFrameRef = useRef<number | null>(null);
   const shutdownFrameRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (!mobileOpen) {
-      document.body.classList.remove("nav-open");
-      if (wasOpenRef.current && restoreMenuOnCloseRef.current) {
-        menuRef.current?.focus({ preventScroll: true });
-      }
-      wasOpenRef.current = false;
-      restoreMenuOnCloseRef.current = true;
-      return undefined;
-    }
-    wasOpenRef.current = true;
-    const generation = ++openGenerationRef.current;
-    document.body.classList.add("nav-open");
-    const aside = asideRef.current;
-    const focusable = () => Array.from(aside?.querySelectorAll<HTMLElement>(
-      "a[href], button:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])"
-    ) ?? []).filter((element) => element.offsetParent !== null);
-    openFocusFrameRef.current = requestAnimationFrame(() => {
-      openFocusFrameRef.current = null;
-      if (generation === openGenerationRef.current) focusable()[0]?.focus({ preventScroll: true });
-    });
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        restoreMenuOnCloseRef.current = true;
-        setMobileOpen(false);
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const items = focusable();
-      const first = items[0];
-      const last = items.at(-1);
-      if (!first || !last) return;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      openGenerationRef.current += 1;
-      if (openFocusFrameRef.current !== null) {
-        cancelAnimationFrame(openFocusFrameRef.current);
-        openFocusFrameRef.current = null;
-      }
-      document.body.classList.remove("nav-open");
-    };
-  }, [mobileOpen]);
 
   useEffect(() => () => {
     if (restartFrameRef.current !== null) cancelAnimationFrame(restartFrameRef.current);
@@ -161,13 +109,11 @@ export function Shell({
   }, []);
 
   const navigate = (next: Route) => {
-    restoreMenuOnCloseRef.current = false;
     setMobileOpen(false);
     onNavigate(next);
   };
 
   const closeMobileNav = () => {
-    restoreMenuOnCloseRef.current = true;
     setMobileOpen(false);
   };
 
@@ -239,21 +185,64 @@ export function Shell({
   return (
     <div id="app-root" className="app-shell" data-testid="app-shell">
       <a className="skip-link" href="#main-content">{t("a11y.skip")}</a>
-      {mobileOpen ? (
-        <button
-          className="nav-backdrop"
-          type="button"
-          tabIndex={-1}
-          aria-label={t("a11y.closeNav")}
-          onClick={closeMobileNav}
-        />
-      ) : null}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent side="left" finalFocus={menuRef} initialFocus={() => document.querySelector<HTMLElement>(".mobile-sheet-close")} aria-label={t("nav.label")} className="mobile-sheet">
+          <div className="sidebar-brand">
+            <div className="brand-symbol" aria-hidden="true"><TerminalSquare /></div>
+            <div className="brand-copy"><strong>CRP</strong><span>{t("brand.subtitle")}</span></div>
+            <SheetClose render={<IconButton className="sidebar-close mobile-sheet-close" label={t("a11y.closeNav")}><X aria-hidden="true" /></IconButton>} />
+          </div>
+          <nav className="sidebar-nav" aria-label={t("nav.label")}>
+            {navConfig.map((item) => {
+              const Icon = item.icon;
+              return <a key={item.route} className={cx("nav-item", route === item.route && "nav-item-current")} href={`/${item.route}`} onClick={(event) => { event.preventDefault(); navigate(item.route); }}><Icon aria-hidden="true" /><span>{t(item.key)}</span></a>;
+            })}
+          </nav>
+          <div className="sidebar-runtime-controls">
+            <label className="sidebar-provider-select" htmlFor="mobile-provider-select">
+              <span>{t("overview.route")}</span>
+              <select
+                id="mobile-provider-select"
+                value={status.activeProviderId ?? ""}
+                disabled={accessMode !== "writable" || mutationPending || providers.length === 0}
+                onChange={(event) => {
+                  if (event.target.value && event.target.value !== status.activeProviderId) {
+                    void onActivate(event.target.value).then((activated) => {
+                      if (activated) setMobileOpen(false);
+                    });
+                  }
+                }}
+              >
+                {status.activeProviderId === null ? <option value="">{t("common.none")}</option> : null}
+                {providers.map((provider) => <option key={provider.id} value={provider.id} disabled={provider.id !== status.activeProviderId && (!provider.credentialConfigured || provider.lastTestStatus !== "passed")}>{provider.name}</option>)}
+              </select>
+              <ChevronDown aria-hidden="true" />
+            </label>
+            <div className="sidebar-worker-actions" aria-label={t("overview.proxyControls")}>
+              <IconButton label={t("overview.startProxy")} disabled={accessMode !== "writable" || mutationPending || workerRunning || !providerEligible || !codexReady} onClick={onStart}><Play aria-hidden="true" /></IconButton>
+              <IconButton label={t("overview.stopProxy")} disabled={accessMode !== "writable" || mutationPending || !workerRunning} onClick={onStop}><Square aria-hidden="true" /></IconButton>
+              <IconButton label={t("overview.restartWorker")} disabled={accessMode !== "writable" || mutationPending || !workerRunning || !providerEligible || !codexReady} onClick={requestSidebarRestart}><RotateCw aria-hidden="true" /></IconButton>
+            </div>
+          </div>
+          <IconButton
+            className="sidebar-supervisor-exit"
+            label={t("supervisor.exit")}
+            disabled={accessMode !== "writable" || mutationPending || !supervisorIdentified}
+            onClick={requestSidebarShutdown}
+          ><Power aria-hidden="true" /></IconButton>
+          <label className="sidebar-locale" htmlFor="mobile-locale-select">
+            <Languages aria-hidden="true" />
+            <span>{t("locale.label")}</span>
+            <select id="mobile-locale-select" value={locale} onChange={(event) => onLocaleChange(event.target.value as Locale)}>
+              <option value="en">English</option>
+              <option value="zh-CN">简体中文</option>
+            </select>
+          </label>
+        </SheetContent>
+      </Sheet>
       <aside
-        ref={asideRef}
-        className={cx("sidebar", mobileOpen && "sidebar-open")}
+        className="sidebar desktop-sidebar"
         aria-label={t("nav.label")}
-        aria-modal={mobileOpen || undefined}
-        role={mobileOpen ? "dialog" : undefined}
       >
         <div className="sidebar-brand">
           <div className="brand-symbol" aria-hidden="true"><TerminalSquare /></div>
@@ -402,10 +391,7 @@ export function Shell({
               ref={menuRef}
               className="menu-button"
               label={t("a11y.openNav")}
-              onClick={() => {
-                restoreMenuOnCloseRef.current = true;
-                setMobileOpen(true);
-              }}
+              onClick={() => setMobileOpen(true)}
             >
               <Menu aria-hidden="true" />
             </IconButton>
@@ -421,9 +407,17 @@ export function Shell({
               <ShieldCheck aria-hidden="true" />
               {accessMode === "writable" ? t("access.manage") : t("access.readOnly")}
             </StatusBadge>
-            <IconButton label={t("a11y.refresh")} disabled={mutationPending} onClick={onRefresh}>
-              <RefreshCw aria-hidden="true" />
-            </IconButton>
+            <Tooltip>
+              <TooltipTrigger render={<IconButton label={t("a11y.refresh")} disabled={mutationPending} onClick={onRefresh}><RefreshCw aria-hidden="true" /></IconButton>} />
+              <TooltipContent>{t("a11y.refresh")}</TooltipContent>
+            </Tooltip>
+            <DropdownMenu>
+              <DropdownMenuTrigger render={<IconButton label="More console actions"><Ellipsis aria-hidden="true" /></IconButton>} />
+              <DropdownMenuContent>
+                <DropdownMenuItem onClick={onRefresh}>{t("a11y.refresh")}</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => navigate("system")}>{t("nav.system")}</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
         {accessMode === "read-only" ? (

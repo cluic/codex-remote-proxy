@@ -284,7 +284,7 @@ test("clears provider secrets before both local validation and backend failure r
   await page.getByLabel("API key").fill(localSecret);
   await observePasswordValues(page);
   await page.getByRole("button", { name: "Save provider" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.locator(".form-error")).toBeVisible();
   await expect(page.getByLabel("API key")).toHaveValue("");
   const localSnapshots = await stopPasswordObserver(page);
   expect(JSON.stringify(localSnapshots)).not.toContain(localSecret);
@@ -295,7 +295,7 @@ test("clears provider secrets before both local validation and backend failure r
   await page.getByLabel("API key").fill(backendSecret);
   await observePasswordValues(page);
   await page.getByRole("button", { name: "Save provider" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByTestId("global-message").locator(".notice-danger")).toBeVisible();
   await expect(page.getByLabel("API key")).toHaveValue("");
   const backendSnapshots = await stopPasswordObserver(page);
   expect(JSON.stringify(backendSnapshots)).not.toContain(backendSecret);

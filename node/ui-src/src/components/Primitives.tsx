@@ -1,3 +1,5 @@
+"use client";
+
 import {
   AlertCircle,
   CheckCircle2,
@@ -14,13 +16,13 @@ import {
   type ReactNode,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
-  useEffect,
-  useId,
   useRef
 } from "react";
 
 import { ApiError } from "../api";
 import type { Translator, TranslationKey } from "../i18n";
+import { Button as BaseButton } from "./ui/button";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
 
 export function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
@@ -36,9 +38,14 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   ref
 ) {
   return (
-    <button
+    <BaseButton
       ref={ref}
       type={type}
+      variant={variant === "primary"
+        ? "default"
+        : variant === "danger"
+          ? "destructive"
+          : variant}
       className={cx("button", `button-${variant}`, className)}
       disabled={disabled || busy}
       aria-busy={busy || undefined}
@@ -46,7 +53,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     >
       {busy ? <LoaderCircle className="icon spin" aria-hidden="true" /> : null}
       {children}
-    </button>
+    </BaseButton>
   );
 });
 
@@ -60,16 +67,18 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   ref
 ) {
   return (
-    <button
+    <BaseButton
       ref={ref}
       type={type}
+      variant="outline"
+      size="icon-sm"
       className={cx("icon-button", className)}
       aria-label={label}
       title={label}
       {...props}
     >
       {children}
-    </button>
+    </BaseButton>
   );
 });
 
@@ -312,8 +321,6 @@ type ModalProps = PropsWithChildren<{
   t: Translator;
 }>;
 
-let modalFocusGeneration = 0;
-
 export function Modal({
   open,
   title,
@@ -324,83 +331,34 @@ export function Modal({
   t,
   children
 }: ModalProps) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const generatedId = useId();
-  const titleId = `${generatedId}-title`;
-  const descriptionId = `${generatedId}-description`;
   const returnFocusRef = useRef<HTMLElement | null>(null);
-  const focusFrameRef = useRef<number | null>(null);
-  const restoreFrameRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return undefined;
-    if (open && !dialog.open) {
-      modalFocusGeneration += 1;
-      if (restoreFrameRef.current !== null) {
-        cancelAnimationFrame(restoreFrameRef.current);
-        restoreFrameRef.current = null;
-      }
-      returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      dialog.showModal();
-      focusFrameRef.current = requestAnimationFrame(() => {
-        focusFrameRef.current = null;
-        const target = dialog.querySelector<HTMLElement>("[autofocus]")
-          ?? dialog.querySelector<HTMLElement>("input, select, textarea, button");
-        target?.focus({ preventScroll: true });
-      });
-    } else if (!open && dialog.open) {
-      dialog.close();
-    }
-    return () => {
-      if (focusFrameRef.current !== null) {
-        cancelAnimationFrame(focusFrameRef.current);
-        focusFrameRef.current = null;
-      }
-      if (restoreFrameRef.current !== null) {
-        cancelAnimationFrame(restoreFrameRef.current);
-        restoreFrameRef.current = null;
-      }
-    };
-  }, [open]);
-
-  const restoreFocus = () => {
-    const target = returnFocusRef.current;
-    const generation = modalFocusGeneration;
-    if (restoreFrameRef.current !== null) cancelAnimationFrame(restoreFrameRef.current);
-    restoreFrameRef.current = requestAnimationFrame(() => {
-      restoreFrameRef.current = null;
-      if (generation === modalFocusGeneration
-        && target?.isConnected
-        && (document.activeElement === document.body || document.activeElement === null)) {
-        target.focus({ preventScroll: true });
-      }
-    });
-  };
-
   return (
-    <dialog
-      ref={dialogRef}
-      className={cx("modal", `modal-${size}`)}
-      aria-labelledby={titleId}
-      aria-describedby={description ? descriptionId : undefined}
-      onCancel={(event) => { event.preventDefault(); onClose(); }}
-      onClose={restoreFocus}
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+        else returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      }}
     >
+      <DialogContent
+        className={cx("modal", `modal-${size}`)}
+        initialFocus={() => document.querySelector<HTMLElement>("[data-slot='dialog-content'] [autofocus]")
+          ?? document.querySelector<HTMLElement>("[data-slot='dialog-content'] input, [data-slot='dialog-content'] select, [data-slot='dialog-content'] textarea, [data-slot='dialog-content'] button")}
+        finalFocus={() => returnFocusRef.current}
+      >
       <div className="modal-frame">
         <header className="modal-header">
           <div>
-            <h2 id={titleId}>{title}</h2>
-            {description ? <p id={descriptionId}>{description}</p> : null}
+            <DialogTitle>{title}</DialogTitle>
+            {description ? <DialogDescription>{description}</DialogDescription> : null}
           </div>
-          <IconButton label={t("a11y.closeDialog")} onClick={onClose}>
-            <X aria-hidden="true" />
-          </IconButton>
+          <DialogClose render={<IconButton label={t("a11y.closeDialog")}><X aria-hidden="true" /></IconButton>} />
         </header>
         <div className="modal-body">{children}</div>
         {footer ? <footer className="modal-footer">{footer}</footer> : null}
       </div>
-    </dialog>
+      </DialogContent>
+    </Dialog>
   );
 }
 

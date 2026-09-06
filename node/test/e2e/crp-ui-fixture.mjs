@@ -1,7 +1,7 @@
 import { test as base, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import { join, resolve } from "node:path";
@@ -1753,10 +1753,7 @@ export async function createFixtureHarness({ failAt = null, onResource = () => {
     resources.tempRoot = mkdtempSync(join(os.tmpdir(), "crp-ui-e2e-"));
     onResource("tempRoot", resources.tempRoot);
     const uiRoot = join(resources.tempRoot, "ui");
-    mkdirSync(uiRoot, { recursive: true });
-    for (const asset of ["index.html", "styles.css", "app.js"]) {
-      copyFileSync(join(REPO_UI_ROOT, asset), join(uiRoot, asset));
-    }
+    cpSync(REPO_UI_ROOT, uiRoot, { recursive: true, dereference: false, errorOnExist: true });
     const controlTokenPath = join(resources.tempRoot, "control-token");
     resources.upstream = await createMockUpstream();
     onResource("upstreamOrigin", resources.upstream.origin);
@@ -2299,6 +2296,7 @@ export async function assertLayoutIntegrity(page) {
       const rect = element.getBoundingClientRect();
       const sidebar = element.closest(".sidebar");
       return !element.closest(".visually-hidden")
+        && !element.matches("[data-base-ui-focus-guard]")
         && !element.closest(".layout-contained-scroll")
         && !element.closest("[hidden]")
         && !element.closest("dialog:not([open])")
@@ -2348,6 +2346,7 @@ export async function assertLayoutIntegrity(page) {
       const rect = element.getBoundingClientRect();
       const sidebar = element.closest(".sidebar");
       return style.display !== "none" && style.visibility !== "hidden"
+        && !element.matches("[data-base-ui-focus-guard]")
         && !element.closest(".visually-hidden")
         && !element.closest(".layout-contained-scroll")
         && !element.closest("dialog:not([open])")

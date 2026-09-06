@@ -1,0 +1,21 @@
+1:"$Sreact.fragment"
+2:I[530,["313","static/chunks/313-2f8466e707e35ec0.js","996","static/chunks/996-a0f483af1b22140d.js","177","static/chunks/app/layout-1e45b7c268af9839.js"],"ClientProviders"]
+3:I[1133,[],""]
+4:I[4297,[],""]
+5:I[4525,["345","static/chunks/app/not-found-f9320e13bb9b8591.js"],"default"]
+6:I[9568,["345","static/chunks/app/not-found-f9320e13bb9b8591.js"],""]
+8:I[8996,["313","static/chunks/313-2f8466e707e35ec0.js","996","static/chunks/996-a0f483af1b22140d.js","186","static/chunks/app/system/page-d34dd020730b4798.js"],"CrpRoute"]
+9:I[1872,[],"OutletBoundary"]
+a:"$Sreact.suspense"
+d:I[1872,[],"ViewportBoundary"]
+f:I[1872,[],"MetadataBoundary"]
+11:I[1050,["219","static/chunks/app/global-error-c3441224e90990a1.js"],"default"]
+:HL["/_next/static/css/9e1661e816f29201.css","style"]
+:HL["/_next/static/css/5ee22adf52b0619f.css","style"]
+7:"CRP requires JavaScript. CRP 需要启用 JavaScript。"
+c:X
+0:{"P":null,"c":["","system"],"q":"","i":false,"f":[[["",{"children":["system",{"children":["__PAGE__",{},"$undefined","$undefined",4608]},"$undefined","$undefined",4608]},"$undefined","$undefined",4624],[["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/css/9e1661e816f29201.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}],["$","link","1",{"rel":"stylesheet","href":"/_next/static/css/5ee22adf52b0619f.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}]],["$","html",null,{"lang":"en","aria-busy":"true","children":["$","body",null,{"children":[["$","$L2",null,{"children":["$","$L3",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L4",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":[["$","main",null,{"className":"standalone-state","aria-labelledby":"not-found-title","children":["$","div",null,{"className":"standalone-card","children":[["$","div",null,{"className":"brand-symbol","aria-hidden":"true","children":["$","$L5",null,{"ref":"$undefined","iconNode":[["path",{"d":"m7 11 2-2-2-2","key":"1lz0vl"}],["path",{"d":"M11 13h4","key":"1p7l4v"}],["rect",{"width":"18","height":"18","x":"3","y":"3","rx":"2","ry":"2","key":"1m3agn"}]],"className":"lucide-square-terminal"}]}],["$","h1",null,{"id":"not-found-title","children":"Page not found"}],["$","p",null,{"children":"Open the CRP local console from its root address."}],["$","$L6",null,{"className":"button button-primary","href":"/overview","children":"Open Overview"}]]}]}],[]],"forbidden":"$undefined","unauthorized":"$undefined"}]}],["$","noscript",null,{"children":"CRP requires JavaScript. CRP 需要启用 JavaScript。"}]]}]}]]}],{"children":[["$","$1","c",{"children":[null,["$","$L3",null,{"parallelRouterKey":"children","error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L4",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":"$undefined","forbidden":"$undefined","unauthorized":"$undefined"}]]}],{"children":[["$","$1","c",{"children":[["$","$L8",null,{"route":"system"}],null,["$","$L9",null,{"children":["$","$a",null,{"name":"Next.MetadataOutlet","children":"$@b"}]}]]}],{},null,false,null]},null,false,"$c"]},null,false,null],["$","$1","h",{"children":[null,["$","$Ld",null,{"children":"$Le"}],["$","div",null,{"hidden":true,"children":["$","$Lf",null,{"children":["$","$a",null,{"name":"Next.Metadata","children":"$L10"}]}]}],null]}],false]],"m":"$undefined","G":["$11",[]],"S":true,"h":null,"r":"$undefined","s":"$undefined","a":"$undefined","l":"$undefined","p":"$undefined","d":"$undefined","b":"crp-c000f69fcd8493278df3809ab25b8d42f0687ec4255264dbe4c1f6e6d42c6d1a"}
+c:C
+e:[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}],["$","meta","2",{"name":"theme-color","content":"#f4f6f4"}],["$","meta","3",{"name":"color-scheme","content":"light"}]]
+b:null
+10:[["$","meta","0",{"name":"description","content":"Local management console for Codex Remote Proxy"}]]

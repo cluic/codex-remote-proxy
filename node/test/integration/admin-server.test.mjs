@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as realFileOperations from "node:fs";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
@@ -20,6 +21,8 @@ import { CrpError } from "../../src/shared/errors.mjs";
 const SECRET = "admin-api-complete-secret-sentinel";
 const CREDENTIAL_REF = "credential-ref-must-not-pass";
 const LOCAL_ACCESS_TOKEN = "A".repeat(43);
+const TEST_FLIGHT_SCRIPT = "self.__crpFlight=1;";
+const TEST_FLIGHT_HASH = `sha256-${createHash("sha256").update(TEST_FLIGHT_SCRIPT, "utf8").digest("base64")}`;
 const NO_HISTORY_REPAIR = Object.freeze({
   required: false,
   completed: false,
@@ -732,13 +735,31 @@ function createServices() {
   };
 }
 
+function writeAdminUiFixture(uiDir) {
+  mkdirSync(uiDir, { recursive: true });
+  writeFileSync(join(uiDir, "index.html"), `<!doctype html><title>CRP test UI</title><script>${TEST_FLIGHT_SCRIPT}</script>\n`);
+  writeFileSync(join(uiDir, "404.html"), "<!doctype html><title>CRP test UI not found</title>\n");
+  writeFileSync(join(uiDir, "styles.css"), "body { color: black; }\n");
+  writeFileSync(join(uiDir, "app.js"), "globalThis.__crpTest = true;\n");
+  writeFileSync(join(uiDir, "providers.txt"), "CRP test Flight payload\n");
+  writeFileSync(join(uiDir, ".crp-ui-manifest.json"), `${JSON.stringify({
+    version: 1,
+    buildId: "crp-admin-test-build",
+    assets: {
+      "/": { file: "index.html", inlineScriptHashes: [TEST_FLIGHT_HASH] },
+      "/index.html": { file: "index.html", inlineScriptHashes: [TEST_FLIGHT_HASH] },
+      "/styles.css": { file: "styles.css", inlineScriptHashes: [] },
+      "/app.js": { file: "app.js", inlineScriptHashes: [] },
+      "/providers.txt": { file: "providers.txt", inlineScriptHashes: [] }
+    },
+    notFound: { file: "404.html", inlineScriptHashes: [] }
+  }, null, 2)}\n`);
+}
+
 async function createHarness(t, overrides = {}) {
   const dir = mkdtempSync(join(os.tmpdir(), "crp-admin-server-"));
   const uiDir = join(dir, "ui");
-  mkdirSync(uiDir, { recursive: true });
-  writeFileSync(join(uiDir, "index.html"), "<!doctype html><title>CRP test UI</title>\n");
-  writeFileSync(join(uiDir, "styles.css"), "body { color: black; }\n");
-  writeFileSync(join(uiDir, "app.js"), "globalThis.__crpTest = true;\n");
+  writeAdminUiFixture(uiDir);
   const controlTokenPath = join(dir, "control-token");
   const auth = new SessionAuth({ controlTokenPath });
   const services = createServices();
@@ -2584,30 +2605,34 @@ test("returns stable sanitized errors and strict route, method, and path failure
   assertNoSensitiveResponse(conflict);
 });
 
-test("serves only explicit static assets with safe headers and an index fallback", async (t) => {
+test("serves only manifest-listed static assets with strict headers and Flight MIME", async (t) => {
   const harness = await createHarness(t);
   for (const [path, type, content] of [
     ["/", "text/html; charset=utf-8", "CRP test UI"],
     ["/index.html", "text/html; charset=utf-8", "CRP test UI"],
     ["/styles.css", "text/css; charset=utf-8", "color: black"],
     ["/app.js", "text/javascript; charset=utf-8", "__crpTest"],
-    ["/providers/provider-1", "text/html; charset=utf-8", "CRP test UI"]
+    ["/providers.txt?_rsc=cache-buster", "text/x-component; charset=utf-8", "Flight payload"]
   ]) {
     const result = await harness.request(path);
     assert.equal(result.response.status, 200);
     assert.equal(result.response.headers.get("content-type"), type);
     assert.equal(result.response.headers.get("cache-control"), "no-store");
     assert.equal(result.response.headers.get("x-content-type-options"), "nosniff");
+    assert.match(result.response.headers.get("content-security-policy"), /script-src 'self'/);
+    if (path === "/") assert.match(result.response.headers.get("content-security-policy"), new RegExp(TEST_FLIGHT_HASH));
     assert.match(result.text, new RegExp(content));
   }
 
-  const favicon = await harness.request("/favicon.ico");
-  assert.equal(favicon.response.status, 204);
-  assert.equal(favicon.text, "");
-  assert.equal(favicon.response.headers.get("cache-control"), "no-store");
-
-  const missingAsset = await harness.request("/missing.css");
+  const missingAsset = await harness.request("/providers/provider-1");
   assert.equal(missingAsset.response.status, 404);
+  assert.match(missingAsset.text, /not found/);
+  assert.equal(missingAsset.response.headers.get("content-type"), "text/html; charset=utf-8");
+  const privateManifest = await harness.request("/.crp-ui-manifest.json");
+  assert.equal(privateManifest.response.status, 404);
+  assert.equal(privateManifest.text.includes("crp-admin-test-build"), false);
+  const traversal = await harness.request("/providers.txt", { rawPath: "/providers/../providers.txt" });
+  assert.equal(traversal.response.status, 404);
   const postUi = await harness.request("/", { method: "POST" });
   assert.equal(postUi.response.status, 405);
 });
@@ -2633,6 +2658,8 @@ function supervisorDependencies(t, {
     runtimeConfigPath: join(home, ".codex-remote-proxy", "node", "proxy-config.json"),
     capturePath: join(home, ".codex-remote-proxy", "traffic.sqlite3")
   };
+  const uiDir = join(home, "ui");
+  writeAdminUiFixture(uiDir);
   const order = [];
   const worker = {
     getPublicState: () => workerState(),
@@ -2699,6 +2726,7 @@ function supervisorDependencies(t, {
   const options = {
     home,
     paths,
+    uiDir,
     pid: 4242,
     now: () => "2026-07-13T03:00:00.000Z",
     privateTokenLoader: ({ path }) => {

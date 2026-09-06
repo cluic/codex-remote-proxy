@@ -200,7 +200,7 @@ test("does not enter the stopped state when the supervisor identity changed", as
   await page.getByRole("button", { name: "Exit CRP" }).click();
   const confirmation = page.getByRole("dialog", { name: "Exit CRP?" });
   await confirmation.getByRole("button", { name: "Exit CRP" }).click();
-  const alert = page.getByRole("alert");
+  const alert = page.getByTestId("global-message").locator(".notice-danger");
   await expect(alert).toContainText("CRP could not complete the operation");
   await alert.locator("summary").click();
   await expect(alert).toContainText("SUPERVISOR_IDENTITY_CHANGED");
@@ -230,7 +230,7 @@ test("rejects a non-minimal shutdown acceptance without going offline", async ({
   await page.getByRole("button", { name: "Exit CRP" }).click();
   const confirmation = page.getByRole("dialog", { name: "Exit CRP?" });
   await confirmation.getByRole("button", { name: "Exit CRP" }).click();
-  const alert = page.getByRole("alert");
+  const alert = page.getByTestId("global-message").locator(".notice-danger");
   await expect(alert).toContainText("CRP could not complete the operation");
   await alert.locator("summary").click();
   await expect(alert).toContainText("INTERNAL_ERROR");
@@ -301,7 +301,7 @@ for (const [label, payload] of [
     const dialog = await openProviderTest(page, "Provider Alpha");
     await dialog.getByLabel("Test model").fill("gpt-5.1-codex-mini");
     await dialog.getByRole("button", { name: "Run test" }).click();
-    const alert = page.getByRole("alert");
+    const alert = page.getByTestId("global-message").locator(".notice-danger");
     await expect(alert).toContainText("CRP could not complete the operation");
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await alert.locator("summary").click();
@@ -378,7 +378,7 @@ test("folds allowlisted technical error details and omits unknown fields", async
   await openCrp(page, crp);
   await page.getByRole("link", { name: "System" }).click();
   await page.getByRole("button", { name: "Generate diagnostic summary" }).click();
-  const alert = page.getByRole("alert");
+  const alert = page.getByTestId("global-message").locator(".notice-danger");
   const technical = alert.locator("details");
   await expect(technical).not.toHaveAttribute("open", "");
   await technical.locator("summary").click();

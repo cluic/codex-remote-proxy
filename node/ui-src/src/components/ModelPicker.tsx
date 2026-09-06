@@ -32,6 +32,7 @@ export function ModelPicker({
   if (models.length === 0) {
     return (
       <Field
+        className="min-w-0"
         id={id}
         name="testModel"
         label={t("providers.testModel")}
@@ -46,8 +47,9 @@ export function ModelPicker({
   }
 
   return (
-    <div className="model-picker">
+    <div className="model-picker grid min-w-0 gap-3">
       <SelectField
+        className="min-w-0"
         id={id}
         name="testModelCatalog"
         label={t("providers.testModel")}
@@ -70,6 +72,7 @@ export function ModelPicker({
       </SelectField>
       {manual ? (
         <Field
+          className="min-w-0"
           id={`${id}-manual`}
           name="testModel"
           label={t("providers.manualModel")}
