@@ -76,7 +76,7 @@ export function normalizeUiSourceBytes(bytes) {
   return Buffer.from(bytes.toString("utf8").replace(/\r\n?/g, "\n"), "utf8");
 }
 
-async function sourceDigest() {
+export async function sourceDigest() {
   const files = await listFiles(uiSourceRoot, {
     ignoredDirectories: ignoredSourceDirectories,
     ignoredFiles: ignoredSourceFiles
@@ -162,7 +162,7 @@ function assertSafeReference(value, filename, knownPaths) {
   if (!knownPaths.has(pathname)) throw new Error(`${filename} references an unknown UI resource: ${value}`);
 }
 
-async function buildManifest(outputRoot, buildId) {
+export async function inspectUiAssets(outputRoot, buildId) {
   const files = await listFiles(outputRoot, { ignoredFiles: new Set([manifestName]) });
   const assets = {};
   const html = [];
@@ -217,8 +217,25 @@ async function buildManifest(outputRoot, buildId) {
       inlineScriptHashes: notFound.inlineScriptHashes
     }
   };
+  return manifest;
+}
+
+async function buildManifest(outputRoot, buildId) {
+  const manifest = await inspectUiAssets(outputRoot, buildId);
   await writeFile(join(outputRoot, manifestName), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return manifest;
+}
+
+export async function verifyCommittedUiAssets() {
+  const buildId = await sourceDigest();
+  const expectedManifest = await inspectUiAssets(generatedUiRoot, buildId);
+  const committedManifest = JSON.parse(await readFile(join(generatedUiRoot, manifestName), "utf8"));
+  assert.deepEqual(
+    committedManifest,
+    expectedManifest,
+    "committed UI manifest does not match the source and reviewed assets"
+  );
+  return expectedManifest;
 }
 
 async function copyTree(source, destination) {

@@ -30,7 +30,7 @@ npx @cluic/codex-remote-proxy ui
 
 `crp ui` starts or discovers the local supervisor and opens the management UI. A saved explicit language choice wins; otherwise the interface uses the first supported Chinese or English browser/system preference and falls back to English. Inferred language is not persisted.
 
-The management UI is implemented in `node/ui-src/` with Next.js App Router, React, TypeScript, Tailwind CSS, shadcn source components backed by Base UI, and Lucide icons. The deterministic Webpack build produces a reviewed static export and asset manifest under `node/ui/`; the package needs no frontend runtime server and the Admin server serves every route and chunk from the same loopback origin. The UI uses no remote font, CDN, telemetry, or source map. Release CI reproduces and verifies the manifest on every supported platform; one local platform run is not evidence for another platform.
+The management UI is implemented in `node/ui-src/` with Next.js App Router, React, TypeScript, Tailwind CSS, shadcn source components backed by Base UI, and Lucide icons. The default Webpack build produces a reviewed static export and asset manifest under `node/ui/`; the package needs no frontend runtime server and the Admin server serves every route and chunk from the same loopback origin. The UI uses no remote font, CDN, telemetry, or source map. Clean Ubuntu Node 22 is the canonical build environment: release gates compare its generated output with the checkout before any candidate build replaces `node/ui/`. Linux, macOS, and Windows validate the committed source digest, manifest, CSP, resources, package allowlist, and their platform-specific tests.
 
 ## What You Can Manage
 

@@ -132,6 +132,7 @@
 - Tailwind migrations must define the legacy CSS cascade order and verify that new utilities take effect.
 - Authenticated preview diagnostics must not print response headers containing `Set-Cookie`.
 - Static UI release validation must use a clean checkout with canonical LF line endings.
+- Canonical verification must compare the untouched checked-in UI before any build replaces it.
 
 ## Required Checks
 

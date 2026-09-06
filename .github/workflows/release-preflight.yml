@@ -9,6 +9,7 @@ on:
       - "node/bin/**"
       - "node/src/**"
       - "node/ui/**"
+      - "node/ui-src/**"
       - "node/scripts/**"
       - "node/test/package-content.test.mjs"
       - "node/test/native-keyring-smoke.test.mjs"
@@ -17,6 +18,7 @@ on:
       - "node/package-lock.json"
       - "node/.changeset/**"
       - "node/RELEASING.md"
+      - ".gitattributes"
 
 permissions:
   contents: read
@@ -37,16 +39,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 24
+          node-version: 22.19.0
           package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build and verify canonical UI
-        run: |
-          npm run build:ui
-          npm run verify:ui-build
+      - name: Verify canonical UI checkout
+        run: npm run verify:ui-build
 
       - name: Run syntax checks
         run: npm run lint

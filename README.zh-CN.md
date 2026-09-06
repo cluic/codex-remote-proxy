@@ -30,7 +30,7 @@ npx @cluic/codex-remote-proxy ui
 
 `crp ui` 会启动或发现本地 Supervisor，并打开管理界面。已保存的明确语言选择优先；否则按浏览器/系统语言偏好选择第一个受支持的中文或英文，均不匹配时默认英文。推断出的语言不会写入浏览器存储。
 
-管理界面使用 `node/ui-src/` 中的 Next.js App Router、React、TypeScript、Tailwind CSS、基于 Base UI 的 shadcn 源码组件和 Lucide 图标实现。确定性 Webpack 构建会在 `node/ui/` 生成经过审核的静态导出及资源清单；发布包不需要前端运行时服务器，Admin Server 从同一个回环来源提供全部页面和 chunk。界面不包含远程字体、CDN、遥测或 source map。发布 CI 会在每个受支持平台复现并校验资源清单；一个本地平台的结果不能替代另一平台的证据。
+管理界面使用 `node/ui-src/` 中的 Next.js App Router、React、TypeScript、Tailwind CSS、基于 Base UI 的 shadcn 源码组件和 Lucide 图标实现。默认 Webpack 构建会在 `node/ui/` 生成经过审核的静态导出及资源清单；发布包不需要前端运行时服务器，Admin Server 从同一个回环来源提供全部页面和 chunk。界面不包含远程字体、CDN、遥测或 source map。干净的 Ubuntu Node 22 是规范构建环境：发布门禁会在任何候选构建覆盖 `node/ui/` 前，将其生成结果与 checkout 比较。Linux、macOS 和 Windows 会校验已提交的源摘要、清单、CSP、资源、package allowlist 及各自的平台测试。
 
 ## 可以管理什么
 

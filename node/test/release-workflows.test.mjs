@@ -384,10 +384,29 @@ test("platform matrix verifies committed UI assets and canonical Linux build upl
   const workflow = readWorkflowText("platform-tests.yml");
   const verify = extractStepBlock(workflow, "Verify committed UI assets");
   assert.match(verify, /^        run: npm run verify:ui-assets$/m);
-  const canonical = extractStepBlock(workflow, "Build canonical UI");
-  assert.match(canonical, /^        run: npm run build:ui$/m);
+  const generate = extractStepBlock(workflow, "Generate canonical UI artifact");
+  assert.match(generate, /^        run: npm run build:ui$/m);
+  const canonicalStart = workflow.indexOf("  canonical-ui:\n");
+  assert.notEqual(canonicalStart, -1);
+  assert.match(workflow.slice(canonicalStart), /^          node-version: 22\.19\.0$/m);
   const upload = extractStepBlock(workflow, "Upload canonical UI artifact");
   assert.match(upload, /include-hidden-files: true/);
+  assert.match(upload, /^          path: node\/ui\/\*\*$/m);
+});
+
+test("canonical UI verification compares the checkout before candidate generation or publication", () => {
+  const preflight = readWorkflowText("release-preflight.yml");
+  const preflightVerify = extractStepBlock(preflight, "Verify canonical UI checkout");
+  assert.match(preflightVerify, /^        run: npm run verify:ui-build$/m);
+  assert.equal(preflightVerify.includes("npm run build:ui"), false);
+  assert.match(preflight, /^          node-version: 22\.19\.0$/m);
+
+  const release = readWorkflowText("release.yml");
+  const releaseVerify = extractStepBlock(release, "Verify canonical UI checkout");
+  assert.match(releaseVerify, /^        run: npm run verify:ui-build$/m);
+  assert.match(release, /^  release:\n    needs: canonical-ui$/m);
+  assert.match(release, /^          node-version: 22\.19\.0$/m);
+  assert.match(release, /^          node-version: 24$/m);
 });
 
 test("Linux native smoke proves Secret Service and the default collection before Node", () => {
