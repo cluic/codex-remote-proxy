@@ -34,6 +34,10 @@ const cssExternalUrlPattern = /(?:@import\s+|url\(\s*["']?)((?:https?:)?\/\/[^\s
 const javascriptExternalFetchPattern = /\bfetch\(\s*["']((?:https?:)?\/\/[^"']+)/g;
 const inlineScriptPattern = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
 
+function compareStableNames(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function usage() {
   return "Usage: node scripts/build-next-ui.mjs [--verify]";
 }
@@ -53,7 +57,7 @@ async function listFiles(root, { ignoredDirectories = new Set(), ignoredFiles = 
   const files = [];
   async function visit(directory) {
     const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    for (const entry of entries.sort((left, right) => compareStableNames(left.name, right.name))) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
         if (!ignoredDirectories.has(entry.name)) await visit(path);
@@ -65,7 +69,11 @@ async function listFiles(root, { ignoredDirectories = new Set(), ignoredFiles = 
     }
   }
   await visit(root);
-  return files.sort((left, right) => left.localeCompare(right));
+  return files.sort(compareStableNames);
+}
+
+export function normalizeUiSourceBytes(bytes) {
+  return Buffer.from(bytes.toString("utf8").replace(/\r\n?/g, "\n"), "utf8");
 }
 
 async function sourceDigest() {
@@ -76,7 +84,7 @@ async function sourceDigest() {
   const hash = createHash("sha256");
   for (const file of files) {
     const relativePath = relative(uiSourceRoot, file).replaceAll(sep, "/");
-    const bytes = await readFile(file);
+    const bytes = normalizeUiSourceBytes(await readFile(file));
     hash.update(relativePath);
     hash.update("\0");
     hash.update(String(bytes.length));

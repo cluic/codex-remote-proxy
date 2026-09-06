@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "buildId": "crp-eedbe3fefcd97364ec546b73504460e21f4dd29b5ce272dd3cb3d502d9d92ede",
+  "buildId": "crp-dc12d9e333a22397159dfa925d9b359b2cfd31a67af70f908d632e49d7ce8e4d",
   "assets": {
     "/": {
       "file": "index.html",
       "inlineScriptHashes": [
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo=",
-        "sha256-TDU8tGO2IVI6XnB8mi8pULJNbPGv2yj4EoRPZoV458o="
+        "sha256-UO8FrOWjQMtBD8hE2WHVueGNDbJk9IchFuUFEKMHOow="
       ]
     },
     "/__next.__PAGE__.txt": {
@@ -125,12 +125,12 @@
       "file": "_next/static/chunks/webpack-595b3be39883ebd5.js",
       "inlineScriptHashes": []
     },
-    "/_next/static/crp-eedbe3fefcd97364ec546b73504460e21f4dd29b5ce272dd3cb3d502d9d92ede/_buildManifest.js": {
-      "file": "_next/static/crp-eedbe3fefcd97364ec546b73504460e21f4dd29b5ce272dd3cb3d502d9d92ede/_buildManifest.js",
+    "/_next/static/crp-dc12d9e333a22397159dfa925d9b359b2cfd31a67af70f908d632e49d7ce8e4d/_buildManifest.js": {
+      "file": "_next/static/crp-dc12d9e333a22397159dfa925d9b359b2cfd31a67af70f908d632e49d7ce8e4d/_buildManifest.js",
       "inlineScriptHashes": []
     },
-    "/_next/static/crp-eedbe3fefcd97364ec546b73504460e21f4dd29b5ce272dd3cb3d502d9d92ede/_ssgManifest.js": {
-      "file": "_next/static/crp-eedbe3fefcd97364ec546b73504460e21f4dd29b5ce272dd3cb3d502d9d92ede/_ssgManifest.js",
+    "/_next/static/crp-dc12d9e333a22397159dfa925d9b359b2cfd31a67af70f908d632e49d7ce8e4d/_ssgManifest.js": {
+      "file": "_next/static/crp-dc12d9e333a22397159dfa925d9b359b2cfd31a67af70f908d632e49d7ce8e4d/_ssgManifest.js",
       "inlineScriptHashes": []
     },
     "/_next/static/css/9e1661e816f29201.css": {
@@ -160,7 +160,7 @@
     "/activity": {
       "file": "activity.html",
       "inlineScriptHashes": [
-        "sha256-9eoSDB4NNZJzv9qJOvOJ4qSoPCIiHI4tgIK8hp+NRpI=",
+        "sha256-94eg1UkVziRs3oL8bj94Bl0EAvkfx6lK/r3TMry8ypY=",
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo="
       ]
     },
@@ -183,7 +183,7 @@
     "/forwarding": {
       "file": "forwarding.html",
       "inlineScriptHashes": [
-        "sha256-78lFojh26dr4bsjkkoZQceBtiM3wHoWJowtDA4He56A=",
+        "sha256-1acia/hTQsUAT597p5GRM67xik3Pg6I5lA/MUcX4vDU=",
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo="
       ]
     },
@@ -207,7 +207,7 @@
       "file": "index.html",
       "inlineScriptHashes": [
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo=",
-        "sha256-TDU8tGO2IVI6XnB8mi8pULJNbPGv2yj4EoRPZoV458o="
+        "sha256-UO8FrOWjQMtBD8hE2WHVueGNDbJk9IchFuUFEKMHOow="
       ]
     },
     "/index.txt": {
@@ -218,7 +218,7 @@
       "file": "model-mappings.html",
       "inlineScriptHashes": [
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo=",
-        "sha256-uZL9vaM2InA7SZe22eANWJa66hR1oHRly0WOkBzllZs="
+        "sha256-ezv0HUUEkXRxPanMXei9rNa2M4uF+T+ee/Yg+zskqNc="
       ]
     },
     "/model-mappings.txt": {
@@ -240,8 +240,8 @@
     "/overview": {
       "file": "overview.html",
       "inlineScriptHashes": [
-        "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo=",
-        "sha256-anVVz5Dsu5X5nRmpJDY+2eb+5LiNNlIW50CoEYAwLu4="
+        "sha256-AVNnKOV6Jyyv77dJQc8XsdgSWeGaF3DJGc3sxBOul1Y=",
+        "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo="
       ]
     },
     "/overview.txt": {
@@ -264,7 +264,7 @@
       "file": "providers.html",
       "inlineScriptHashes": [
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo=",
-        "sha256-mzfcznkRLIzq3SWiiPWzZgVH5B6//2vd1hBKbBoIqLw="
+        "sha256-skPoB2rgM8asc6vOMwFoVmO6xiIZjNCROgVlj5ZpO4Q="
       ]
     },
     "/providers.txt": {
@@ -287,7 +287,7 @@
       "file": "routing-rules.html",
       "inlineScriptHashes": [
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo=",
-        "sha256-UHSQjCIa+/z8aE5iiSdzsvUglBh9VN+BP8gFqAsaCxA="
+        "sha256-mYomZ3BCfqjNfDrPHnNqzlKDGlcTMSK2eu8Mvgm9Qxc="
       ]
     },
     "/routing-rules.txt": {
@@ -309,7 +309,7 @@
     "/setup": {
       "file": "setup.html",
       "inlineScriptHashes": [
-        "sha256-93uQNvQM82JA0gNPQGWCqGpAQyQ8DOd3iVJnGTwBGuI=",
+        "sha256-+XDDdbdUp6dLAmypjKXdW4ptCPV5SHicp4e/QqhHmKc=",
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo="
       ]
     },
@@ -332,7 +332,7 @@
     "/system": {
       "file": "system.html",
       "inlineScriptHashes": [
-        "sha256-1JgpAnz8vGiRbzVgRUe0p7weynx85eDK24OFBd/M7v8=",
+        "sha256-8GP1f8KO6GIBwKlnnvStinbUsoZBO+l8maQnUceWLfc=",
         "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo="
       ]
     },
@@ -357,7 +357,7 @@
     "file": "404.html",
     "inlineScriptHashes": [
       "sha256-OBTN3RiyCV4Bq7dFqZ5a2pAXjnCcCYeTJMO2I/LYKeo=",
-      "sha256-tA9qk/MgfkiTWsl/NLGB1kjdMAseRFe1ZcDK3NEFUzU="
+      "sha256-Usvk0K+P2ZtEn4/omXMUxgRCK2Im9YWe95U1tWu2xfY="
     ]
   }
 }

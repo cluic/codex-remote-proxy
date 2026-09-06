@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { normalizeLockfileForUiDigest } from "../scripts/build-next-ui.mjs";
+import {
+  normalizeLockfileForUiDigest,
+  normalizeUiSourceBytes
+} from "../scripts/build-next-ui.mjs";
 import { syncLockfileVersion } from "../scripts/sync-lockfile-version.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -294,6 +297,13 @@ test("UI build digest ignores version-only lockfile changes", () => {
   assert.notDeepEqual(
     normalizeLockfileForUiDigest(lockfile),
     normalizeLockfileForUiDigest(nextVersion)
+  );
+});
+
+test("UI build digest normalizes source line endings", () => {
+  assert.deepEqual(
+    normalizeUiSourceBytes(Buffer.from("first\r\nsecond\rthird\n", "utf8")),
+    Buffer.from("first\nsecond\nthird\n", "utf8")
   );
 });
 
