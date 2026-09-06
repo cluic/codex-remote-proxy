@@ -58,6 +58,8 @@ The production UI is a Next.js App Router static export produced by the determin
 
 The UI build ID fingerprints the UI source and dependency graph while normalizing the package-lock root version fields. A Changesets version-only release PR therefore keeps the committed UI manifest compatible without rebuilding frontend assets; dependency graph changes still require a fresh `build:ui` output.
 
+Canonical UI artifacts are generated with the default Webpack build on a clean Ubuntu Node 22 runner. Release preflight compares that build byte-for-byte with the committed `ui/` tree; macOS, Windows, and Linux platform jobs validate the committed manifest, CSP hashes, file set, and package allowlist while running their platform-specific tests. Do not replace canonical artifacts with a local host build.
+
 Historical M2D/V7 working-tree evidence on Node 22.19 on 2026-07-16:
 
 - exact full suite: 451/451 total (`401` unit-core + `8` isolated capture + `41` ordinary integration + `1` serial core-chain);

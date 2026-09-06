@@ -38,6 +38,7 @@
     "dev:cli": "node bin/crp.mjs",
     "lint": "node scripts/check-source.mjs",
     "build:ui": "node scripts/build-next-ui.mjs",
+    "verify:ui-assets": "node scripts/verify-ui-assets.mjs",
     "typecheck:ui": "tsc -p tsconfig.ui.json",
     "verify:ui-build": "node scripts/verify-ui-build.mjs",
     "test": "node scripts/run-tests.mjs",

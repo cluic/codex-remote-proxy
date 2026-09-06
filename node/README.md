@@ -23,6 +23,8 @@ npx @cluic/codex-remote-proxy ui
 
 The responsive management UI under `ui-src/` uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn source components backed by Base UI, and Lucide icons. Build tools and source are not shipped: the deterministic Webpack-backed `build:ui` creates a reviewed static export and `.crp-ui-manifest.json` under `ui/`, and the Admin server serves its pages, Flight data, and hashed chunks from the same loopback origin without a frontend runtime server. Release CI must reproduce `verify:ui-build` on every supported platform; a local result proves only its host platform.
 
+Release artifacts use a clean Ubuntu Node 22 Webpack build as the canonical output. Platform jobs validate the committed manifest and security policy alongside their native tests; local host builds must not replace the canonical `ui/` tree.
+
 ## Product Behavior
 
 Provider creation can start from maintained public presets or a custom OpenAI-compatible endpoint. The initial catalog includes OpenRouter with the required `https://openrouter.ai/api/v1` base URL and Bearer authentication defaults; credentials remain write-only.
