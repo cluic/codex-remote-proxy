@@ -1,0 +1,562 @@
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ListTree,
+  Pencil,
+  Plus,
+  Power,
+  PowerOff,
+  Trash2,
+  X
+} from "lucide-react";
+import {
+  type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useState
+} from "react";
+
+import {
+  Button,
+  EmptyState,
+  Field,
+  FormError,
+  IconButton,
+  Modal,
+  Notice,
+  PageHeader,
+  SelectField,
+  StatusBadge,
+  cx
+} from "../components/Primitives";
+import { formatDate, formatNumber, type Translator } from "../i18n";
+import type {
+  Locale,
+  Provider,
+  RoutingRule,
+  RoutingRuleGroup,
+  RoutingRuleGroupInput
+} from "../types";
+
+type RoutingRulesProps = {
+  locale: Locale;
+  t: Translator;
+  groups: RoutingRuleGroup[];
+  providers: Provider[];
+  readOnly: boolean;
+  pending: string | null;
+  onCreate: (input: RoutingRuleGroupInput) => Promise<RoutingRuleGroup | null>;
+  onUpdate: (id: string, input: RoutingRuleGroupInput) => Promise<RoutingRuleGroup | null>;
+  onDelete: (id: string) => Promise<boolean>;
+  onActivate: (id: string | null) => Promise<boolean>;
+};
+
+type DialogMode = "create" | "edit" | "delete" | null;
+type DraftRule = RoutingRule & { key: string; modelDraft: string };
+
+let nextRuleKey = 0;
+
+function draftRule(rule?: RoutingRule): DraftRule {
+  nextRuleKey += 1;
+  return {
+    key: `routing-rule-${nextRuleKey}`,
+    models: [...(rule?.models ?? [])],
+    modelDraft: "",
+    providerIds: [...(rule?.providerIds ?? [])]
+  };
+}
+
+function parseModelNames(value: string): string[] {
+  return value.split(/[\n,]+/)
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
+function validModelName(model: string): boolean {
+  return model.length > 0
+    && model.trim() === model
+    && [...model].length <= 256
+    && new TextEncoder().encode(model).length <= 512
+    && !/[\u0000-\u001f\u007f]/.test(model);
+}
+
+function RoutingRuleForm({
+  formId,
+  group,
+  providers,
+  t,
+  onSubmit
+}: {
+  formId: string;
+  group?: RoutingRuleGroup;
+  providers: Provider[];
+  t: Translator;
+  onSubmit: (input: RoutingRuleGroupInput) => Promise<boolean>;
+}) {
+  const [name, setName] = useState(group?.name ?? "");
+  const [rules, setRules] = useState<DraftRule[]>(
+    () => group?.rules.map((rule) => draftRule(rule)) ?? [draftRule()]
+  );
+  const [error, setError] = useState<string | null>(null);
+  const providerById = useMemo(
+    () => new Map(providers.map((provider) => [provider.id, provider])),
+    [providers]
+  );
+
+  const updateRule = (key: string, update: (rule: DraftRule) => DraftRule) => {
+    setRules((current) => current.map((rule) => rule.key === key ? update(rule) : rule));
+  };
+
+  const moveProvider = (ruleKey: string, index: number, direction: -1 | 1) => {
+    updateRule(ruleKey, (rule) => {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= rule.providerIds.length) return rule;
+      const providerIds = [...rule.providerIds];
+      [providerIds[index], providerIds[nextIndex]] = [providerIds[nextIndex]!, providerIds[index]!];
+      return { ...rule, providerIds };
+    });
+  };
+
+  const addModels = (ruleKey: string, values: string[]) => {
+    updateRule(ruleKey, (rule) => {
+      const models = [...rule.models];
+      const seen = new Set(models);
+      for (const model of values) {
+        if (!seen.has(model)) {
+          seen.add(model);
+          models.push(model);
+        }
+      }
+      return { ...rule, models, modelDraft: "" };
+    });
+  };
+
+  const commitModelDraft = (rule: DraftRule) => {
+    const models = parseModelNames(rule.modelDraft);
+    if (models.length > 0) addModels(rule.key, models);
+  };
+
+  const onModelKeyDown = (event: KeyboardEvent<HTMLInputElement>, rule: DraftRule) => {
+    if (event.key !== "Enter" && event.key !== ",") return;
+    event.preventDefault();
+    commitModelDraft(rule);
+  };
+
+  const onModelPaste = (event: ClipboardEvent<HTMLInputElement>, rule: DraftRule) => {
+    const models = parseModelNames(event.clipboardData.getData("text"));
+    if (models.length < 2) return;
+    event.preventDefault();
+    addModels(rule.key, models);
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const normalized = rules.map((rule) => ({
+      models: [...new Set([
+        ...rule.models,
+        ...parseModelNames(rule.modelDraft)
+      ])],
+      providerIds: [...rule.providerIds]
+    }));
+    const assignedModels = normalized.flatMap((rule) => rule.models);
+    if (!name.trim()
+      || normalized.length === 0
+      || normalized.some((rule) => (
+        rule.models.length === 0
+        || rule.models.length > 100
+        || rule.models.some((model) => !validModelName(model))
+        || rule.providerIds.length === 0
+      ))
+      || assignedModels.length > 100
+      || new Set(assignedModels).size !== assignedModels.length) {
+      setError(t("routingRules.invalidForm"));
+      return;
+    }
+    setError(null);
+    if (!await onSubmit({ name: name.trim(), rules: normalized })) {
+      setError(t("routingRules.invalidForm"));
+    }
+  };
+
+  return (
+    <form id={formId} className="routing-rule-form grid gap-5" onSubmit={submit} noValidate>
+      {error ? <FormError>{error}</FormError> : null}
+      <Field
+        id={`${formId}-name`}
+        name="name"
+        label={t("routingRules.name")}
+        help={t("routingRules.nameHelp")}
+        value={name}
+        maxLength={100}
+        autoComplete="off"
+        autoFocus
+        required
+        onChange={(event) => setName(event.target.value)}
+      />
+      <div className="routing-rule-editor overflow-hidden rounded-xl border border-border bg-card">
+        <div className="mapping-rule-heading flex items-start justify-between gap-4 border-b border-border px-4 py-3">
+          <div>
+            <h3>{t("routingRules.rules")}</h3>
+            <p>{t("routingRules.rulesHelp")}</p>
+          </div>
+          <span>{t("routingRules.ruleCount", { count: rules.length })}</span>
+        </div>
+        <div className="routing-rule-list grid gap-3 p-4">
+          {rules.map((rule, ruleIndex) => {
+            const remaining = providers.filter((provider) => !rule.providerIds.includes(provider.id));
+            return (
+              <section className="routing-rule-card overflow-hidden rounded-xl border border-border bg-background" key={rule.key}>
+                <header className="flex items-center justify-between border-b border-border bg-muted/35 px-4 py-2.5">
+                  <span>{t("routingRules.ruleNumber", { value: ruleIndex + 1 })}</span>
+                  <IconButton
+                    label={t("routingRules.removeRuleNumber", { value: ruleIndex + 1 })}
+                    disabled={rules.length === 1}
+                    onClick={() => setRules((current) => current.filter((item) => item.key !== rule.key))}
+                  ><X aria-hidden="true" /></IconButton>
+                </header>
+                <div className="routing-model-editor min-w-0 p-4">
+                  <span className="routing-priority-label">{t("routingRules.models")}</span>
+                  <p>{t("routingRules.modelsHelp")}</p>
+                  {rule.models.length > 0 ? (
+                    <div className="routing-model-chips flex flex-wrap gap-2" aria-label={t("routingRules.models")}>
+                      {rule.models.map((model) => (
+                        <span className="routing-model-chip inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-1" key={model}>
+                          <code>{model}</code>
+                          <button
+                            type="button"
+                            aria-label={t("routingRules.removeModel", { model })}
+                            onClick={() => updateRule(rule.key, (current) => ({
+                              ...current,
+                              models: current.models.filter((item) => item !== model)
+                            }))}
+                          ><X aria-hidden="true" /></button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : <p className="routing-empty-priority">{t("routingRules.noModels")}</p>}
+                  <Field
+                    id={`${formId}-model-${rule.key}`}
+                    name={`model-${ruleIndex}`}
+                    label={t("routingRules.addModels")}
+                    help={t("routingRules.addModelsHelp")}
+                    value={rule.modelDraft}
+                    maxLength={26_000}
+                    spellCheck={false}
+                    onChange={(event) => updateRule(rule.key, (current) => ({
+                      ...current,
+                      modelDraft: event.target.value
+                    }))}
+                    onKeyDown={(event) => onModelKeyDown(event, rule)}
+                    onPaste={(event) => onModelPaste(event, rule)}
+                    onBlur={() => commitModelDraft(rule)}
+                  />
+                </div>
+                <div className="routing-priority-editor min-w-0 border-t border-border bg-muted/20 p-4">
+                  <span className="routing-priority-label">{t("routingRules.priority")}</span>
+                  {rule.providerIds.length > 0 ? (
+                    <ol>
+                      {rule.providerIds.map((providerId, index) => {
+                        const provider = providerById.get(providerId);
+                        return (
+                          <li className="flex items-center gap-2 rounded-lg border border-border bg-card p-2" key={providerId}>
+                            <span className="routing-rank">{index + 1}</span>
+                            <span className="routing-provider-name">
+                              <strong>{provider?.name ?? providerId}</strong>
+                              <small>{provider?.lastTestStatus === "passed"
+                                ? t("common.passed")
+                                : t("common.untested")}</small>
+                            </span>
+                            <IconButton
+                              label={t("routingRules.moveUp", { name: provider?.name ?? providerId })}
+                              disabled={index === 0}
+                              onClick={() => moveProvider(rule.key, index, -1)}
+                            ><ArrowUp aria-hidden="true" /></IconButton>
+                            <IconButton
+                              label={t("routingRules.moveDown", { name: provider?.name ?? providerId })}
+                              disabled={index === rule.providerIds.length - 1}
+                              onClick={() => moveProvider(rule.key, index, 1)}
+                            ><ArrowDown aria-hidden="true" /></IconButton>
+                            <IconButton
+                              label={t("routingRules.removeProvider", { name: provider?.name ?? providerId })}
+                              onClick={() => updateRule(rule.key, (current) => ({
+                                ...current,
+                                providerIds: current.providerIds.filter((id) => id !== providerId)
+                              }))}
+                            ><X aria-hidden="true" /></IconButton>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  ) : <p className="routing-empty-priority">{t("routingRules.noPriority")}</p>}
+                  {remaining.length > 0 ? (
+                    <SelectField
+                      id={`${formId}-provider-${rule.key}`}
+                      name={`provider-${ruleIndex}`}
+                      label={t("routingRules.addProvider")}
+                      value=""
+                      onChange={(event) => {
+                        const providerId = event.target.value;
+                        if (!providerId) return;
+                        updateRule(rule.key, (current) => ({
+                          ...current,
+                          providerIds: [...current.providerIds, providerId]
+                        }));
+                      }}
+                    >
+                      <option value="">{t("routingRules.chooseProvider")}</option>
+                      {remaining.map((provider) => (
+                        <option key={provider.id} value={provider.id}>{provider.name}</option>
+                      ))}
+                    </SelectField>
+                  ) : null}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+        <Button
+          className="mapping-add-rule m-4 mt-0"
+          disabled={rules.length >= 100 || providers.length === 0}
+          onClick={() => setRules((current) => [...current, draftRule()])}
+        ><Plus className="icon" aria-hidden="true" />{t("routingRules.addRule")}</Button>
+      </div>
+    </form>
+  );
+}
+
+export function RoutingRulesPage({
+  locale,
+  t,
+  groups,
+  providers,
+  readOnly,
+  pending,
+  onCreate,
+  onUpdate,
+  onDelete,
+  onActivate
+}: RoutingRulesProps) {
+  const [selectedId, setSelectedId] = useState<string | null>(
+    groups.find((group) => group.active)?.id ?? groups[0]?.id ?? null
+  );
+  const [mode, setMode] = useState<DialogMode>(null);
+  const selected = groups.find((group) => group.id === selectedId) ?? groups[0] ?? null;
+  const providerById = useMemo(
+    () => new Map(providers.map((provider) => [provider.id, provider])),
+    [providers]
+  );
+
+  useEffect(() => {
+    if (groups.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    if (!groups.some((group) => group.id === selectedId)) {
+      setSelectedId(groups.find((group) => group.active)?.id ?? groups[0]!.id);
+    }
+  }, [groups, selectedId]);
+
+  const close = () => setMode(null);
+
+  return (
+    <div className="page-stack mapping-page routing-page space-y-5" data-testid="page-routing-rules">
+      <PageHeader
+        title={t("routingRules.title")}
+        subtitle={t("routingRules.subtitle")}
+        action={(
+          <Button
+            variant="primary"
+            disabled={readOnly || pending !== null || providers.length === 0}
+            onClick={() => setMode("create")}
+          ><Plus className="icon" aria-hidden="true" />{t("routingRules.addGroup")}</Button>
+        )}
+      />
+
+      {groups.length === 0 ? (
+        <EmptyState
+          icon={<ListTree />}
+          title={t("routingRules.emptyTitle")}
+          description={providers.length === 0
+            ? t("routingRules.providersRequired")
+            : t("routingRules.emptyHelp")}
+          action={providers.length > 0 ? (
+            <Button
+              variant="primary"
+              disabled={readOnly || pending !== null}
+              onClick={() => setMode("create")}
+            ><Plus className="icon" aria-hidden="true" />{t("routingRules.addGroup")}</Button>
+          ) : undefined}
+        />
+      ) : (
+        <div className="mapping-workspace grid min-w-0 items-start gap-4 lg:grid-cols-[17.5rem_minmax(0,1fr)]">
+          <section className="mapping-group-list overflow-hidden rounded-xl border border-border bg-card shadow-sm" aria-label={t("routingRules.groups")}>
+            <div className="mapping-group-list-heading flex items-center justify-between border-b border-border px-4 py-3 text-xs text-muted-foreground">
+              <span>{t("routingRules.groups")}</span>
+              <strong>{formatNumber(locale, groups.length)}</strong>
+            </div>
+            {groups.map((group) => {
+              const current = group.id === selected?.id;
+              return (
+                <button
+                  key={group.id}
+                  className={cx(
+                    "mapping-group-item flex w-full items-center gap-3 border-b border-border/70 px-3 py-3 text-left transition-colors last:border-b-0 hover:bg-muted/60",
+                    current && "mapping-group-item-active bg-accent text-accent-foreground"
+                  )}
+                  type="button"
+                  aria-pressed={current}
+                  aria-current={current ? "true" : undefined}
+                  onClick={() => setSelectedId(group.id)}
+                >
+                  <span className="mapping-group-icon"><ListTree aria-hidden="true" /></span>
+                  <span>
+                    <strong className="block text-sm">{group.name}</strong>
+                    <small className="block text-xs text-muted-foreground">{t("routingRules.groupSummary", {
+                      rules: group.rules.length,
+                      models: group.rules.reduce((count, rule) => count + rule.models.length, 0)
+                    })}</small>
+                  </span>
+                  {group.active
+                    ? <span className="routing-active-dot" title={t("routingRules.active")} />
+                    : current ? <Check aria-hidden="true" /> : null}
+                </button>
+              );
+            })}
+          </section>
+
+          {selected ? (
+            <section className="mapping-detail min-w-0 overflow-hidden rounded-xl border border-border bg-card shadow-sm" aria-labelledby="routing-detail-title">
+              <header className="mapping-detail-header flex flex-wrap items-start justify-between gap-4 border-b border-border px-5 py-4">
+                <div>
+                  <span>{selected.active ? t("routingRules.active") : t("routingRules.inactive")}</span>
+                  <h2 id="routing-detail-title">{selected.name}</h2>
+                  <p>{t("routingRules.updatedAt", { value: formatDate(locale, selected.updatedAt) })}</p>
+                </div>
+                <div className="mapping-detail-actions routing-detail-actions flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={selected.active ? undefined : "primary"}
+                    disabled={readOnly || pending !== null}
+                    busy={pending === "routing-rule-activate"}
+                    onClick={() => void onActivate(selected.active ? null : selected.id)}
+                  >{selected.active
+                      ? <PowerOff className="icon" aria-hidden="true" />
+                      : <Power className="icon" aria-hidden="true" />}
+                    {selected.active ? t("routingRules.deactivate") : t("routingRules.activate")}
+                  </Button>
+                  <Button
+                    disabled={readOnly || pending !== null}
+                    onClick={() => setMode("edit")}
+                  ><Pencil className="icon" aria-hidden="true" />{t("common.edit")}</Button>
+                  <Button
+                    variant="danger"
+                    disabled={readOnly || pending !== null}
+                    onClick={() => setMode("delete")}
+                  ><Trash2 className="icon" aria-hidden="true" />{t("common.delete")}</Button>
+                </div>
+              </header>
+              {selected.active ? (
+                <Notice title={t("routingRules.liveTitle")} tone="success">
+                  <p>{t("routingRules.liveHelp")}</p>
+                </Notice>
+              ) : null}
+              <div className="routing-summary-strip grid gap-3 border-b border-border bg-muted/35 px-5 py-4 sm:grid-cols-2">
+                <div><span>{t("routingRules.exactRules")}</span><strong>{formatNumber(locale, selected.rules.length)}</strong></div>
+                <div><span>{t("routingRules.assignedModels")}</span><strong>{formatNumber(locale, selected.rules.reduce((count, rule) => count + rule.models.length, 0))}</strong></div>
+                <p>{t("routingRules.fallbackHelp")}</p>
+              </div>
+              <div className="routing-rules-view grid gap-3 p-4">
+                {selected.rules.length > 0 ? selected.rules.map((rule) => (
+                  <article className="grid min-w-0 gap-3 rounded-xl border border-border p-4 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]" key={rule.models.join("\u0000")}>
+                    <div className="routing-view-models flex min-w-0 flex-wrap gap-2">
+                      {rule.models.map((model) => <code key={model}>{model}</code>)}
+                    </div>
+                    <div className="routing-priority-flow flex min-w-0 flex-wrap items-center gap-2">
+                      {rule.providerIds.map((providerId, index) => {
+                        const provider = providerById.get(providerId);
+                        return (
+                          <span key={providerId}>
+                            <b>{index + 1}</b>
+                            <StatusBadge tone={provider?.lastTestStatus === "passed" ? "success" : "warning"}>
+                              {provider?.name ?? providerId}
+                            </StatusBadge>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </article>
+                )) : <p className="routing-empty-group">{t("routingRules.emptyGroup")}</p>}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      )}
+
+      <Modal
+        open={mode === "create"}
+        title={t("routingRules.createTitle")}
+        description={t("routingRules.formHelp")}
+        onClose={close}
+        t={t}
+        size="large"
+        footer={<><Button onClick={close}>{t("common.cancel")}</Button><Button variant="primary" type="submit" form="routing-rule-create-form" busy={pending === "routing-rule-create"}>{t("routingRules.saveCreate")}</Button></>}
+      >
+        {mode === "create" ? (
+          <RoutingRuleForm
+            formId="routing-rule-create-form"
+            providers={providers}
+            t={t}
+            onSubmit={async (input) => {
+              const created = await onCreate(input);
+              if (created) {
+                setSelectedId(created.id);
+                close();
+              }
+              return created !== null;
+            }}
+          />
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={mode === "edit"}
+        title={t("routingRules.editTitle")}
+        description={selected?.name}
+        onClose={close}
+        t={t}
+        size="large"
+        footer={<><Button onClick={close}>{t("common.cancel")}</Button><Button variant="primary" type="submit" form="routing-rule-edit-form" busy={pending === `routing-rule-update-${selected?.id ?? ""}`}>{t("common.save")}</Button></>}
+      >
+        {mode === "edit" && selected ? (
+          <RoutingRuleForm
+            formId="routing-rule-edit-form"
+            group={selected}
+            providers={providers}
+            t={t}
+            onSubmit={async (input) => {
+              const updated = await onUpdate(selected.id, input);
+              if (updated) close();
+              return updated !== null;
+            }}
+          />
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={mode === "delete"}
+        title={t("routingRules.deleteTitle")}
+        description={selected?.name}
+        onClose={close}
+        t={t}
+        size="small"
+        footer={<><Button onClick={close}>{t("common.cancel")}</Button><Button variant="danger" busy={pending === `routing-rule-delete-${selected?.id ?? ""}`} onClick={async () => { if (selected && await onDelete(selected.id)) close(); }}>{t("common.delete")}</Button></>}
+      >
+        <Notice title={selected?.name ?? t("routingRules.deleteTitle")} tone="warning">
+          <p>{selected?.active ? t("routingRules.deleteActiveHelp") : t("routingRules.deleteHelp")}</p>
+        </Notice>
+      </Modal>
+    </div>
+  );
+}

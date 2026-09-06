@@ -30,7 +30,7 @@ npx @cluic/codex-remote-proxy ui
 
 `crp ui` 会启动或发现本地 Supervisor，并打开管理界面。已保存的明确语言选择优先；否则按浏览器/系统语言偏好选择第一个受支持的中文或英文，均不匹配时默认英文。推断出的语言不会写入浏览器存储。
 
-当前开发版界面使用 `node/ui-src/` 中的 React、TypeScript 与 Vite 实现。这些工具只参与构建；发布包和 Admin Server 仍然只交付 `ui/index.html`、`ui/app.js` 与 `ui/styles.css`，不需要前端运行时服务器，也不包含远程字体、CDN、遥测、source map 或动态 chunk。
+管理界面使用 `node/ui-src/` 中的 Next.js App Router、React、TypeScript、Tailwind CSS、基于 Base UI 的 shadcn 源码组件和 Lucide 图标实现。确定性 Webpack 构建会在 `node/ui/` 生成经过审核的静态导出及资源清单；发布包不需要前端运行时服务器，Admin Server 从同一个回环来源提供全部页面和 chunk。界面不包含远程字体、CDN、遥测或 source map。发布 CI 会在每个受支持平台复现并校验资源清单；一个本地平台的结果不能替代另一平台的证据。
 
 ## 可以管理什么
 
@@ -240,7 +240,7 @@ npm pack --dry-run --json --ignore-scripts
 
 串行 `core-chain` 门禁会覆盖真实 CLI、Admin 服务、registry/provider service、WorkerManager、fork 出的代理 Worker、固定端口、存在进行中请求时的提供商切换、重启、关闭和密钥扫描。该门禁会有意替换为内存凭据适配器和 loopback 上游，因此不能证明原生凭据读取或真实外部提供商链路。
 
-发布证据必须包含 lint、UI 类型检查/构建/精确三文件同步验证、确定性 Node 测试、Chromium 英中双语响应式矩阵、精确发布包白名单、生产依赖审计，以及 `design-qa.md` 中的视觉对比。确定性 fixture 不代表真实 Codex 历史、原生凭据、登录启动执行或外部 provider 证据；这些仍属于对应发布代码树的平台/人工门禁。
+发布证据必须包含 lint、UI 类型检查/构建/精确资源清单验证、确定性 Node 测试、Chromium 英中双语响应式矩阵、精确发布包白名单、生产依赖审计，以及 `design-qa.md` 中的视觉对比。确定性 fixture 不代表真实 Codex 历史、原生凭据、登录启动执行或外部 provider 证据；这些仍属于对应发布代码树的平台/人工门禁。
 
 Supervisor 发现使用有界的 2 秒探活，普通 Admin 操作另用 30 秒超时，因此已经成功的 provider test 不会再被误报为 `SUPERVISOR_UNAVAILABLE`。代理目标通过结构化方式拼接，无论 base URL 是否带尾斜杠都只产生一个路径分隔符。
 

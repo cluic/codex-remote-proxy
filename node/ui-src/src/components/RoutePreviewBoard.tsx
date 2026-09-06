@@ -34,6 +34,7 @@ import type {
   RoutingRuleGroup
 } from "../types";
 import { Button, IconButton, Notice, Panel, StatusBadge, cx } from "./Primitives";
+import styles from "./RoutePreviewBoard.module.css";
 
 type RoutePreviewBoardProps = {
   locale: Locale;
@@ -72,7 +73,7 @@ function isPreviewableModel(value: string): boolean {
 
 function PathNode({ className, icon, eyebrow, title, detail, tone = "neutral" }: PathNodeProps) {
   return (
-    <article className={cx("route-path-node", `route-path-node-${tone}`, className)}>
+    <article className={cx("route-path-node min-w-0", `route-path-node-${tone}`, className)} data-tone={tone}>
       <span className="route-path-node-icon" aria-hidden="true">{icon}</span>
       <div>
         <small>{eyebrow}</small>
@@ -322,7 +323,7 @@ export function RoutePreviewBoard({
   const hiddenCandidateCount = Math.max(0, (preview?.candidates.length ?? 0) - visibleCandidates.length);
 
   return (
-    <Panel className="route-preview-board">
+    <Panel className={cx("route-preview-board overflow-hidden", styles.hero)}>
       <header className="route-preview-header">
         <div className="route-preview-heading">
           <span className="route-preview-heading-icon" aria-hidden="true"><Waypoints /></span>
@@ -358,7 +359,7 @@ export function RoutePreviewBoard({
           </div>
         </div>
         <div className={cx(
-          "route-preview-controls",
+          "route-preview-controls grid min-w-0 items-end gap-2",
           operation === "images/edits" && "has-format"
         )}>
           <label className="route-preview-operation-field">
@@ -391,6 +392,7 @@ export function RoutePreviewBoard({
             <span className="route-preview-input-shell">
               <Search aria-hidden="true" />
               <input
+                className="text-[8px]"
                 type="text"
                 list={suggestedModels.length > 0 ? listId : undefined}
                 value={model}
@@ -474,7 +476,7 @@ export function RoutePreviewBoard({
                     : t("routePreview.currentDecision")}</small>
                 </div>
                 <div className={cx(
-                  "route-preview-chain",
+                  "route-preview-chain min-w-0",
                   preview.route === "custom" && "route-preview-chain-long"
                 )}>
                   <PathNode
@@ -599,7 +601,7 @@ export function RoutePreviewBoard({
             </div>
 
             {visibleCandidates.length > 0 ? (
-              <section className="route-preview-candidates" aria-label={t("routePreview.candidateOrder")}>
+              <section className="route-preview-candidates overflow-hidden rounded-xl border" aria-label={t("routePreview.candidateOrder")}>
                 <div className="route-preview-candidates-label">
                   <ListTree aria-hidden="true" />
                   <div>

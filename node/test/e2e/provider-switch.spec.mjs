@@ -707,15 +707,17 @@ test("keeps every V8 page unclipped in both locales at desktop, tablet, and mobi
     if (mobile) {
       const menu = page.getByRole("button", { name: /Open navigation|打开导航/ });
       await menu.click();
-      await expect(page.locator(".sidebar-close")).toBeFocused();
+      const mobileDrawer = page.getByRole("dialog", { name: /Primary navigation|主导航/ });
+      await expect(mobileDrawer.locator(".sidebar-close")).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(menu).toBeFocused();
     }
     for (const matrix of matrices) {
       if (mobile) {
         await page.getByRole("button", { name: /Open navigation|打开导航/ }).click();
-        await page.locator("#locale-select").selectOption(matrix.locale);
-        await page.locator(".sidebar-close").click();
+        const mobileDrawer = page.getByRole("dialog", { name: /Primary navigation|主导航/ });
+        await mobileDrawer.getByLabel(/Language|语言/).selectOption(matrix.locale);
+        await mobileDrawer.locator(".sidebar-close").click();
       } else {
         await page.locator("#locale-select").selectOption(matrix.locale);
       }
@@ -731,10 +733,7 @@ test("keeps every V8 page unclipped in both locales at desktop, tablet, and mobi
         });
       }
       await test.step(`${viewport.width}x${viewport.height} ${matrix.locale} setup`, async () => {
-        await page.evaluate(() => {
-          history.pushState(null, "", "/setup");
-          dispatchEvent(new PopStateEvent("popstate"));
-        });
+        await page.goto(new URL("/setup", page.url()).href);
         await expect(page.getByTestId("page-setup")).toBeVisible();
         await assertLayoutIntegrity(page);
       });

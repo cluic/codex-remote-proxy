@@ -30,7 +30,7 @@ npx @cluic/codex-remote-proxy ui
 
 `crp ui` starts or discovers the local supervisor and opens the management UI. A saved explicit language choice wins; otherwise the interface uses the first supported Chinese or English browser/system preference and falls back to English. Inferred language is not persisted.
 
-The current development UI is implemented in `node/ui-src/` with React, TypeScript, and Vite. Those tools are build-time only: the package and Admin server still ship exactly `ui/index.html`, `ui/app.js`, and `ui/styles.css`, with no frontend runtime server, remote font, CDN, telemetry, source map, or dynamic chunk.
+The management UI is implemented in `node/ui-src/` with Next.js App Router, React, TypeScript, Tailwind CSS, shadcn source components backed by Base UI, and Lucide icons. The deterministic Webpack build produces a reviewed static export and asset manifest under `node/ui/`; the package needs no frontend runtime server and the Admin server serves every route and chunk from the same loopback origin. The UI uses no remote font, CDN, telemetry, or source map. Release CI reproduces and verifies the manifest on every supported platform; one local platform run is not evidence for another platform.
 
 ## What You Can Manage
 
@@ -241,7 +241,7 @@ Tests use temporary homes, synthetic credentials, injected adapters, and loopbac
 
 The serial `core-chain` gate exercises the real CLI, Admin server, registry/provider service, WorkerManager, forked proxy worker, fixed ports, provider switching with an in-flight request, restart, shutdown, and secret scans. It deliberately substitutes an in-memory credential adapter and loopback upstreams, so it does not prove native credential access or a real external provider.
 
-Release evidence must include lint, UI typecheck/build/exact three-file verification, the deterministic Node suite, Chromium English/Chinese responsive coverage, the exact package-content allowlist, runtime audit, and the visual comparison recorded in `design-qa.md`. Deterministic fixtures do not claim real Codex history, native credentials, login-start execution, or an external provider; those remain platform/human gates for the reviewed release tree.
+Release evidence must include lint, UI typecheck/build/exact manifest verification, the deterministic Node suite, Chromium English/Chinese responsive coverage, the exact package-content allowlist, runtime audit, and the visual comparison recorded in `design-qa.md`. Deterministic fixtures do not claim real Codex history, native credentials, login-start execution, or an external provider; those remain platform/human gates for the reviewed release tree.
 
 Supervisor discovery uses a bounded 2-second liveness probe while normal Admin operations use a separate 30-second timeout, so a successful provider test is not misreported as `SUPERVISOR_UNAVAILABLE`. Proxy targets are joined structurally, so base URLs with or without a trailing slash produce one path separator.
 

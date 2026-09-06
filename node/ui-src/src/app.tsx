@@ -1,6 +1,12 @@
+"use client";
+
 import { Power, TerminalSquare } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
 import {
+  createContext,
+  type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -16,14 +22,14 @@ import {
   readInitialLocale,
   type TranslationKey
 } from "./i18n";
-import { ActivityPage } from "./pages/Activity";
-import { ForwardingRecordsPage } from "./pages/ForwardingRecords";
-import { ModelMappingsPage } from "./pages/ModelMappings";
-import { OverviewPage } from "./pages/Overview";
-import { ProvidersPage } from "./pages/Providers";
-import { RoutingRulesPage } from "./pages/RoutingRules";
-import { SetupPage } from "./pages/Setup";
-import { SystemPage } from "./pages/System";
+import { ActivityPage } from "./views/Activity";
+import { ForwardingRecordsPage } from "./views/ForwardingRecords";
+import { ModelMappingsPage } from "./views/ModelMappings";
+import { OverviewPage } from "./views/Overview";
+import { ProvidersPage } from "./views/Providers";
+import { RoutingRulesPage } from "./views/RoutingRules";
+import { SetupPage } from "./views/Setup";
+import { SystemPage } from "./views/System";
 import type {
   AccessKeyInput,
   AccessKeyPatch,
@@ -74,12 +80,21 @@ function routePath(route: Route): string {
 }
 
 type NoticeState = { key: TranslationKey; variables?: Record<string, string | number> };
-const TOKEN_UNREAD = Symbol("token-unread");
+type RouteRenderer = (route: Route) => ReactNode;
+const RouteRendererContext = createContext<RouteRenderer | null>(null);
 
-export function App() {
-  const [locale, setLocale] = useState<Locale>(() => readInitialLocale());
+export function CrpRoute({ route }: { route: Route }) {
+  const renderRoute = useContext(RouteRendererContext);
+  if (!renderRoute) throw new Error("CRP route rendered outside the application provider.");
+  return renderRoute(route);
+}
+
+export function CrpApp({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const route = routeFromPath(pathname);
+  const [locale, setLocale] = useState<Locale>("en");
   const [accessMode, setAccessMode] = useState<AccessMode>("initializing");
-  const [route, setRoute] = useState<Route>(() => routeFromPath(location.pathname));
   const [workspace, setWorkspace] = useState<WorkspaceData | null>(null);
   const [activity, setActivity] = useState<ActivityPageData>(emptyActivity);
   const [metrics, setMetrics] = useState<MetricsOverview | null>(null);
@@ -94,8 +109,10 @@ export function App() {
   const [pending, setPending] = useState<string | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [ready, setReady] = useState(false);
-  const initializedRef = useRef(false);
-  const launchTokenRef = useRef<string | null | typeof TOKEN_UNREAD>(TOKEN_UNREAD);
+  const initializationRef = useRef<Promise<{
+    mode: Extract<AccessMode, "writable" | "read-only">;
+    workspace: WorkspaceData | null;
+  } | null> | null>(null);
   const loadControllerRef = useRef<AbortController | null>(null);
   const loadSequenceRef = useRef(0);
   const metricsSequenceRef = useRef(0);
@@ -119,6 +136,10 @@ export function App() {
   const t = useMemo(() => createTranslator(locale), [locale]);
 
   useEffect(() => {
+    setLocale(readInitialLocale());
+  }, []);
+
+  useEffect(() => {
     if (!notice) return undefined;
     const timeout = window.setTimeout(() => setNotice(null), 4_000);
     return () => window.clearTimeout(timeout);
@@ -129,13 +150,16 @@ export function App() {
   }, [metricsWindow]);
 
   useEffect(() => {
-    document.documentElement.lang = locale;
     const titleKey = accessMode === "stopped"
       ? "session.stoppedTitle"
       : route === "setup"
         ? "setup.title"
         : `nav.${route}` as TranslationKey;
-    document.title = `${t(titleKey)} | CRP`;
+    document.documentElement.lang = locale;
+    const timeout = window.setTimeout(() => {
+      document.title = `${t(titleKey)} | CRP`;
+    }, 0);
+    return () => window.clearTimeout(timeout);
   }, [accessMode, locale, route, t]);
 
   const loadHeatmap = useCallback(async (signal?: AbortSignal): Promise<void> => {
@@ -226,55 +250,37 @@ export function App() {
   }, [api]);
 
   useEffect(() => {
-    if (initializedRef.current) return undefined;
-    initializedRef.current = true;
-    let cancelled = false;
-    const initialize = async () => {
-      const launchToken = launchTokenRef.current === TOKEN_UNREAD
-        ? readAndClearControlToken()
-        : launchTokenRef.current;
-      launchTokenRef.current = null;
+    let active = true;
+    if (initializationRef.current === null) {
+      const launchToken = readAndClearControlToken();
+      initializationRef.current = (async () => {
       try {
         if (launchToken !== null) {
           await api.exchangeSession(launchToken);
-          if (!cancelled) setAccessMode("writable");
         } else {
           api.enterReadOnly();
-          if (!cancelled) setAccessMode("read-only");
         }
       } catch {
-        // ApiClient already moved this tab into the terminal state.
-        if (!cancelled) {
-          setReady(true);
-          document.documentElement.setAttribute("aria-busy", "false");
-        }
-        return;
+        return null;
       }
-      if (cancelled) return;
       const loaded = await loadWorkspace();
-      if (cancelled) return;
-      if (loaded && loaded.status.activeProviderId === null) {
-        history.replaceState(null, "", "/setup");
-        setRoute("setup");
+      return {
+        mode: launchToken === null ? "read-only" : "writable",
+        workspace: loaded
+      };
+      })();
+    }
+    void initializationRef.current.then((result) => {
+      if (!active) return;
+      if (result) {
+        setAccessMode(result.mode);
+        if (result.workspace?.status.activeProviderId === null) router.replace("/setup");
       }
       setReady(true);
       document.documentElement.setAttribute("aria-busy", "false");
-    };
-    void initialize();
-    return () => {
-      cancelled = true;
-      loadControllerRef.current?.abort();
-    };
-  }, [api, loadWorkspace]);
-
-  useEffect(() => {
-    const onPopState = () => {
-      routeFocusSourceRef.current = document.activeElement;
-      setRoute(routeFromPath(location.pathname));
-    };
-    addEventListener("popstate", onPopState);
-    return () => removeEventListener("popstate", onPopState);
-  }, []);
+    });
+    return () => { active = false; };
+  }, [api, loadWorkspace, router]);
 
   useEffect(() => {
     if (!ready || accessMode === "terminal") return undefined;
@@ -341,21 +347,20 @@ export function App() {
 
   const navigate = useCallback((next: Route) => {
     routeFocusSourceRef.current = document.activeElement;
-    history.pushState(null, "", routePath(next));
     setActionError(null);
     setNotice(null);
-    setRoute(next);
-  }, []);
+    router.push(routePath(next));
+  }, [router]);
 
   const refresh = useCallback(async () => {
     setActionError(null);
     setNotice(null);
     const loaded = await loadWorkspace();
     if (loaded) {
-      refreshObservability(routeFromPath(location.pathname));
+      refreshObservability(route);
       setNotice({ key: "notice.refreshed" });
     }
-  }, [loadWorkspace, refreshObservability]);
+  }, [loadWorkspace, refreshObservability, route]);
 
   const resumeManagement = useCallback(async () => {
     if (pendingRef.current || api.mutationAllowed) return;
@@ -367,7 +372,7 @@ export function App() {
       await api.resumeSession();
       setAccessMode("writable");
       const loaded = await loadWorkspace();
-      if (loaded) refreshObservability(routeFromPath(location.pathname));
+      if (loaded) refreshObservability(route);
       setNotice({ key: "notice.managementResumed" });
     } catch (error) {
       setActionError(asApiError(error));
@@ -375,7 +380,7 @@ export function App() {
       pendingRef.current = false;
       setPending(null);
     }
-  }, [api, loadWorkspace, refreshObservability]);
+  }, [api, loadWorkspace, refreshObservability, route]);
 
   const executeMutation = useCallback(async <T,>(
     key: string,
@@ -396,14 +401,14 @@ export function App() {
     }
     if (api.mutationAllowed) {
       const loaded = await loadWorkspace();
-      if (loaded) refreshObservability(routeFromPath(location.pathname));
+      if (loaded) refreshObservability(route);
     }
     if (failure) setActionError(failure);
     else setNotice({ key: successKey });
     pendingRef.current = false;
     setPending(null);
     return failure ? null : value;
-  }, [api, loadWorkspace, refreshObservability]);
+  }, [api, loadWorkspace, refreshObservability, route]);
 
   const createProvider = useCallback(async (input: ProviderInput, credential: string) => (
     await executeMutation("provider-create", () => api.createProvider(input, credential), "notice.providerCreated")
@@ -866,28 +871,9 @@ export function App() {
     onRefreshModels: refreshProviderModels
   };
 
-  return (
-    <Shell
-      accessMode={accessMode}
-      locale={locale}
-      t={t}
-      route={route}
-      status={workspace.status}
-      providers={workspace.providers}
-      pending={pending}
-      message={message}
-      onLocaleChange={changeLocale}
-      onNavigate={navigate}
-      onRefresh={() => void refresh()}
-      onDismissMessage={dismissMessage}
-      onResume={() => void resumeManagement()}
-      onActivate={activateProvider}
-      onStart={startProxy}
-      onStop={stopProxy}
-      onRestart={restartProxy}
-      onShutdown={shutdownSupervisor}
-    >
-      {route === "overview" ? (
+  const renderRoute: RouteRenderer = (requestedRoute) => {
+    if (requestedRoute === "overview") {
+      return (
         <OverviewPage
           locale={locale}
           t={t}
@@ -912,8 +898,10 @@ export function App() {
           onRefreshAccount={refreshAccount}
           onRoutingModeChange={updateRoutingMode}
         />
-      ) : null}
-      {route === "providers" ? (
+      );
+    }
+    if (requestedRoute === "providers") {
+      return (
         <ProvidersPage
           locale={locale}
           {...sharedProviderProps}
@@ -926,8 +914,10 @@ export function App() {
           onDelete={deleteProvider}
           onUpdateModels={updateProviderModels}
         />
-      ) : null}
-      {route === "model-mappings" ? (
+      );
+    }
+    if (requestedRoute === "model-mappings") {
+      return (
         <ModelMappingsPage
           locale={locale}
           t={t}
@@ -941,8 +931,10 @@ export function App() {
           onUpdate={updateModelMappingGroup}
           onDelete={deleteModelMappingGroup}
         />
-      ) : null}
-      {route === "routing-rules" ? (
+      );
+    }
+    if (requestedRoute === "routing-rules") {
+      return (
         <RoutingRulesPage
           locale={locale}
           t={t}
@@ -955,8 +947,10 @@ export function App() {
           onDelete={deleteRoutingRuleGroup}
           onActivate={activateRoutingRuleGroup}
         />
-      ) : null}
-      {route === "forwarding" ? (
+      );
+    }
+    if (requestedRoute === "forwarding") {
+      return (
         <ForwardingRecordsPage
           locale={locale}
           t={t}
@@ -971,8 +965,10 @@ export function App() {
           onCaptureChange={updateCaptureEnabled}
           onCaptureDetailsChange={updateCaptureDetailsEnabled}
         />
-      ) : null}
-      {route === "activity" ? (
+      );
+    }
+    if (requestedRoute === "activity") {
+      return (
         <ActivityPage
           locale={locale}
           t={t}
@@ -981,8 +977,10 @@ export function App() {
           loading={activityLoading}
           onPage={loadActivityPage}
         />
-      ) : null}
-      {route === "system" ? (
+      );
+    }
+    if (requestedRoute === "system") {
+      return (
         <SystemPage
           locale={locale}
           t={t}
@@ -1004,16 +1002,43 @@ export function App() {
           onUpdateAccessKey={updateAccessKey}
           onDeleteAccessKey={deleteAccessKey}
         />
-      ) : null}
-      {route === "setup" ? (
-        <SetupPage
-          {...sharedProviderProps}
-          status={workspace.status}
-          onPrepareCodex={prepareCodex}
-          onStart={startProxy}
-          onComplete={() => navigate("overview")}
-        />
-      ) : null}
+      );
+    }
+    return (
+      <SetupPage
+        {...sharedProviderProps}
+        status={workspace.status}
+        onPrepareCodex={prepareCodex}
+        onStart={startProxy}
+        onComplete={() => navigate("overview")}
+      />
+    );
+  };
+
+  return (
+    <Shell
+      accessMode={accessMode}
+      locale={locale}
+      t={t}
+      route={route}
+      status={workspace.status}
+      providers={workspace.providers}
+      pending={pending}
+      message={message}
+      onLocaleChange={changeLocale}
+      onNavigate={navigate}
+      onRefresh={() => void refresh()}
+      onDismissMessage={dismissMessage}
+      onResume={() => void resumeManagement()}
+      onActivate={activateProvider}
+      onStart={startProxy}
+      onStop={stopProxy}
+      onRestart={restartProxy}
+      onShutdown={shutdownSupervisor}
+    >
+      <RouteRendererContext.Provider value={renderRoute}>
+        {children}
+      </RouteRendererContext.Provider>
     </Shell>
   );
 }

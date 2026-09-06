@@ -21,7 +21,7 @@ npx @cluic/codex-remote-proxy ui
 
 `crp ui` is the normal setup and management entry point. It starts or discovers the loopback supervisor, opens the local management UI, and supports complete English and Simplified Chinese interfaces.
 
-The current development source is a responsive React + TypeScript SPA under `ui-src/`, built with Vite. Build tools and source are not shipped: the package contains exactly `ui/index.html`, `ui/app.js`, and `ui/styles.css` for the existing same-origin Admin server.
+The responsive management UI under `ui-src/` uses Next.js App Router, React, TypeScript, Tailwind CSS, shadcn source components backed by Base UI, and Lucide icons. Build tools and source are not shipped: the deterministic Webpack-backed `build:ui` creates a reviewed static export and `.crp-ui-manifest.json` under `ui/`, and the Admin server serves its pages, Flight data, and hashed chunks from the same loopback origin without a frontend runtime server. Release CI must reproduce `verify:ui-build` on every supported platform; a local result proves only its host platform.
 
 ## Product Behavior
 
@@ -178,11 +178,11 @@ node --test test/package-content.test.mjs test/native-keyring-smoke.test.mjs tes
 npm pack --dry-run --json --ignore-scripts
 ```
 
-The current package-content test requires the exact reviewed 47-file allowlist, including provider presets/build metadata, the route preview and provider scheduler, client-key store/private-token support, Forwarding Records service, the isolated Capture index worker, start-at-login service, and exactly three generated UI assets. It rejects UI development source, runtime state, credentials, tests, Changesets, logs, databases, and generated output outside the reviewed UI files. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
+The package-content test compares the exact reviewed allowlist, including provider presets/build metadata, the route preview and provider scheduler, client-key store/private-token support, Forwarding Records service, the isolated Capture index worker, start-at-login service, and every file declared by the generated UI asset manifest. It rejects UI development source, runtime state, credentials, tests, Changesets, logs, databases, and generated output outside the reviewed UI files. Deterministic tests use temporary homes, synthetic credentials, injected credential adapters, and loopback upstreams.
 
 The serial `core-chain` group uses the production CLI/Admin/registry/provider/WorkerManager/forked-worker path and proves switching, in-flight snapshots, restart, shutdown, cleanup, and secret scans. Its injected memory credential adapter and loopback upstreams do not satisfy the separate real native-keyring/external-provider gate.
 
-Release evidence must include lint, UI typecheck/build/exact-output verification, deterministic Node tests, Chromium English/Chinese responsive coverage, the exact 44-file package allowlist, runtime audit, and the comparison recorded in `../design-qa.md`. Deterministic fixtures do not prove real native-keyring, login-start execution, or external-upstream behavior; those remain platform/human gates.
+Release evidence must include lint, UI typecheck/build/exact-manifest verification, deterministic Node tests, Chromium English/Chinese responsive coverage, the exact reviewed package allowlist, runtime audit, and the comparison recorded in `../design-qa.md`. Deterministic fixtures do not prove real native-keyring, login-start execution, or external-upstream behavior; those remain platform/human gates.
 
 Supervisor discovery applies a 2-second liveness probe and returns a client with a separate 30-second operation timeout. Proxy forwarding joins base and incoming URLs structurally, preserving base paths and query parameters while avoiding duplicate path separators. The retained `provider add --api-key <KEY>` behavior and broader child-environment minimization remain explicit future follow-up work and do not block local core completion.
 

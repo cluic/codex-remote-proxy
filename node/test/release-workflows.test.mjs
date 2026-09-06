@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { normalizeLockfileForUiDigest } from "../scripts/build-next-ui.mjs";
 import { syncLockfileVersion } from "../scripts/sync-lockfile-version.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -267,6 +268,32 @@ test("package versioning keeps package and lockfile root versions synchronized",
   assert.match(
     extractStepBlock(readWorkflowText("release.yml"), "Create release PR or publish"),
     /^          version: npm run version-packages$/m
+  );
+});
+
+test("UI build digest ignores version-only lockfile changes", () => {
+  const lockfile = {
+    name: packageName,
+    version: "0.4.21",
+    lockfileVersion: 3,
+    packages: {
+      "": { name: packageName, version: "0.4.21", dependencies: { stable: "1.0.0" } },
+      "node_modules/stable": { version: "1.0.0", integrity: "sha512-stable" }
+    }
+  };
+  const nextVersion = structuredClone(lockfile);
+  nextVersion.version = "0.4.22";
+  nextVersion.packages[""].version = "0.4.22";
+
+  assert.deepEqual(
+    normalizeLockfileForUiDigest(lockfile),
+    normalizeLockfileForUiDigest(nextVersion)
+  );
+
+  nextVersion.packages["node_modules/stable"].version = "1.0.1";
+  assert.notDeepEqual(
+    normalizeLockfileForUiDigest(lockfile),
+    normalizeLockfileForUiDigest(nextVersion)
   );
 });
 

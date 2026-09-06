@@ -1,13 +1,12 @@
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join } from "node:path";
-
 import { sanitizeActivityValue } from "./activity-store.mjs";
 import { FORWARDING_DETAIL_LIMITS } from "./forwarding-records-service.mjs";
 import { listProviderPresets } from "../providers/provider-presets.mjs";
 import { getPublicBuildInfo } from "../shared/build-info.mjs";
 import { CrpError, toPublicError } from "../shared/errors.mjs";
+import { createUiContentSecurityPolicy, loadUiAssets } from "./ui-assets.mjs";
 
 const API_PREFIX = "/api/v1";
 const PUBLIC_PROVIDER_FIELDS = [
@@ -280,7 +279,7 @@ function setSafeHeaders(response) {
   response.setHeader("cache-control", "no-store");
   response.setHeader("x-content-type-options", "nosniff");
   response.setHeader("referrer-policy", "no-referrer");
-  response.setHeader("content-security-policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+  response.setHeader("content-security-policy", createUiContentSecurityPolicy());
 }
 
 function sendJson(response, status, payload, extraHeaders = {}) {
@@ -1276,29 +1275,6 @@ function positiveQueryInteger(url, name, fallback, { min = 0, max }) {
   return value;
 }
 
-function uiAsset(pathname) {
-  let decoded;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return null;
-  }
-  if (/[\\\u0000-\u001f\u007f]/.test(decoded)
-    || decoded.split("/").includes("..")) {
-    return null;
-  }
-  const explicit = new Map([
-    ["/", ["index.html", "text/html; charset=utf-8"]],
-    ["/index.html", ["index.html", "text/html; charset=utf-8"]],
-    ["/favicon.ico", [null, "image/x-icon"]],
-    ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
-    ["/app.js", ["app.js", "text/javascript; charset=utf-8"]]
-  ]);
-  if (explicit.has(decoded)) return explicit.get(decoded);
-  if (extname(decoded) === "") return explicit.get("/");
-  return null;
-}
-
 export function createAdminServer({
   auth,
   providerService,
@@ -1333,6 +1309,8 @@ export function createAdminServer({
       && typeof requestSupervisorShutdown !== "function")) {
     throw new TypeError("Admin shutdown options are invalid.");
   }
+
+  const uiAssets = typeof uiDir === "string" && uiDir.length > 0 ? loadUiAssets(uiDir) : null;
 
   const runCodexExclusive = createSerialGate();
   const runWhenCodexReady = (operation) => runCodexExclusive(async () => {
@@ -1465,15 +1443,6 @@ export function createAdminServer({
     const apiNamespace = url.pathname === "/api"
       || url.pathname.startsWith("/api/");
     if (!apiNamespace) {
-      const asset = uiAsset(url.pathname);
-      if (!asset) {
-        throw apiError(
-          "UI_NOT_FOUND",
-          "The local UI resource was not found.",
-          "Open the CRP UI root.",
-          404
-        );
-      }
       if (request.method !== "GET" && request.method !== "HEAD") {
         response.setHeader("allow", "GET, HEAD");
         throw apiError(
@@ -1483,7 +1452,7 @@ export function createAdminServer({
           405
         );
       }
-      if (typeof uiDir !== "string" || uiDir.length === 0) {
+      if (uiAssets === null) {
         throw apiError(
           "UI_NOT_FOUND",
           "The local UI resource was not found.",
@@ -1491,13 +1460,16 @@ export function createAdminServer({
           404
         );
       }
-      if (asset[0] === null) {
-        sendBytes(response, 204, Buffer.alloc(0), asset[1], { head: true });
+      const asset = uiAssets.resolve(request.url);
+      if (!asset) {
+        response.setHeader("content-security-policy", uiAssets.contentSecurityPolicy(uiAssets.notFound));
+        const bytes = await readFile(uiAssets.notFound.path);
+        sendBytes(response, 404, bytes, uiAssets.notFound.contentType, { head: request.method === "HEAD" });
         return;
       }
       let bytes;
       try {
-        bytes = await readFile(join(uiDir, asset[0]));
+        bytes = await readFile(asset.path);
       } catch {
         throw apiError(
           "UI_NOT_FOUND",
@@ -1506,7 +1478,8 @@ export function createAdminServer({
           404
         );
       }
-      sendBytes(response, 200, bytes, asset[1], { head: request.method === "HEAD" });
+      response.setHeader("content-security-policy", uiAssets.contentSecurityPolicy(asset));
+      sendBytes(response, 200, bytes, asset.contentType, { head: request.method === "HEAD" });
       return;
     }
     auth.authorize({
