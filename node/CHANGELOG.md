@@ -1,5 +1,11 @@
 # @cluic/codex-remote-proxy
 
+## 0.4.22
+
+### Patch Changes
+
+- 578e9fa: Migrate the complete local management UI to a static Next.js App Router build using Tailwind CSS and shadcn components backed by Base UI while preserving the existing Admin API and security behavior.
+
 ## 0.4.21
 
 ### Patch Changes
