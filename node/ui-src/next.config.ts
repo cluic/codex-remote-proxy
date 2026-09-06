@@ -9,6 +9,15 @@ const nextConfig: NextConfig = {
   trailingSlash: false,
   devIndicators: false,
   turbopack: { root: resolve(import.meta.dirname, "..") },
+  webpack: (config) => {
+    config.context = resolve(import.meta.dirname);
+    config.optimization = {
+      ...config.optimization,
+      moduleIds: "natural",
+      chunkIds: "natural"
+    };
+    return config;
+  },
   generateBuildId: async () => {
     if (!buildId) throw new Error("CRP_UI_BUILD_ID is required for a reproducible UI build.");
     return buildId;
