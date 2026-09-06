@@ -50,8 +50,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify UI build
-        run: npm run verify:ui-build
+      - name: Verify committed UI assets
+        run: npm run verify:ui-assets
 
       - name: Run syntax checks
         run: npm run lint
@@ -105,3 +105,29 @@ jobs:
         env:
           CRP_NATIVE_KEYRING_SMOKE: "1"
         run: node scripts/native-keyring-smoke.mjs
+
+  canonical-ui:
+    name: Canonical UI build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and verify canonical UI
+        run: |
+          npm run build:ui
+          npm run verify:ui-build
