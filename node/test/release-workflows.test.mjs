@@ -21,23 +21,17 @@ function readWorkflowText(name) {
 }
 
 function extractStepBlock(workflowText, stepName) {
-  const blocks = extractStepBlocks(workflowText, stepName);
-  assert.equal(blocks.length, 1, `expected one active step named ${stepName}`);
-  return blocks[0];
-}
-
-function extractStepBlocks(workflowText, stepName) {
   const lines = workflowText.split("\n");
   const marker = `      - name: ${stepName}`;
   const starts = lines
     .map((line, index) => line === marker ? index : -1)
     .filter((index) => index !== -1);
-  return starts.map((start, index) => {
-    const next = starts[index + 1] ?? lines.findIndex((line, lineIndex) => (
-      lineIndex > start && line.startsWith("      - name: ")
-    ));
-    return lines.slice(start, next === -1 ? lines.length : next).join("\n");
-  });
+  assert.equal(starts.length, 1, `expected one active step named ${stepName}`);
+  const start = starts[0];
+  const next = lines.findIndex((line, index) => (
+    index > start && line.startsWith("      - name: ")
+  ));
+  return lines.slice(start, next === -1 ? lines.length : next).join("\n");
 }
 
 function extractTopLevelChildKeys(workflowText, sectionName) {
@@ -373,20 +367,16 @@ test("lockfile version sync fails before writing mismatched package metadata", (
 
 test("every workflow checkout disables persisted credentials", () => {
   for (const name of ["release.yml", "release-preflight.yml", "platform-tests.yml"]) {
-    for (const checkout of extractStepBlocks(readWorkflowText(name), "Checkout")) {
-      assert.match(checkout, /^        uses: actions\/checkout@v4$/m);
-      assert.match(checkout, /^          persist-credentials: false$/m);
-    }
+    const checkout = extractStepBlock(readWorkflowText(name), "Checkout");
+    assert.match(checkout, /^        uses: actions\/checkout@v4$/m);
+    assert.match(checkout, /^          persist-credentials: false$/m);
   }
 });
 
-test("platform matrix verifies committed UI assets and canonical Linux rebuild verifies output", () => {
+test("every supported platform verifies the generated UI build", () => {
   const workflow = readWorkflowText("platform-tests.yml");
-  const verify = extractStepBlock(workflow, "Verify committed UI assets");
-  assert.match(verify, /^        run: npm run verify:ui-assets$/m);
-  const canonical = extractStepBlock(workflow, "Build and verify canonical UI");
-  assert.match(canonical, /npm run build:ui/);
-  assert.match(canonical, /npm run verify:ui-build/);
+  const verify = extractStepBlock(workflow, "Verify UI build");
+  assert.match(verify, /^        run: npm run verify:ui-build$/m);
 });
 
 test("Linux native smoke proves Secret Service and the default collection before Node", () => {
